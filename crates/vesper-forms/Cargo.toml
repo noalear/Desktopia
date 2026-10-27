@@ -1,0 +1,11 @@
+[package]
+name = "vesper-forms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Stand-in creature and plant bodies for previewing the renderer before the simulation drives it"
+
+[dependencies]
+vesper-render = { path = "../vesper-render" }
+vesper-terrain = { path = "../vesper-terrain" }

@@ -35,7 +35,8 @@ mod app {
     use crate::wallpaper::{Gpu, Presented, Wallpaper};
     use crate::{logger, system};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-    use vesper_render::{WorldView, rhythm};
+    use vesper_forms::Menagerie;
+    use vesper_render::{LifeBatch, WorldView};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::Threading::{
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateWaitableTimerExW, INFINITE, SetWaitableTimer, TIMER_ALL_ACCESS,
@@ -54,8 +55,6 @@ mod app {
     const MODES_EVERY: Duration = Duration::from_secs(5);
     /// How long to sleep between checks while nothing is being drawn.
     const IDLE_WAIT: Duration = Duration::from_millis(250);
-    /// Where the storm sits for now, in world units; the simulation will move it.
-    const STORM_X: f32 = 2.45;
 
     pub fn run() {
         logger::init();
@@ -93,7 +92,13 @@ mod app {
             autostart: system::autostart_enabled(),
             last_tip: String::new(),
             force_frame: false,
+            life: Menagerie::new(SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(7)),
+            life_batch: LifeBatch::new(),
+            life_clock: None,
+            plants_uploaded: false,
         };
+        // Let trailing tentacles and feelers settle before the first frame.
+        app.life.warm_up(5.0);
         app.sync_menu();
         app.run(timer);
 
@@ -124,6 +129,11 @@ mod app {
         /// Draw every monitor once even if the governor says rest, so a fresh
         /// wallpaper never shows an empty window.
         force_frame: bool,
+        /// Stand-in creatures and plants until the simulation drives them.
+        life: Menagerie,
+        life_batch: LifeBatch,
+        life_clock: Option<Instant>,
+        plants_uploaded: bool,
     }
 
     impl App {
@@ -223,6 +233,7 @@ mod app {
                         self.failures = 0;
                         self.governor.poke();
                         self.force_frame = true;
+                        self.plants_uploaded = false;
                     }
                     Err(e) => {
                         // Explorer may still be starting; back off and try again.
@@ -245,7 +256,7 @@ mod app {
         /// Draws the monitors that can be seen, if a frame is due. Returns the
         /// frame rate in effect, 0 when nothing should be drawn.
         fn frame(&mut self) -> u32 {
-            let (Some(wallpaper), Some(gpu)) = (self.wallpaper.as_mut(), self.gpu.as_ref()) else {
+            let (Some(wallpaper), Some(gpu)) = (self.wallpaper.as_mut(), self.gpu.as_mut()) else {
                 return 0;
             };
             let decision = self.governor.decide(&self.cfg, &wallpaper.monitors).clone();
@@ -273,18 +284,24 @@ mod app {
             }
 
             let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let world = WorldView {
-                world_size_px: wallpaper.world_size_px,
-                time: rhythm::shader_time(unix),
-                band_shift: rhythm::band_shift(unix),
-                lightning: rhythm::lightning(unix),
-                storm_x: STORM_X,
-                exposure: self.cfg.exposure,
-            };
+            let world = WorldView::at(wallpaper.world_size_px, unix, self.cfg.exposure);
+
+            // Life moves on wall-clock time while drawn; after a rest it just
+            // picks up where it was.
+            let dt = self.life_clock.map_or(0.0, |t| (now - t).as_secs_f32().min(0.25));
+            self.life_clock = Some(now);
+            self.life.step(dt);
+            if !self.plants_uploaded {
+                self.life.plants_batch(&mut self.life_batch);
+                gpu.renderer.set_plants(&mut self.life_batch);
+                self.plants_uploaded = true;
+            }
+            self.life.creatures_batch(&mut self.life_batch);
+            gpu.renderer.set_creatures(&mut self.life_batch);
             let mut lost = false;
             for i in 0..wallpaper.screens.len() {
                 if (force || decision.visible.get(i).copied().unwrap_or(true))
-                    && let Presented::Lost = wallpaper.present(gpu, i, &world)
+                    && let Presented::Lost = wallpaper.present(&*gpu, i, &world)
                 {
                     lost = true;
                 }

@@ -36,5 +36,6 @@ Settings are in `%APPDATA%\Desktopia\config.toml`, and the log is in `%LOCALAPPD
 
 - `cargo build --release -p desktopia` builds the wallpaper on Windows.
 - `cargo run --release -p preview -- --scale 0.5` renders Vesper to PNG files on any OS with a GPU or a software Vulkan driver.
+  Add `--crop X Y W H` to render a window of the world up close, `--lineup` to line up one creature of each body plan in that window, `--frames N --step S` for an animation, and `--storm X STRENGTH` or `--volcano V` to pin the weather.
 
 ![Key art](docs/references/desktopia-ref-01-key-art.png)

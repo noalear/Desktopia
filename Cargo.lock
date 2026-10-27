@@ -153,6 +153,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "toml",
+ "vesper-forms",
  "vesper-render",
  "wgpu",
  "windows",
@@ -712,6 +713,7 @@ dependencies = [
  "half",
  "image",
  "pollster",
+ "vesper-forms",
  "vesper-render",
  "wgpu",
 ]
@@ -994,12 +996,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vesper-forms"
+version = "0.1.0"
+dependencies = [
+ "vesper-render",
+ "vesper-terrain",
+]
+
+[[package]]
 name = "vesper-render"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
  "log",
  "wgpu",
+]
+
+[[package]]
+name = "vesper-terrain"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
