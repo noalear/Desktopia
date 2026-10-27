@@ -37,7 +37,7 @@ pub const E_DETRITUS: f32 = 35.0;
 /// Upkeep per unit of matter^0.75 per second.
 pub const BASAL: f32 = 0.12;
 pub const BRAIN_COST: f32 = 0.0006;
-pub const MAX_CREATURES: usize = 3000;
+pub const MAX_CREATURES: usize = 2200;
 pub const MAX_PLANTS: usize = 2600;
 /// Ticks between plant updates; plants grow on a one-second step.
 pub const PLANT_EVERY: u64 = 5;

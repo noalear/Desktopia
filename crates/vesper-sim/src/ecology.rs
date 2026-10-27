@@ -60,7 +60,7 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
 
 fn crowd(w: &World, x: f32, depth: f32) -> usize {
     let mut n = 0;
-    w.pgrid.near(x, 0.0, 0.025, |j| {
+    w.pgrid.near([x, depth, 0.0], 0.025, |j| {
         let p = &w.plants[j];
         if p.alt < 0.05 && (p.x - x).abs() < 0.025 && (p.depth - depth).abs() < 0.08 {
             n += 1;
@@ -72,7 +72,7 @@ fn crowd(w: &World, x: f32, depth: f32) -> usize {
 pub fn rebuild_plant_grid(w: &mut World) {
     w.pgrid.clear();
     for (i, p) in w.plants.iter().enumerate() {
-        w.pgrid.insert(i, p.x, p.alt);
+        w.pgrid.insert(i, [p.x, p.depth, p.alt]);
     }
 }
 
@@ -122,7 +122,7 @@ pub fn plants(w: &mut World, dt: f32) {
         p.health = (p.health - stress * 0.01 * dt + 0.002 * dt).min(1.0);
         let s = p.scale();
         let area: f32 = p.body.segments.iter().map(|q| q.area()).sum::<f32>() * s * s;
-        let photo = leaf * light * 30.0 * (1.0 - g.vent);
+        let photo = leaf * light * 60.0 * (1.0 - g.vent);
         let chemo = terrain::vent_heat(p.x) * g.vent * area * 40.0 * (p.alt < 0.05) as u8 as f32;
         let potential = (photo + chemo) * g.growth * water_factor * dt;
         let upkeep = p.matter
@@ -219,7 +219,7 @@ fn traps(w: &mut World) {
         let r = 0.006 + h * 0.25;
         let max_len = p.genome.trap * h * 0.7;
         let mut caught = None;
-        w.cgrid.near(tip[0], tip[2], r, |j| {
+        w.cgrid.near(tip, r, |j| {
             let c = &w.creatures[j];
             if caught.is_none() && c.doom.is_none() && c.length() < max_len && dist3(c.pos, tip) < r {
                 caught = Some(j);

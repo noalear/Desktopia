@@ -23,6 +23,7 @@ const DEEP_START: f32 = 1200.0;
 pub struct Sim {
     pub(crate) w: World,
     percepts: Vec<Percept>,
+    profile: Option<[f64; PHASES]>,
 }
 
 impl Sim {
@@ -71,7 +72,7 @@ impl Sim {
                 w.soil[c * ROWS + r] *= rich;
             }
         }
-        let mut sim = Self { w, percepts: Vec::new() };
+        let mut sim = Self { w, percepts: Vec::new(), profile: None };
         sim.genesis();
         sim.w.matter_total = sim.w.matter_now();
         sim
@@ -162,7 +163,7 @@ impl Sim {
     }
 
     pub(crate) fn from_world(w: World) -> Self {
-        Self { w, percepts: Vec::new() }
+        Self { w, percepts: Vec::new(), profile: None }
     }
 
     /// A snapshot for the renderer.
@@ -207,55 +208,36 @@ impl Sim {
 
     /// One tick: TICK sim seconds.
     pub fn step(&mut self) {
-        let audit = std::env::var_os("VESPER_AUDIT").is_some();
-        let mut last = if audit { self.w.matter_now() } else { 0.0 };
-        let mut check = |w: &World, what: &str| {
-            if audit {
-                let m = w.matter_now();
-                if (m - last).abs() > 1e-4 {
-                    eprintln!("tick {} {what}: {:+.5}", w.tick, m - last);
-                }
-                last = m;
-            }
-        };
         let w = &mut self.w;
+        let mut probe = Probe::new(w, &mut self.profile);
         w.tick += 1;
         w.time += TICK as f64;
-        w.rebuild_index();
-        w.cgrid.clear();
-        for (i, c) in w.creatures.iter().enumerate() {
-            w.cgrid.insert(i, c.pos[0], c.pos[2]);
-        }
+        index_creatures(w);
         let dt_slow = TICK * PLANT_EVERY as f32;
         if w.tick % PLANT_EVERY == 0 {
             world::weather(w, dt_slow);
-            check(w, "world::weather");
+            probe.at(w, 0);
             world::fields(w, dt_slow);
-            check(w, "world::fields");
+            probe.at(w, 1);
             ecology::plants(w, dt_slow);
-            check(w, "ecology::plants");
+            probe.at(w, 2);
             life::disease(w, dt_slow);
-            check(w, "life::disease");
+            probe.at(w, 3);
             life::decay(w, dt_slow);
-            check(w, "life::decay");
             life::eggs(w, dt_slow);
-            check(w, "life::eggs");
-            w.rebuild_index();
-            w.cgrid.clear();
-            for (i, c) in w.creatures.iter().enumerate() {
-                w.cgrid.insert(i, c.pos[0], c.pos[2]);
-            }
+            index_creatures(w);
+            probe.at(w, 4);
         }
         think::think(w, &mut self.percepts);
-        check(w, "think::think");
+        probe.at(w, 5);
         act::movement(w, &self.percepts);
-        check(w, "act::movement");
+        probe.at(w, 6);
         act::actions(w, &self.percepts);
-        check(w, "act::actions");
+        probe.at(w, 7);
         life::metabolism(w, TICK);
-        check(w, "life::metabolism");
+        probe.at(w, 8);
         life::bury(w);
-        check(w, "life::bury");
+        probe.at(w, 9);
         if w.tick % 150 == 0 {
             w.rebuild_index();
             society::regroup(w);
@@ -270,7 +252,65 @@ impl Sim {
             }
             renew(w);
         }
+        probe.at(w, 10);
     }
+
+    /// Turns on timing of each phase of a tick, for tuning.
+    pub fn enable_profile(&mut self) {
+        self.profile = Some(Default::default());
+    }
+
+    /// Seconds spent in each phase since the last call: weather, fields,
+    /// plants, disease, decay and eggs, thinking, moving, acting, metabolism,
+    /// burial, society.
+    pub fn take_profile(&mut self) -> Option<[f64; PHASES]> {
+        self.profile.as_mut().map(std::mem::take)
+    }
+}
+
+pub const PHASES: usize = 11;
+pub const PHASE_NAMES: [&str; PHASES] =
+    ["weather", "fields", "plants", "disease", "decay+eggs", "think", "move", "act", "metabolism", "bury", "society"];
+
+fn index_creatures(w: &mut World) {
+    w.rebuild_index();
+    w.cgrid.clear();
+    for (i, c) in w.creatures.iter().enumerate() {
+        w.cgrid.insert(i, c.pos);
+    }
+}
+
+/// Optional per-phase timing, plus a matter audit when VESPER_AUDIT is set.
+struct Probe<'a> {
+    profile: Option<&'a mut [f64; PHASES]>,
+    last: Instant,
+    audit: Option<f64>,
+}
+
+impl<'a> Probe<'a> {
+    fn new(w: &World, profile: &'a mut Option<[f64; PHASES]>) -> Self {
+        let audit = AUDIT.with(|a| *a).then(|| w.matter_now());
+        Self { profile: profile.as_mut(), last: Instant::now(), audit }
+    }
+
+    fn at(&mut self, w: &World, phase: usize) {
+        if let Some(p) = self.profile.as_deref_mut() {
+            let now = Instant::now();
+            p[phase] += (now - self.last).as_secs_f64();
+            self.last = now;
+        }
+        if let Some(last) = self.audit {
+            let m = w.matter_now();
+            if (m - last).abs() > 1e-3 {
+                eprintln!("tick {} {}: matter {:+.5}", w.tick, PHASE_NAMES[phase], m - last);
+            }
+            self.audit = Some(m);
+        }
+    }
+}
+
+thread_local! {
+    static AUDIT: bool = std::env::var_os("VESPER_AUDIT").is_some();
 }
 
 /// Retires strains nobody carries any more.

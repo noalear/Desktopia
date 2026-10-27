@@ -302,6 +302,10 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
 fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
     let dt = TICK;
     let c = &w.creatures[ci];
+    // A full gut takes no more.
+    if c.energy >= c.abil.energy_cap * 0.95 && life::growth_room(c) <= 0.0 {
+        return;
+    }
     let bite = c.abil.bite * dt * drive.min(1.0);
     let diet = c.genome.diet;
     let id = c.id;
@@ -438,7 +442,7 @@ fn signal(w: &mut World, ci: usize, out: &[f32; crate::brain::NO], p: &Percept) 
     let ready = c.ready();
     let threat_near = p.threat_level > 0.3;
     let mut listeners = Vec::new();
-    w.cgrid.near(pos[0], pos[2], range, |j| {
+    w.cgrid.near(pos, range, |j| {
         if j != ci && dist3(pos, w.creatures[j].pos) < range {
             listeners.push(j);
         }

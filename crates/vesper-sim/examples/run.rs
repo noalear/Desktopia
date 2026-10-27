@@ -11,6 +11,7 @@ fn main() {
     let hours: f64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2.0);
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     let mut sim = Sim::new(seed, 1_800_000_000.0);
+    sim.enable_profile();
     let start = Instant::now();
     let mut facts: std::collections::BTreeMap<String, u32> = Default::default();
     let report_every = 600.0;
@@ -93,6 +94,15 @@ fn main() {
                 "        births {} deaths {} (kills {} starved {} aged {} disease {} exposure {}) plants +{} -{}",
                 c.births, c.deaths, c.kills, c.starved, c.aged, c.disease, c.exposure, c.plant_births, c.plant_deaths
             );
+            if let Some(p) = sim.take_profile() {
+                let total: f64 = p.iter().sum();
+                let parts: Vec<String> = p
+                    .iter()
+                    .zip(vesper_sim::PHASE_NAMES)
+                    .map(|(t, n)| format!("{n} {:.0}%", t / total * 100.0))
+                    .collect();
+                println!("        {}", parts.join(" "));
+            }
             step_time = Duration::ZERO;
             steps = 0;
         }

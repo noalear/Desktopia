@@ -43,24 +43,52 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
     let mut inputs = [0.0f32; NI];
     w.rgrid.clear();
     for (j, r) in w.remains.iter().enumerate() {
-        w.rgrid.insert(j, r.pos[0], r.pos[2]);
+        w.rgrid.insert(j, r.pos);
     }
     w.egrid.clear();
     for (j, e) in w.eggs.iter().enumerate() {
-        w.egrid.insert(j, e.pos[0], e.pos[2]);
+        w.egrid.insert(j, e.pos);
     }
+    // Compact copies of what others can see of each creature and plant, so
+    // the neighbour scans below stay in cache.
+    let seen: Vec<Glimpse> = w
+        .creatures
+        .iter()
+        .map(|o| Glimpse {
+            pos: o.pos,
+            len: o.length(),
+            hunter: ((o.genome.diet - 0.3) * 2.0).clamp(0.0, 1.0),
+            marker: o.genome.marker,
+            species: o.species.0,
+            id: o.id,
+            striking: if o.action == crate::creature::Action::Attacking { o.target } else { None },
+            parent: o.parent,
+            young: o.maturity < 0.5,
+        })
+        .collect();
+    let flora: Vec<Patch> = w
+        .plants
+        .iter()
+        .map(|pl| Patch {
+            pos: [pl.x, pl.depth, pl.alt],
+            top: pl.alt + pl.height(),
+            bin: plant_bin(&pl.genome.look) as u8,
+            value: (pl.matter + pl.fruit * 4.0).powf(0.3),
+        })
+        .collect();
     for ci in 0..n {
         let c = &w.creatures[ci];
+        let me = &seen[ci];
         let r = c.abil.sense;
         let mut p = Percept { other_dist: f32::MAX, ..Default::default() };
         let mut young = 0.0f32;
-        let my_len = c.length().max(1e-4);
-        w.cgrid.near(c.pos[0], c.pos[2], r, |j| {
+        let my_len = me.len.max(1e-4);
+        w.cgrid.near(c.pos, r, |j| {
             if j == ci {
                 return;
             }
-            let o = &w.creatures[j];
-            let d = dist3(c.pos, o.pos);
+            let o = &seen[j];
+            let d = dist3(me.pos, o.pos);
             if d > r {
                 return;
             }
@@ -68,26 +96,26 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                 p.other_dist = d;
                 p.other = Some(j);
             }
-            let kin = Genome::kinship(&c.genome.marker, &o.genome.marker);
-            if o.species == c.species && kin > 0.6 {
+            let kin = Genome::kinship(&me.marker, &o.marker);
+            if o.species == me.species && kin > 0.6 {
                 p.kin_near += 1;
             }
-            let ratio = o.length() / my_len;
-            let hunter = ((o.genome.diet - 0.3) * 2.0).clamp(0.0, 1.0) * (ratio * 0.8).min(2.0);
-            let mut danger = hunter * (1.0 - kin);
-            if o.target == Some(c.id) && o.action == crate::creature::Action::Attacking {
+            let mut danger = if o.hunter > 0.0 { o.hunter * (o.len / my_len * 0.8).min(2.0) * (1.0 - kin) } else { 0.0 };
+            if o.striking == Some(me.id) {
                 danger += 1.0;
             }
-            let bond = c.mind.bond(o.id);
-            if bond < 0.0 {
-                danger -= bond;
+            if !c.mind.known.is_empty() {
+                let bond = c.mind.bond(o.id);
+                if bond < 0.0 {
+                    danger -= bond;
+                }
             }
             let level = danger * (1.0 - d / r);
             if level > p.threat_level {
                 p.threat_level = level;
                 p.threat = Some(j);
             }
-            if o.parent == Some(c.id) && o.maturity < 0.5 {
+            if o.young && o.parent == Some(me.id) {
                 young = young.max(1.0 - d / r);
             }
         });
@@ -98,27 +126,27 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         let mut best = 0.0f32;
         if mouth {
             let reach_alt = c.pos[2];
-            w.pgrid.near(c.pos[0], c.pos[2], r, |j| {
-                let pl = &w.plants[j];
-                let pp = [pl.x, pl.depth, pl.alt];
-                let top = pl.alt + pl.height();
-                if reach_alt > top + c.length() {
+            let herb = 1.0 - diet;
+            w.pgrid.near_any_alt(c.pos, r, |j| {
+                let Some(pl) = flora.get(j) else { return };
+                let pp = pl.pos;
+                if reach_alt > pl.top + my_len {
                     return;
                 }
-                let at = [pl.x, pl.depth, reach_alt.min(top).max(pl.alt)];
+                let at = [pp[0], pp[1], reach_alt.min(pl.top).max(pp[2])];
                 let d = dist3(c.pos, at);
                 if d > r {
                     return;
                 }
-                let taste = c.mind.taste(plant_bin(&pl.genome.look));
-                let s = (1.0 - diet) * (1.0 + taste) * (pl.matter + pl.fruit * 4.0).powf(0.3) / (d + 0.02);
+                let taste = c.mind.taste(pl.bin as usize);
+                let s = herb * (1.0 + taste) * pl.value / (d + 0.02);
                 if s > best {
                     best = s;
                     p.food = Some(Food::Plant(j));
                     p.food_pos = [pp[0], pp[1], at[2]];
                 }
             });
-            w.rgrid.near(c.pos[0], c.pos[2], r, |j| {
+            w.rgrid.near(c.pos, r, |j| {
                 let rm = &w.remains[j];
                 let d = dist3(c.pos, rm.pos);
                 if d > r {
@@ -134,7 +162,7 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                     p.food_pos = rm.pos;
                 }
             });
-            w.egrid.near(c.pos[0], c.pos[2], r, |j| {
+            w.egrid.near(c.pos, r, |j| {
                 let e = &w.eggs[j];
                 if e.mother == Some(c.id) {
                     return;
@@ -246,6 +274,26 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         }
         percepts[ci] = p;
     }
+}
+
+struct Glimpse {
+    pos: [f32; 3],
+    len: f32,
+    /// How much of a hunter it is, 0..1.
+    hunter: f32,
+    marker: [u8; 8],
+    species: u64,
+    id: crate::history::CreatureId,
+    striking: Option<crate::history::CreatureId>,
+    parent: Option<crate::history::CreatureId>,
+    young: bool,
+}
+
+struct Patch {
+    pos: [f32; 3],
+    top: f32,
+    bin: u8,
+    value: f32,
 }
 
 pub fn season_quarter(w: &World) -> usize {

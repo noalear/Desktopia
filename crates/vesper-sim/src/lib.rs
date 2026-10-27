@@ -30,4 +30,4 @@ mod think;
 pub mod world;
 
 pub use genome::Tissue;
-pub use sim::Sim;
+pub use sim::{PHASE_NAMES, PHASES, Sim};

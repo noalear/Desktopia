@@ -237,10 +237,13 @@ pub fn seed_reflexes(b: &mut BrainGenes) {
     set(i::READY, o::LAY, 1.4);
     set(i::BIAS, o::LAY, -0.5);
     set(i::BIAS, o::ATTACK, -1.2);
-    set(i::BIAS, o::SHARE, -0.8);
-    set(i::BIAS, o::GROOM, -0.8);
-    set(i::BIAS, o::GUARD, -0.6);
-    set(i::BIAS, o::SIGNAL, -0.6);
+    set(i::BIAS, o::SHARE, -1.5);
+    set(i::BIAS, o::GROOM, -1.5);
+    set(i::BIAS, o::GUARD, -1.2);
+    set(i::BIAS, o::SIGNAL, -1.2);
     set(i::HEAT, o::HOME, 0.5);
     set(i::OTHER_KIN, o::SEEK_OTHER, 0.4);
+    set(i::OTHER_KIN, o::ATTACK, -1.5);
+    set(i::OTHER_SIZE, o::ATTACK, -0.6);
+    set(i::OTHER_TASTE, o::ATTACK, 0.8);
 }

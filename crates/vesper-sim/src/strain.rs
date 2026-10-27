@@ -74,7 +74,7 @@ impl Strain {
             parent: None,
             origin_host: host,
             visible,
-            contagion: rng.range(0.02, 0.2),
+            contagion: rng.range(0.01, 0.1),
             ingestion: rng.range(0.1, 0.6),
             virulence: rng.range(-0.02, 0.25),
             growth: rng.range(0.003, 0.02),

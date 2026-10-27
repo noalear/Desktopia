@@ -114,11 +114,20 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
     let dmg = raw * (1.0 - (def.abil.armor + guard).min(0.9));
     att.action = Action::Attacking;
     att.target = Some(def.id);
+    // Fighting is hard work.
+    att.energy -= att.abil.upkeep * 2.0 * dt;
     // Spines hurt whatever bites them.
     let back = def.abil.spines * raw * 0.5 / att.matter.max(1e-4);
     att.health -= back;
     att.pain += back * 4.0;
     let frac = dmg / def.matter.max(1e-4);
+    // Anything with jaws bites back.
+    if def.pheno.has(Tissue::Mouth) && def.health > 0.3 {
+        let back = def.abil.bite * dt * 2.0 * (1.0 - att.abil.armor) / att.matter.max(1e-4);
+        att.health -= back * 1.2;
+        att.pain += back * 4.0;
+        att.reward -= (back * 4.0).min(0.5);
+    }
     def.health -= frac * 1.6;
     def.pain += frac * 6.0;
     def.bleeding += frac * 0.6;
@@ -161,6 +170,14 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
     }
     let killed = def.health <= 0.0 && def.doom.is_none();
     let guarding = def.action == Action::Guarding;
+    // Who it was standing over: its closest kin.
+    let defending = def
+        .mind
+        .known
+        .iter()
+        .filter(|a| a.kin && a.id != att.id)
+        .max_by(|a, b| a.bond.total_cmp(&b.bond))
+        .map(|a| a.id);
     let young_def = def.maturity < 0.35;
     let att_parent_of_def = def.parent == Some(att.id);
     let (att_id, att_species, att_diet, att_group, def_group) =
@@ -227,9 +244,9 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
             w.first(Behavior::Cannibalism, att_species, Some(att_id));
             DeathCause::Cannibalism { killer: att_id }
         }
-    } else if guarding {
+    } else if guarding && let Some(kin) = defending {
         w.first(Behavior::Sacrifice, def_species, Some(def_id));
-        DeathCause::Sacrifice { defending: def_id }
+        DeathCause::Sacrifice { defending: kin }
     } else {
         if att_diet > 0.35 {
             w.first(Behavior::Hunting, att_species, Some(att_id));
@@ -438,7 +455,7 @@ pub fn disease(w: &mut World, dt: f32) {
             let fit = s.fit(&c.genome.immune);
             let inf = &mut c.infections[k];
             inf.load += s.growth * dt * (0.2 + fit) * (1.0 - inf.load);
-            inf.load -= 0.003 * dt * (1.1 - fit) * c.health;
+            inf.load -= 0.006 * dt * (1.1 - fit) * c.health;
             let load = inf.load;
             c.energy -= s.virulence * load * c.matter.powf(0.75) * dt * 0.6;
             c.energy += s.photosynthetic * load * light * c.matter * 0.04 * dt;
@@ -479,7 +496,7 @@ pub fn disease(w: &mut World, dt: f32) {
             continue;
         }
         let r = c.length() + 0.01;
-        w.cgrid.near(c.pos[0], c.pos[2], r, |j| {
+        w.cgrid.near(c.pos, r, |j| {
             if j != ci && dist3(c.pos, w.creatures[j].pos) < r + w.creatures[j].length() * 0.5 {
                 pairs.push((ci, j));
             }
@@ -501,7 +518,7 @@ pub fn disease(w: &mut World, dt: f32) {
         }
         if let Some(slot) = w.strain_slot(sp.strain) {
             let mut hit = Vec::new();
-            w.cgrid.near(sp.pos[0], sp.pos[2], 0.04, |j| {
+            w.cgrid.near(sp.pos, 0.04, |j| {
                 if dist3(sp.pos, w.creatures[j].pos) < 0.04 {
                     hit.push(j);
                 }
