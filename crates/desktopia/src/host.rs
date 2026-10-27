@@ -23,6 +23,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, w};
 
 const WM_TRAY: u32 = WM_APP + 1;
+/// Sent by a newer copy that is starting up.
+pub const WM_QUIT_REQUEST: u32 = WM_APP + 2;
 const CMD_PAUSE: u32 = 1;
 const CMD_AUTOSTART: u32 = 2;
 const CMD_QUIT: u32 = 3;
@@ -173,6 +175,10 @@ fn copy_wide(dst: &mut [u16], s: &str) {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let taskbar_created = TASKBAR_CREATED.with(|t| *t.borrow());
     match msg {
+        WM_QUIT_REQUEST => {
+            push(Event::Quit);
+            LRESULT(0)
+        }
         WM_TRAY => {
             let mouse = (lp.0 & 0xffff) as u32;
             if mouse == WM_RBUTTONUP || mouse == WM_CONTEXTMENU || mouse == WM_LBUTTONUP {

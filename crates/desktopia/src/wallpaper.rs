@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use crate::desktop::{self, Monitor, WallpaperWindow};
-use raw_window_handle::{RawWindowHandle, Win32WindowHandle};
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 use std::num::NonZeroIsize;
 use vesper_render::{Output, OutputConfig, OutputMode, Renderer, WorldView};
 use windows::Win32::Foundation::HWND;
@@ -196,7 +196,7 @@ fn create_surface(instance: &wgpu::Instance, hwnd: HWND) -> Result<wgpu::Surface
     // SAFETY: the window outlives the surface; `Screen` drops the surface first.
     unsafe {
         instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-            raw_display_handle: None,
+            raw_display_handle: Some(RawDisplayHandle::Windows(WindowsDisplayHandle::new())),
             raw_window_handle: RawWindowHandle::Win32(handle),
         })
     }

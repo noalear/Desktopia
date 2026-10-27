@@ -1,30 +1,57 @@
 //! Process-wide setup: one instance only, low priority, DPI awareness, and the
 //! Start with Windows switch.
 
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LPARAM, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    WPARAM,
+};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW,
     RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, SetPriorityClass,
-    SetProcessInformation,
+    BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, OpenProcess,
+    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    PROCESS_TERMINATE, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, TerminateProcess,
+    WaitForSingleObject,
 };
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW};
 use windows::core::{HSTRING, PCWSTR, w};
 
 /// Holds the single-instance mutex for the life of the process.
 pub struct Instance(#[allow(dead_code)] HANDLE);
 
-/// None if Desktopia is already running.
+/// Makes this the only running copy. A copy that is already running is asked
+/// to quit, and stopped if it doesn't, so starting a new build replaces the old.
 pub fn single_instance() -> Option<Instance> {
     unsafe {
         let h = CreateMutexW(None, true, w!("Local\\Desktopia.Vesper")).ok()?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            return None;
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return Some(Instance(h));
         }
-        Some(Instance(h))
+        log::info!("another copy is running; replacing it");
+        if let Ok(old) = FindWindowW(w!("DesktopiaHost"), PCWSTR::null()) {
+            let _ = PostMessageW(Some(old), crate::host::WM_QUIT_REQUEST, WPARAM(0), LPARAM(0));
+            if WaitForSingleObject(h, 5000) == WAIT_TIMEOUT {
+                // Builds from before WM_QUIT_REQUEST don't know the message.
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(old, Some(&mut pid));
+                if pid != 0
+                    && let Ok(p) = OpenProcess(PROCESS_TERMINATE, false, pid)
+                {
+                    let _ = TerminateProcess(p, 0);
+                    let _ = CloseHandle(p);
+                }
+            } else {
+                return Some(Instance(h));
+            }
+        }
+        // An abandoned mutex counts as acquired.
+        match WaitForSingleObject(h, 5000) {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Some(Instance(h)),
+            _ => None,
+        }
     }
 }
 

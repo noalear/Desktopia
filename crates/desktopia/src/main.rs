@@ -92,6 +92,7 @@ mod app {
             next_frame: Instant::now(),
             autostart: system::autostart_enabled(),
             last_tip: String::new(),
+            force_frame: false,
         };
         app.sync_menu();
         app.run(timer);
@@ -120,6 +121,9 @@ mod app {
         next_frame: Instant,
         autostart: bool,
         last_tip: String,
+        /// Draw every monitor once even if the governor says rest, so a fresh
+        /// wallpaper never shows an empty window.
+        force_frame: bool,
     }
 
     impl App {
@@ -218,6 +222,7 @@ mod app {
                         self.wallpaper = Some(w);
                         self.failures = 0;
                         self.governor.poke();
+                        self.force_frame = true;
                     }
                     Err(e) => {
                         // Explorer may still be starting; back off and try again.
@@ -252,15 +257,16 @@ mod app {
                 self.host.set_tooltip(&tip);
                 self.last_tip = tip;
             }
-            if decision.fps == 0 {
+            let force = std::mem::take(&mut self.force_frame);
+            if decision.fps == 0 && !force {
                 return 0;
             }
 
             let now = Instant::now();
-            if now < self.next_frame {
+            if now < self.next_frame && !force {
                 return decision.fps;
             }
-            let interval = Duration::from_secs_f64(1.0 / decision.fps as f64);
+            let interval = Duration::from_secs_f64(1.0 / decision.fps.max(1) as f64);
             self.next_frame += interval;
             if self.next_frame < now {
                 self.next_frame = now + interval;
@@ -277,7 +283,7 @@ mod app {
             };
             let mut lost = false;
             for i in 0..wallpaper.screens.len() {
-                if decision.visible.get(i).copied().unwrap_or(true)
+                if (force || decision.visible.get(i).copied().unwrap_or(true))
                     && let Presented::Lost = wallpaper.present(gpu, i, &world)
                 {
                     lost = true;
