@@ -5,7 +5,7 @@ use crate::widgets::*;
 use eframe::egui::{self, Color32, RichText, Ui, vec2};
 use std::collections::BTreeSet;
 use vesper_chronicle::history::{CauseKind, Species, plural};
-use vesper_chronicle::names::{self, capital, describe, region, span};
+use vesper_chronicle::names::{self, capital, describe, place, region, span};
 use vesper_chronicle::{CreatureId, GroupId, History, Kind, Kingdom, Ref, SpeciesId, StrainId};
 
 pub struct PageState {
@@ -184,7 +184,7 @@ fn happening(ui: &mut Ui, nav: &mut Nav, h: &History) {
                 link(ui, nav, group_name(h, w.b), Ref::Group(w.b));
             });
             ui.label(
-                RichText::new(format!("{} dead in {} so far, in {}.", w.deaths, span(h.now - w.began), region(w.x)))
+                RichText::new(format!("{} dead in {} so far, in {}.", w.deaths, span(h.now - w.began), place(w.x)))
                     .small()
                     .color(DIM),
             );
@@ -334,6 +334,7 @@ pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState)
     let mut list: Vec<&Species> = h
         .species
         .values()
+        .filter(|s| crate::tree::remembered(h, s))
         .filter(|s| match st.species_filter {
             SpeciesFilter::Living => s.alive(),
             SpeciesFilter::Extinct => !s.alive(),
@@ -633,7 +634,7 @@ pub fn peoples(ui: &mut Ui, nav: &mut Nav, h: &History) {
                 None => ui.label(format!("{} members", g.members)),
                 Some(t) => ui.label(RichText::new(format!("gone since {}", when(t))).color(FAINT)),
             };
-            ui.label(RichText::new(region((g.x[0] + g.x[1]) / 2.0)).small().color(DIM));
+            ui.label(RichText::new(place((g.x[0] + g.x[1]) / 2.0)).small().color(DIM));
             ui.end_row();
         }
     });
@@ -665,7 +666,7 @@ fn group_page(ui: &mut Ui, nav: &mut Nav, h: &History, id: GroupId) {
         link(ui, nav, plural(&species_name(h, g.species)), Ref::Species(g.species));
     });
     let status = match g.gone {
-        None => format!("{} members, {} at most. Formed {}, ranging over {}.", g.members, g.peak, when(g.formed), region((g.x[0] + g.x[1]) / 2.0)),
+        None => format!("{} members, {} at most. Formed {}, ranging over {}.", g.members, g.peak, when(g.formed), place((g.x[0] + g.x[1]) / 2.0)),
         Some(t) => format!("Gone since {}, after {}. It numbered {} at most.", when(t), span(t - g.formed), g.peak),
     };
     ui.label(RichText::new(status).color(if g.gone.is_none() { TEAL } else { FAINT }));
@@ -722,7 +723,7 @@ fn war_page(ui: &mut Ui, nav: &mut Nav, h: &History, i: usize) {
         tile(ui, &span(lasted), if w.ended.is_some() { "long" } else { "so far" }, AMBER);
     });
     ui.add_space(6.0);
-    ui.label(RichText::new(format!("Began {} in {}.", when(w.began), region(w.x))).color(DIM));
+    ui.label(RichText::new(format!("Began {} in {}.", when(w.began), place(w.x))).color(DIM));
     if let Some(o) = &w.outcome {
         paragraph(ui, nav, h, &format!("It ended in {o}."), serif(16.0), TEXT);
     }

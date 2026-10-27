@@ -5,12 +5,17 @@
 use crate::facts::*;
 use crate::names::{self, mix};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Life whose notability passes this gets a biography.
-pub const NOTABLE: f32 = 15.0;
-/// A notable death gets its own line in the annals past this.
-const NOTABLE_DEATH: f32 = 25.0;
+pub const NOTABLE: f32 = 22.0;
+/// A notable death gets its own line in the annals past this, at the least.
+/// Each such line raises the bar by `DEATH_BAR_STEP`, and the bar sinks back
+/// over `DEATH_BAR_EASE` seconds, so a massacre is told through its most
+/// remarkable dead rather than all of them.
+const NOTABLE_DEATH: f32 = 30.0;
+const DEATH_BAR_STEP: f32 = 6.0;
+const DEATH_BAR_EASE: f64 = 2.0 * 3600.0;
 /// At most this many biographies are kept; the least notable dead go first.
 const MAX_NOTABLES: usize = 400;
 /// Deaths between two groups, inside `FEUD_WINDOW`, that make a war.
@@ -21,8 +26,13 @@ const PEACE_AFTER: f64 = 3600.0;
 /// Share of a host species infected that makes an outbreak, and that ends one.
 const OUTBREAK_START: f32 = 0.15;
 const OUTBREAK_END: f32 = 0.03;
-/// Members that make a group worth writing about.
-const GROUP_NOTABLE: u32 = 12;
+/// Members, and age in seconds, that make a group worth writing about.
+const GROUP_NOTABLE: u32 = 30;
+const GROUP_SETTLE: f64 = 600.0;
+/// A new species is written about once it numbers this many, or has lasted
+/// `SPECIES_SETTLE` seconds; most branches die out within moments.
+const SPECIES_NOTABLE: u32 = 20;
+const SPECIES_SETTLE: f64 = 1800.0;
 /// Censuses of population kept per species for spotting famines.
 const FAMINE_WINDOW: usize = 20;
 /// Time a new species must hold the most biomass before an era changes.
@@ -31,15 +41,16 @@ const ERA_HOLD: f64 = 6.0 * 3600.0;
 /// How much a life stands out. The simulation can use it to choose a census's
 /// standouts; past [`NOTABLE`] the chronicle keeps a biography.
 pub fn notability(life: &Life) -> f32 {
-    let mut score = life.kills as f32 * 1.5
-        + (life.offspring as f32).sqrt() * 2.0
-        + life.scars as f32
-        + life.kindness as f32 * 0.5
-        + life.rank.max(0.0) * 2.0
-        // Long lives matter, but only beyond a few hours.
-        + (life.age / 3600.0).min(10.0);
+    // Deeds count with diminishing returns: the hundredth kill matters less
+    // than the tenth. Kindness is counted per moment of sharing, so it runs high.
+    let mut score = 4.0 * (life.kills as f32).ln_1p()
+        + 3.0 * (life.offspring as f32).ln_1p()
+        + 2.0 * life.scars as f32
+        + 1.5 * (life.kindness as f32 / 50.0).ln_1p()
+        + 3.0 * life.rank.max(0.0)
+        + 3.0 * (life.age / 600.0).ln_1p();
     if life.is_leader {
-        score += 8.0;
+        score += 6.0;
     }
     score
 }
@@ -263,6 +274,9 @@ pub struct Species {
     pub predators: BTreeMap<SpeciesId, u32>,
     /// Steps from a founding species.
     pub depth: u32,
+    /// Whether the annals have told of its origin yet.
+    #[serde(default)]
+    pub announced: bool,
     last_death: Option<(CreatureId, DeathCause, f32)>,
     recent: VecDeque<u32>,
     starved: u32,
@@ -384,7 +398,7 @@ pub struct History {
     pub groups: BTreeMap<GroupId, Group>,
     pub strains: BTreeMap<StrainId, Strain>,
     pub notables: BTreeMap<CreatureId, Notable>,
-    /// Every name ever given, kept after a biography is dropped.
+    /// Names given, kept after a biography is dropped while the annals mention them.
     pub names: BTreeMap<CreatureId, String>,
     pub outbreaks: Vec<Outbreak>,
     pub wars: Vec<War>,
@@ -400,6 +414,12 @@ pub struct History {
     genera: BTreeMap<String, Traits>,
     feuds: Vec<Feud>,
     era_rival: Option<(SpeciesId, f64)>,
+    /// Creatures the annals mention, whose names must stay.
+    #[serde(default)]
+    cited: BTreeSet<CreatureId>,
+    /// The notability a death needs for its own line, and when it was set.
+    #[serde(default)]
+    death_bar: (f32, f64),
 }
 
 /// A run of entry text: plain words, or a link to something.
@@ -502,6 +522,16 @@ impl History {
     }
 
     fn write(&mut self, kind: Kind, weight: u8, title: String, text: String, refs: Vec<Ref>) {
+        for r in &refs {
+            if let Ref::Creature(c) = r {
+                self.cited.insert(*c);
+            }
+        }
+        for token in text.split("{c:").skip(1) {
+            if let Some(id) = token.split('}').next().and_then(|n| n.parse().ok()) {
+                self.cited.insert(CreatureId(id));
+            }
+        }
         self.entries.push(Entry { tick: self.now, wall: self.wall, kind, weight, title, text, refs });
     }
 
@@ -529,7 +559,6 @@ impl History {
                 g
             }
         };
-        let new_genus = parent_rec.is_some_and(|p| p.genus != genus);
         let depth = parent_rec.map_or(0, |p| p.depth + 1);
         let mut variant = 0;
         let common = loop {
@@ -559,35 +588,48 @@ impl History {
             prey: BTreeMap::new(),
             predators: BTreeMap::new(),
             depth,
+            announced: parent.is_none(),
             last_death: None,
             recent: VecDeque::new(),
             starved: 0,
             famine_until: 0.0,
         };
-        let region = names::region(t.zone);
-        let (title, text, weight) = match parent.and_then(|p| self.species.get(&p)) {
-            Some(p) => {
-                let diff = names::difference(t, &p.traits);
-                let title = format!("The {} appear", plural(&rec.common));
-                let mut text = format!("{} branched off from {} in {region}: {diff}.", sps(id), sps(p.id));
-                if new_genus {
-                    text.push_str(" Different enough to start a new genus.");
-                }
-                (title, text, if new_genus { 2 } else { 1 })
-            }
-            None => (
-                format!("The {} take hold", plural(&rec.common)),
-                format!("{} are among the first life on Vesper, found in {region}.", sps(id)),
-                1,
-            ),
-        };
         if let Some(p) = parent.and_then(|p| self.species.get_mut(&p)) {
             p.children.push(id);
         }
+        let first = parent.is_none();
         self.species.insert(id, rec);
-        let mut refs = vec![Ref::Species(id)];
-        refs.extend(parent.map(Ref::Species));
-        self.write(Kind::Origin, weight, title, text, refs);
+        if first {
+            let s = &self.species[&id];
+            let title = format!("The {} take hold", plural(&s.common));
+            let text =
+                format!("{} are among the first life on Vesper, found in {}.", sps(id), names::region(t.zone));
+            self.write(Kind::Origin, 1, title, text, vec![Ref::Species(id)]);
+        }
+    }
+
+    /// Tells of a branch of life once it has taken hold.
+    fn announce(&mut self, id: SpeciesId) {
+        let Some(s) = self.species.get_mut(&id) else { return };
+        s.announced = true;
+        let Some(p) = s.parent.and_then(|p| self.species.get(&p)) else { return };
+        let s = &self.species[&id];
+        let diff = names::difference(&s.founding, &p.traits);
+        let new_genus = p.genus != s.genus;
+        let title = format!("The {} appear", plural(&s.common));
+        let mut text = format!(
+            "{} branched off from {} in {} {} ago: {diff}.",
+            sps(id),
+            sps(p.id),
+            names::region(s.founding.zone),
+            names::span(self.now - s.arose)
+        );
+        if new_genus {
+            text.push_str(" Different enough to start a new genus.");
+        }
+        text.push_str(&format!(" They have taken hold and number {}.", s.count));
+        let refs = vec![Ref::Species(id), Ref::Species(p.id)];
+        self.write(Kind::Origin, if new_genus { 2 } else { 1 }, title, text, refs);
     }
 
     fn species_extinct(&mut self, id: SpeciesId) {
@@ -599,6 +641,9 @@ impl History {
         s.extinct = Some(now);
         s.count = 0;
         s.population.push(now, 0.0);
+        if !s.announced {
+            return;
+        }
         let lasted = names::span(now - s.arose);
         let peak = s.peak;
         let last = s.last_death;
@@ -607,7 +652,7 @@ impl History {
         let common = s.common.clone();
         let living_kids = children.iter().filter(|c| self.species.get(c).is_some_and(|c| c.alive())).count();
         let mut text = match last {
-            Some((_, cause, x)) => format!("The last {} {}. ", sp(id), self.cause_phrase(&cause, x)),
+            Some((who, cause, x)) => format!("The last {} {}. ", sp(id), self.cause_phrase(who, &cause, x)),
             None => format!("The last {} is gone. ", sp(id)),
         };
         text.push_str(&format!("The species ({latin}) lasted {lasted} and numbered {peak} at its height. "));
@@ -635,8 +680,8 @@ impl History {
     }
 
     /// "was torn apart by a lantern stalker", with links.
-    fn cause_phrase(&self, cause: &DeathCause, x: f32) -> String {
-        let named = |c: CreatureId| self.names.contains_key(&c);
+    fn cause_phrase(&self, who: CreatureId, cause: &DeathCause, x: f32) -> String {
+        let named = |c: CreatureId| c != who && self.names.contains_key(&c);
         match *cause {
             DeathCause::Predation { killer, killer_species } if named(killer) => {
                 format!("was torn apart and eaten by {}, {}", cr(killer), asp(killer_species))
@@ -663,8 +708,8 @@ impl History {
             DeathCause::Disease { strain } => format!("wasted away from {}", st(strain)),
             DeathCause::Parasite { strain } => format!("was eaten from the inside by {}", st(strain)),
             DeathCause::Age => "died of old age".into(),
-            DeathCause::Heat => format!("cooked in the glare of {}", names::region(x)),
-            DeathCause::Cold => format!("froze in {}", names::region(x)),
+            DeathCause::Heat => format!("died of the heat in {}", names::place(x)),
+            DeathCause::Cold => format!("froze to death in {}", names::place(x)),
             DeathCause::Trap { plant_species } => format!("was caught and slowly digested by {}", asp(plant_species)),
             DeathCause::Lava => "was burned alive by lava".into(),
             DeathCause::Lightning => "was struck dead by lightning".into(),
@@ -672,34 +717,64 @@ impl History {
         }
     }
 
-    fn death(&mut self, who: CreatureId, species: SpeciesId, cause: &DeathCause, life: &Life) {
-        self.deaths += 1;
+    /// Whether a death is too ordinary to name: the creature never stood out
+    /// and doesn't in death either. These only change counts, so the log keeps
+    /// them as a [`Tally`] instead of a line each.
+    pub fn is_routine(&self, who: CreatureId, life: &Life) -> bool {
+        !self.notables.contains_key(&who) && notability(life) < NOTABLE + 4.0
+    }
+
+    /// Applies a batch of routine deaths, exactly as applying each would.
+    pub fn apply_tally(&mut self, tick: f64, wall: f64, tally: &Tally) {
+        if self.began_wall == 0.0 {
+            self.began_wall = wall;
+        }
+        self.now = self.now.max(tick);
+        self.wall = self.wall.max(wall);
+        for &(species, cause, n) in &tally.counts {
+            self.count_deaths(species, &cause, n);
+        }
+        for &(species, who, cause, x) in &tally.last {
+            if let Some(s) = self.species.get_mut(&species) {
+                s.last_death = Some((who, cause, x));
+            }
+        }
+    }
+
+    fn count_deaths(&mut self, species: SpeciesId, cause: &DeathCause, n: u32) {
+        self.deaths += n as u64;
         let kind = CauseKind::of(cause);
         if let Some(s) = self.species.get_mut(&species) {
-            *s.deaths.entry(kind).or_default() += 1;
-            s.last_death = Some((who, *cause, life.x));
+            *s.deaths.entry(kind).or_default() += n;
             if kind == CauseKind::Starvation {
-                s.starved += 1;
+                s.starved += n;
             }
         }
         match *cause {
             DeathCause::Predation { killer_species, .. } => {
                 if let Some(k) = self.species.get_mut(&killer_species) {
-                    *k.prey.entry(species).or_default() += 1;
+                    *k.prey.entry(species).or_default() += n;
                 }
                 if let Some(s) = self.species.get_mut(&species) {
-                    *s.predators.entry(killer_species).or_default() += 1;
+                    *s.predators.entry(killer_species).or_default() += n;
                 }
             }
             DeathCause::Disease { strain } | DeathCause::Parasite { strain } => {
                 if let Some(s) = self.strains.get_mut(&strain) {
-                    s.deaths += 1;
+                    s.deaths += n;
                     if let Some(o) = s.outbreak.and_then(|i| self.outbreaks.get_mut(i)) {
-                        o.deaths += 1;
+                        o.deaths += n;
                     }
                 }
             }
             _ => {}
+        }
+    }
+
+    fn death(&mut self, who: CreatureId, species: SpeciesId, cause: &DeathCause, life: &Life) {
+        self.count_deaths(species, cause, 1);
+        if let Some(s) = self.species.get_mut(&species) {
+            s.last_death = Some((who, *cause, life.x));
         }
 
         let score = notability(life);
@@ -722,11 +797,15 @@ impl History {
 
         let other_named = other_party(cause).is_some_and(|c| self.names.contains_key(&c));
         let led_a_people = life.is_leader && life.group.and_then(|g| self.groups.get(&g)).is_some_and(|g| g.notable);
-        if score < NOTABLE_DEATH && !(led_a_people && score >= NOTABLE + 5.0) && !other_named {
+        // Leaders of peoples and those tied to a named creature need less.
+        let bar = self.death_bar();
+        let bonus = if led_a_people || other_named { 8.0 } else { 0.0 };
+        if score + bonus < bar {
             self.trim_notables();
             return;
         }
-        let phrase = self.cause_phrase(cause, life.x);
+        self.death_bar = (bar + DEATH_BAR_STEP, now);
+        let phrase = self.cause_phrase(who, cause, life.x);
         let mut text = format!("{}, {title}, {phrase}. ", cr(who));
         text.push_str(&format!("It lived {}", names::span(life.age as f64)));
         let mut deeds = Vec::new();
@@ -751,7 +830,7 @@ impl History {
         }
         let weight = match score {
             s if s >= 50.0 => 3,
-            s if s >= 30.0 => 2,
+            s if s >= 40.0 => 2,
             _ => 1,
         };
         let mut refs = vec![Ref::Creature(who), Ref::Species(species)];
@@ -788,6 +867,13 @@ impl History {
         );
     }
 
+    /// The bar a death must clear now: raised by each death written, easing back.
+    fn death_bar(&self) -> f32 {
+        let (bar, set) = self.death_bar;
+        let above = (bar - NOTABLE_DEATH).max(0.0);
+        NOTABLE_DEATH + above * (-(self.now - set) / DEATH_BAR_EASE).exp() as f32
+    }
+
     fn trim_notables(&mut self) {
         while self.notables.len() > MAX_NOTABLES {
             let worst = self.notables.values().filter(|n| n.died.is_some()).min_by(|a, b| a.score.total_cmp(&b.score));
@@ -795,6 +881,9 @@ impl History {
                 Some(w) => {
                     let id = w.id;
                     self.notables.remove(&id);
+                    if !self.cited.contains(&id) {
+                        self.names.remove(&id);
+                    }
                 }
                 None => break,
             }
@@ -809,7 +898,7 @@ impl History {
             n += 1;
             name = names::group_name(id.0 ^ (n << 36), traits);
         }
-        let zone = traits.map_or(0.5, |t| t.zone);
+        let zone = traits.map_or(0.5, |t| t.zone) * names::WORLD_W;
         let (dialect, signals) =
             parent.and_then(|p| self.groups.get(&p)).map_or((0, [0; 4]), |p| (p.dialect, p.signals));
         self.groups.insert(
@@ -891,13 +980,13 @@ impl History {
                     "{} fell on {} in {}. {deaths} died. The war has now cost {} lives.",
                     gr(attacker),
                     gr(defender),
-                    names::region(x),
+                    names::place(x),
                     self.wars[wi].deaths
                 );
                 self.write(
                     Kind::War,
                     2,
-                    format!("Battle in {}", names::region(x)),
+                    format!("Battle in {}", names::place(x)),
                     text,
                     vec![Ref::War(wi), Ref::Group(attacker), Ref::Group(defender)],
                 );
@@ -952,7 +1041,7 @@ impl History {
         });
         let wi = self.wars.len() - 1;
         let mut text =
-            format!("{} and {} are at war in {}. {} have died already.", gr(f.a), gr(f.b), names::region(x), f.deaths);
+            format!("{} and {} are at war in {}. {} have died already.", gr(f.a), gr(f.b), names::place(x), f.deaths);
         if kin {
             text.push_str(" They were one people once.");
         } else if !same_species {
@@ -971,7 +1060,7 @@ impl History {
         if strength < 0.25 {
             return;
         }
-        let region = names::region(x);
+        let region = names::place(x);
         let seed = mix(self.now.to_bits());
         let (title, text) = match event {
             NatureKind::Eruption => (
@@ -1183,11 +1272,25 @@ impl History {
                 s.starved = s.starved.saturating_sub(s.starved / FAMINE_WINDOW as u32 + 1);
             }
         }
+        let ready: Vec<SpeciesId> = self
+            .species
+            .values()
+            .filter(|s| {
+                !s.announced
+                    && s.alive()
+                    && s.count > 0
+                    && (s.count >= SPECIES_NOTABLE || now - s.arose >= SPECIES_SETTLE)
+            })
+            .map(|s| s.id)
+            .collect();
+        for id in ready {
+            self.announce(id);
+        }
         for (id, high, now_count, starved, x) in famines {
             let text = format!(
                 "Hunger came to the {} in {}. They fell from {high} to {now_count}; {starved} starved.",
                 sps(id),
-                names::region(x)
+                names::place(x)
             );
             let weight = if now_count * 3 < high { 3 } else { 2 };
             let title = format!("Famine among the {}", plural(&self.common(id)));
@@ -1205,7 +1308,7 @@ impl History {
             g.dialect = gc.dialect;
             g.signals = gc.signals;
             let mut news = Vec::new();
-            if !g.notable && gc.members >= GROUP_NOTABLE {
+            if !g.notable && gc.members >= GROUP_NOTABLE && now - g.formed >= GROUP_SETTLE {
                 g.notable = true;
                 news.push(match g.parent {
                     Some(p) => (
@@ -1533,12 +1636,57 @@ impl History {
         match (n.died, n.cause) {
             (Some(_), Some(cause)) => s.push_str(&format!(
                 "It {} at the age of {}.",
-                self.cause_phrase(&cause, l.x),
+                self.cause_phrase(n.id, &cause, l.x),
                 names::span(l.age as f64)
             )),
-            _ => s.push_str(&format!("Alive at {}, in {}.", names::span(l.age as f64), names::region(l.x))),
+            _ => s.push_str(&format!("Alive at {}, in {}.", names::span(l.age as f64), names::place(l.x))),
         }
         s
+    }
+}
+
+/// Routine deaths counted together: how many of each species died of each
+/// cause, and the last of them per species, which an extinction may name.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Tally {
+    /// Causes with the creatures in them left out; counts don't need them.
+    pub counts: Vec<(SpeciesId, DeathCause, u32)>,
+    pub last: Vec<(SpeciesId, CreatureId, DeathCause, f32)>,
+}
+
+impl Tally {
+    pub fn add(&mut self, who: CreatureId, species: SpeciesId, cause: DeathCause, x: f32) {
+        let key = faceless(cause);
+        match self.counts.iter_mut().find(|(s, c, _)| *s == species && *c == key) {
+            Some(row) => row.2 += 1,
+            None => self.counts.push((species, key, 1)),
+        }
+        match self.last.iter_mut().find(|l| l.0 == species) {
+            Some(l) => *l = (species, who, cause, x),
+            None => self.last.push((species, who, cause, x)),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.counts.is_empty()
+    }
+
+    pub fn deaths(&self) -> u32 {
+        self.counts.iter().map(|c| c.2).sum()
+    }
+}
+
+/// A cause of death with the individual creatures blanked out.
+fn faceless(c: DeathCause) -> DeathCause {
+    let nobody = CreatureId(0);
+    match c {
+        DeathCause::Predation { killer_species, .. } => DeathCause::Predation { killer: nobody, killer_species },
+        DeathCause::Cannibalism { .. } => DeathCause::Cannibalism { killer: nobody },
+        DeathCause::Infanticide { .. } => DeathCause::Infanticide { killer: nobody },
+        DeathCause::Violence { by_group, .. } => DeathCause::Violence { by_group, killer: nobody },
+        DeathCause::Sacrifice { .. } => DeathCause::Sacrifice { defending: nobody },
+        DeathCause::Devoured { .. } => DeathCause::Devoured { by_offspring: nobody },
+        other => other,
     }
 }
 
@@ -1594,12 +1742,12 @@ fn behavior_word(b: Behavior) -> &'static str {
 /// The title a life has earned. Keeps `old` unless something now stands out more.
 fn title_for(l: &Life, old: &str) -> String {
     let mut options: Vec<(f32, &str)> = vec![
-        (l.kills as f32 / 3.0, if l.kills >= 20 { "the Devourer" } else { "the Hunter" }),
-        ((l.offspring as f32).sqrt() / 3.0, if l.offspring >= 50 { "Root of Many" } else { "the Prolific" }),
+        (l.kills as f32 / 25.0, if l.kills >= 100 { "the Devourer" } else { "the Hunter" }),
+        (l.offspring as f32 / 10.0, if l.offspring >= 40 { "Root of Many" } else { "the Prolific" }),
         (l.scars as f32 / 3.0, "the Scarred"),
-        (l.kindness as f32 / 6.0, "the Generous"),
+        (l.kindness as f32 / 1000.0, "the Generous"),
         (l.rank / 2.0, "the Dominant"),
-        (l.age / 4.0 / 3600.0, "the Old"),
+        (l.age / 1200.0, "the Old"),
     ];
     if l.is_leader {
         options.push((2.0, "the Leader"));
@@ -1648,6 +1796,9 @@ mod tests {
         let mut h = History::default();
         h.apply(0.0, 1.0, &Fact::SpeciesArose { id: SpeciesId(1), parent: None, traits: traits(0.5) });
         h.apply(10.0, 2.0, &Fact::SpeciesArose { id: SpeciesId(2), parent: Some(SpeciesId(1)), traits: traits(0.9) });
+        let count = |n| SpeciesCensus { id: SpeciesId(2), count: n, biomass: 1.0, mean_x: 1.0, traits: traits(0.9) };
+        h.apply(15.0, 2.5, &Fact::Census(Census { species: vec![count(25)], ..census() }));
+        assert!(h.entries.iter().any(|e| e.kind == Kind::Origin && e.refs[0] == Ref::Species(SpeciesId(2))));
         h.apply(
             20.0,
             3.0,
@@ -1665,6 +1816,17 @@ mod tests {
         assert!(text.contains("torn apart"), "{text}");
         assert_eq!(h.species[&SpeciesId(1)].prey[&SpeciesId(2)], 1);
         assert_eq!(h.lineage(SpeciesId(2)), vec![SpeciesId(1)]);
+    }
+
+    #[test]
+    fn branches_that_die_at_once_go_untold() {
+        let mut h = History::default();
+        h.apply(0.0, 1.0, &Fact::SpeciesArose { id: SpeciesId(1), parent: None, traits: traits(0.5) });
+        let told = h.entries.len();
+        h.apply(10.0, 2.0, &Fact::SpeciesArose { id: SpeciesId(2), parent: Some(SpeciesId(1)), traits: traits(0.9) });
+        h.apply(30.0, 3.0, &Fact::SpeciesExtinct { id: SpeciesId(2) });
+        assert_eq!(h.entries.len(), told);
+        assert!(!h.species[&SpeciesId(2)].alive());
     }
 
     #[test]

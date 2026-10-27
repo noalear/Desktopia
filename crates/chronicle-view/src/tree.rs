@@ -24,9 +24,16 @@ impl Default for TreeState {
 }
 
 /// Species in tree order: each followed by its descendants, oldest branch first.
+/// Whether a species belongs on the page: it lives, the annals told of it, or
+/// it leads to one that does. Branches that died within moments are left out.
+pub fn remembered(h: &History, s: &Species) -> bool {
+    s.alive() || s.announced || s.children.iter().filter_map(|c| h.species.get(c)).any(|c| remembered(h, c))
+}
+
 fn order(h: &History, st: &TreeState) -> Vec<SpeciesId> {
     let keep = |s: &Species| {
         (st.extinct || s.alive())
+            && remembered(h, s)
             && match s.traits.kingdom {
                 Kingdom::Rooted => st.plants,
                 Kingdom::Motile => st.creatures,

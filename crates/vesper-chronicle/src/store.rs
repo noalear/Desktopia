@@ -5,9 +5,13 @@
 //! snapshot's generation. A checkpoint writes a new snapshot and starts an empty
 //! log, so the log stays short and loading stays fast. Writes happen on a
 //! background thread so the simulation never waits on the disk.
+//!
+//! The simulation reports many deaths a second, nearly all of them unremarkable.
+//! Those are logged as one [`Tally`] line before the next fact that matters,
+//! and the log checkpoints itself once it grows past [`LOG_LIMIT`].
 
 use crate::facts::Fact;
-use crate::history::History;
+use crate::history::{History, Tally};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -18,19 +22,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SNAPSHOT: &str = "snapshot.json";
 const VERSION: u32 = 1;
+/// A log this big is folded into a new snapshot.
+pub const LOG_LIMIT: u64 = 4 << 20;
 
+/// One log line: a fact, or a tally of routine deaths.
 #[derive(Serialize)]
 struct RecordOut<'a> {
     tick: f64,
     wall: f64,
-    fact: &'a Fact,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fact: Option<&'a Fact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tally: Option<&'a Tally>,
 }
 
 #[derive(Deserialize)]
 struct RecordIn {
     tick: f64,
     wall: f64,
-    fact: Fact,
+    #[serde(default)]
+    fact: Option<Fact>,
+    #[serde(default)]
+    tally: Option<Tally>,
 }
 
 #[derive(Serialize)]
@@ -81,7 +94,14 @@ fn replay(history: &mut History, bytes: &[u8], until: Option<f64>) -> (usize, bo
         if !line.is_empty() {
             match serde_json::from_slice::<RecordIn>(line) {
                 Ok(r) if until.is_some_and(|t| r.tick > t) => return (used, true),
-                Ok(r) => history.apply(r.tick, r.wall, &r.fact),
+                Ok(r) => {
+                    if let Some(t) = &r.tally {
+                        history.apply_tally(r.tick, r.wall, t);
+                    }
+                    if let Some(f) = &r.fact {
+                        history.apply(r.tick, r.wall, f);
+                    }
+                }
                 Err(e) => log::warn!("skipping a chronicle line: {e}"),
             }
         }
@@ -181,12 +201,25 @@ pub struct Chronicle {
     dir: Option<PathBuf>,
     generation: u64,
     writer: Option<Writer>,
+    /// Routine deaths not yet written, and the tick of the latest.
+    tally: Tally,
+    tally_tick: f64,
+    /// Bytes in the current log.
+    logged: u64,
 }
 
 impl Chronicle {
     /// A chronicle that keeps nothing on disk.
     pub fn in_memory() -> Self {
-        Self { history: History::default(), dir: None, generation: 0, writer: None }
+        Self {
+            history: History::default(),
+            dir: None,
+            generation: 0,
+            writer: None,
+            tally: Tally::default(),
+            tally_tick: 0.0,
+            logged: 0,
+        }
     }
 
     /// Opens, or starts, the chronicle kept in `dir`.
@@ -215,8 +248,16 @@ impl Chronicle {
             }
         }
         let writer = Writer::start(dir.clone(), generation);
-        let mut c = Self { history, dir: Some(dir), generation, writer };
-        if dropped {
+        let mut c = Self {
+            history,
+            dir: Some(dir),
+            generation,
+            writer,
+            tally: Tally::default(),
+            tally_tick: 0.0,
+            logged: used as u64,
+        };
+        if dropped || c.logged > LOG_LIMIT {
             c.checkpoint();
         }
         c
@@ -228,12 +269,38 @@ impl Chronicle {
 
     pub fn record(&mut self, tick: f64, fact: Fact) {
         let wall = unix_now();
-        if let Some(w) = &self.writer
-            && let Ok(line) = serde_json::to_string(&RecordOut { tick, wall, fact: &fact })
+        if let Fact::Death { who, species, cause, life } = &fact
+            && self.history.is_routine(*who, life)
         {
-            let _ = w.tx.send(Msg::Line(line));
+            self.tally.add(*who, *species, *cause, life.x);
+            self.tally_tick = tick;
+        } else {
+            self.flush_tally(wall);
+            self.write(&RecordOut { tick, wall, fact: Some(&fact), tally: None });
         }
         self.history.apply(tick, wall, &fact);
+        if self.logged > LOG_LIMIT {
+            self.checkpoint();
+        }
+    }
+
+    fn write(&mut self, record: &RecordOut) {
+        if let Some(w) = &self.writer
+            && let Ok(line) = serde_json::to_string(record)
+        {
+            self.logged += line.len() as u64 + 1;
+            let _ = w.tx.send(Msg::Line(line));
+        }
+    }
+
+    /// Writes the routine deaths counted since the last line, stamped no
+    /// earlier than any of them so replaying gives the same history.
+    fn flush_tally(&mut self, wall: f64) {
+        if self.tally.is_empty() {
+            return;
+        }
+        let tally = std::mem::take(&mut self.tally);
+        self.write(&RecordOut { tick: self.tally_tick, wall, fact: None, tally: Some(&tally) });
     }
 
     pub fn record_all(&mut self, facts: impl IntoIterator<Item = (f64, Fact)>) {
@@ -245,6 +312,8 @@ impl Chronicle {
     /// Writes the whole history and starts a fresh log. Call it whenever the
     /// world is saved, so the two always agree after a crash.
     pub fn checkpoint(&mut self) {
+        // The history already holds the unwritten tally, so the snapshot does too.
+        self.tally = Tally::default();
         let Some(w) = &self.writer else { return };
         let generation = self.generation + 1;
         let snapshot = SnapshotOut { version: VERSION, generation, history: &self.history };
@@ -252,6 +321,7 @@ impl Chronicle {
             Ok(snapshot) => {
                 if w.tx.send(Msg::Checkpoint { generation, snapshot }).is_ok() {
                     self.generation = generation;
+                    self.logged = 0;
                 }
             }
             Err(e) => log::error!("chronicle snapshot: {e}"),
@@ -265,6 +335,7 @@ impl Chronicle {
             return;
         }
         let Some(dir) = self.dir.clone() else { return };
+        self.flush_tally(self.history.wall);
         if let Some(w) = self.writer.take() {
             w.finish();
         }
@@ -277,6 +348,7 @@ impl Chronicle {
             self.history = History::default();
             return;
         };
+        self.flush_tally(self.history.wall);
         if let Some(w) = self.writer.take() {
             w.finish();
         }
@@ -295,6 +367,7 @@ impl Chronicle {
 
 impl Drop for Chronicle {
     fn drop(&mut self) {
+        self.flush_tally(self.history.wall);
         if let Some(w) = self.writer.take() {
             w.finish();
         }
@@ -428,6 +501,37 @@ mod tests {
         drop(c);
         assert!(r.poll());
         assert_eq!(r.history.species.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ordinary_deaths_are_tallied_and_replay_the_same() {
+        let dir = temp_dir("tally");
+        let live = {
+            let mut c = Chronicle::open(&dir);
+            c.record(0.0, arose(1));
+            c.record(0.0, arose(2));
+            for i in 0..500u64 {
+                let species = SpeciesId(1 + i % 2);
+                let cause = if i % 3 == 0 {
+                    DeathCause::Starvation
+                } else {
+                    DeathCause::Predation { killer: CreatureId(9000 + i), killer_species: SpeciesId(2) }
+                };
+                let mut life = crate::demo::blank_life(CreatureId(100 + i), species);
+                life.x = i as f32 / 500.0;
+                c.record(1.0 + i as f64, Fact::Death { who: life.id, species, cause, life });
+                if i == 250 {
+                    c.record(251.5, Fact::Nature { kind: NatureKind::Storm, x: 1.0, strength: 0.5 });
+                }
+            }
+            serde_json::to_string(c.history()).unwrap()
+        };
+        let lines = fs::read_to_string(log_path(&dir, 0)).unwrap().lines().count();
+        assert_eq!(lines, 5, "two species, a tally, the storm, a tally");
+        let reopened = Chronicle::open(&dir);
+        assert_eq!(reopened.history().deaths, 500);
+        assert_eq!(serde_json::to_string(reopened.history()).unwrap(), live);
         let _ = fs::remove_dir_all(&dir);
     }
 

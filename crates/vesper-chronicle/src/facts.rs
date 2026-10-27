@@ -1,4 +1,4 @@
-//! A copy of `vesper_sim::history` (sim branch at d06685e), which owns these types.
+//! A copy of `vesper_sim::history` (sim branch at b9767ac), which owns these types.
 //! When vesper-sim is on main this file becomes `pub use vesper_sim::history::*;`.
 //!
 //! Facts the simulation reports as they happen, for the chronicle to keep.
@@ -163,7 +163,7 @@ pub enum NatureKind {
 }
 
 /// A behavior seen for the first time anywhere in the world.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Behavior {
     Hunting,
     Scavenging,

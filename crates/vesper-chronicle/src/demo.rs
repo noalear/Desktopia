@@ -5,6 +5,7 @@
 
 use crate::facts::*;
 use crate::history::{History, notability};
+use crate::names::WORLD_W;
 
 /// Seconds between censuses.
 const STEP: f64 = 60.0;
@@ -369,7 +370,7 @@ impl DemoWorld {
         s.tracked.clear();
         if last.id.0 == 0 {
             last.id = CreatureId(self.id());
-            last.x = x;
+            last.x = x * WORLD_W;
             last.age = self.species[i].t.lifespan * 0.6;
         }
         let cause = if starving { DeathCause::Starvation } else { self.random_cause(i) };
@@ -487,7 +488,7 @@ impl DemoWorld {
             let s = &self.species[i];
             let mut life = blank_life(who, s.id);
             life.age = s.t.lifespan * 0.5;
-            life.x = s.t.zone;
+            life.x = s.t.zone * WORLD_W;
             let id = s.id;
             self.emit(Fact::Death { who, species: id, cause, life });
         }
@@ -502,7 +503,7 @@ impl DemoWorld {
                 let s = &self.species[i];
                 let mut l = blank_life(id, s.id);
                 l.born = self.t;
-                l.x = s.t.zone;
+                l.x = s.t.zone * WORLD_W;
                 if let Some(p) = s.tracked.first() {
                     l.parent = Some(p.id);
                     l.generation = p.generation + 1;
@@ -685,7 +686,7 @@ impl DemoWorld {
             self.species[si].pop = (self.species[si].pop - deaths as f32).max(0.0);
             let (attacker, defender) = (self.groups[att].id, self.groups[def].id);
             self.first(Behavior::War, self.groups[att].species, None);
-            self.emit(Fact::Clash { attacker, defender, deaths, x });
+            self.emit(Fact::Clash { attacker, defender, deaths, x: x * WORLD_W });
             if let Some(l) = self.species[self.groups[att].species].tracked.first_mut() {
                 l.kills += 1;
             }
@@ -763,7 +764,7 @@ impl DemoWorld {
             _ => return,
         };
         let strength = 0.2 + self.rand() * 0.8;
-        self.emit(Fact::Nature { kind, x, strength });
+        self.emit(Fact::Nature { kind, x: x * WORLD_W, strength });
         for s in &mut self.species {
             if s.alive {
                 s.pop *= 1.0 - strength * 0.4 * Self::overlap(s.t.zone, x);
@@ -786,7 +787,7 @@ impl DemoWorld {
                 id: s.id,
                 count: s.pop.round() as u32,
                 biomass: s.pop * s.t.size * s.t.size * 2000.0,
-                mean_x: s.t.zone,
+                mean_x: s.t.zone * WORLD_W,
                 traits: s.t.clone(),
             });
             standouts.extend(s.tracked.iter().cloned());
@@ -801,7 +802,7 @@ impl DemoWorld {
                 id: g.id,
                 species: self.species[g.species].id,
                 members: g.members.round() as u32,
-                x_range: [g.x - 0.04, g.x + 0.04],
+                x_range: [(g.x - 0.04) * WORLD_W, (g.x + 0.04) * WORLD_W],
                 leader: g.leader,
                 dialect: g.dialect,
                 signals: g.signals,

@@ -13,5 +13,5 @@ pub mod names;
 mod store;
 
 pub use facts::*;
-pub use history::{Entry, History, Kind, Piece, Ref, notability};
+pub use history::{Entry, History, Kind, Piece, Ref, Tally, notability};
 pub use store::{Chronicle, Reader};
