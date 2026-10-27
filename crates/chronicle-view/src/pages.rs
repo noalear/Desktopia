@@ -47,7 +47,8 @@ pub enum SpeciesSort {
     Oldest,
 }
 
-pub fn empty(ui: &mut Ui, waiting: bool) {
+/// Returns true if the user asked to see a sample world.
+pub fn empty(ui: &mut Ui, waiting: bool) -> bool {
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() * 0.3);
         ui.label(RichText::new("Nothing has happened yet").font(serif_bold(30.0)).color(TEXT));
@@ -58,7 +59,12 @@ pub fn empty(ui: &mut Ui, waiting: bool) {
             "There is no history to show."
         };
         ui.label(RichText::new(text).font(serif(17.0)).color(DIM));
-    });
+        ui.add_space(20.0);
+        ui.button(RichText::new("Show a sample world meanwhile").size(15.0))
+            .on_hover_text("A made-up history, so you can see what the chronicle will look like")
+            .clicked()
+    })
+    .inner
 }
 
 fn heading(ui: &mut Ui, title: &str, subtitle: &str) {

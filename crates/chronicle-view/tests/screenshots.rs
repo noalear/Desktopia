@@ -31,7 +31,7 @@ fn render_every_page() {
             .with_size([1360.0, 880.0])
             .wgpu()
             .build_eframe(move |cc| {
-                let mut app = ChronicleApp::new(&cc.egui_ctx, Source::Fixed(h));
+                let mut app = ChronicleApp::new(&cc.egui_ctx, Source::Fixed(Box::new(h)));
                 app.open(page);
                 app
             });

@@ -17,7 +17,7 @@ pub enum Source {
     /// A made-up world, for trying the window before the simulation exists.
     Demo,
     /// A fixed history, for tests.
-    Fixed(vesper_chronicle::History),
+    Fixed(Box<vesper_chronicle::History>),
 }
 
 /// How often to look for new lines from the wallpaper.
@@ -65,21 +65,10 @@ impl ChronicleApp {
         let (reader, demo, folder) = match source {
             Source::Folder(dir) => (Reader::new(&dir), None, Some(dir)),
             Source::Demo => {
-                // Run the toy world for a few days, then keep it going live.
-                let mut world = DemoWorld::new(7);
-                let mut h = vesper_chronicle::History::default();
-                let wall = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0.0, |d| d.as_secs_f64())
-                    - 4.0 * 86_400.0;
-                while world.t < 4.0 * 86_400.0 {
-                    for (tick, fact) in world.step() {
-                        h.apply(tick, wall + tick, &fact);
-                    }
-                }
-                (Reader::fixed(h), Some((world, Instant::now())), None)
+                let (reader, world) = demo();
+                (reader, Some(world), None)
             }
-            Source::Fixed(h) => (Reader::fixed(h), None, None),
+            Source::Fixed(h) => (Reader::fixed(*h), None, None),
         };
         Self {
             reader,
@@ -97,6 +86,15 @@ impl ChronicleApp {
     /// Opens a page directly, for tests and screenshots.
     pub fn open(&mut self, page: Page) {
         self.page = page;
+    }
+
+    /// Swaps the empty real world for the sample one.
+    fn show_demo(&mut self) {
+        let (reader, world) = demo();
+        self.reader = reader;
+        self.demo = Some(world);
+        self.page = Page::Now;
+        self.back.clear();
     }
 
     fn keep_up(&mut self, ctx: &egui::Context) {
@@ -239,7 +237,9 @@ impl eframe::App for ChronicleApp {
             .show(ui, |ui| {
                 let h = &self.reader.history;
                 if h.species.is_empty() {
-                    pages::empty(ui, self.folder.is_some());
+                    if pages::empty(ui, self.folder.is_some()) {
+                        self.show_demo();
+                    }
                     return;
                 }
                 if page == Page::Tree {
@@ -254,10 +254,9 @@ impl eframe::App for ChronicleApp {
                             if let Page::Detail(_) = page
                                 && !self.back.is_empty()
                                 && ui.button("← Back").clicked()
+                                && let Some(prev) = self.back.pop()
                             {
-                                if let Some(prev) = self.back.pop() {
-                                    self.page = prev;
-                                }
+                                self.page = prev;
                             }
                             match page {
                                 Page::Now => pages::now(ui, &mut nav, h),
@@ -283,6 +282,20 @@ impl eframe::App for ChronicleApp {
             self.page = prev;
         }
     }
+}
+
+/// A toy world run for a few days, to keep going live from there.
+fn demo() -> (Reader, (DemoWorld, Instant)) {
+    let mut world = DemoWorld::new(7);
+    let mut h = vesper_chronicle::History::default();
+    let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+        - 4.0 * 86_400.0;
+    while world.t < 4.0 * 86_400.0 {
+        for (tick, fact) in world.step() {
+            h.apply(tick, wall + tick, &fact);
+        }
+    }
+    (Reader::fixed(h), (world, Instant::now()))
 }
 
 fn page_salt(p: Page) -> String {
