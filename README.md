@@ -11,4 +11,6 @@ A living desktop wallpaper for Windows. It shows **Vesper**, an alien world spre
 
 ## Status
 
-Step 1 is done. Step 2 is next.
+Step 1 is done: world bible and 10 reference sheets. Step 2 is next.
+
+![Key art](docs/references/desktopia-ref-01-key-art.png)
