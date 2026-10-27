@@ -443,9 +443,19 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species) {
         if !s.children.is_empty() {
             ui.add_space(4.0);
             ui.label(RichText::new("Gave rise to").small().color(DIM));
+            // Inline, so the row wraps between names but never inside one.
             ui.horizontal_wrapped(|ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 for c in &s.children {
-                    species_link(ui, nav, h, *c);
+                    let name = species_name(h, *c);
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let width = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), font, AMBER).size().x) + 24.0;
+                    if width > ui.available_width() {
+                        ui.end_row();
+                    }
+                    swatch(ui, h.species.get(c).map_or(DIM, |s| species_color(&s.traits)));
+                    link(ui, nav, name, Ref::Species(*c));
+                    ui.add_space(6.0);
                 }
             });
         }
@@ -671,7 +681,7 @@ fn group_page(ui: &mut Ui, nav: &mut Nav, h: &History, id: GroupId) {
     };
     ui.label(RichText::new(status).color(if g.gone.is_none() { TEAL } else { FAINT }));
     ui.add_space(8.0);
-    if let Some(p) = g.parent {
+    if let Some(p) = g.parent.filter(|p| h.groups.contains_key(p)) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Broke away from").color(DIM));
             link(ui, nav, group_name(h, p), Ref::Group(p));

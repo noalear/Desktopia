@@ -29,10 +29,14 @@ const OUTBREAK_END: f32 = 0.03;
 /// Members, and age in seconds, that make a group worth writing about.
 const GROUP_NOTABLE: u32 = 30;
 const GROUP_SETTLE: f64 = 600.0;
+/// Seconds an unremarkable group is kept after it scatters.
+const GROUP_FORGET: f64 = 120.0;
 /// A new species is written about once it numbers this many, or has lasted
 /// `SPECIES_SETTLE` seconds; most branches die out within moments.
 const SPECIES_NOTABLE: u32 = 20;
 const SPECIES_SETTLE: f64 = 1800.0;
+/// The same kind of weather is written about at most this often.
+const NATURE_QUIET: f64 = 3600.0;
 /// Censuses of population kept per species for spotting famines.
 const FAMINE_WINDOW: usize = 20;
 /// Time a new species must hold the most biomass before an era changes.
@@ -414,12 +418,15 @@ pub struct History {
     genera: BTreeMap<String, Traits>,
     feuds: Vec<Feud>,
     era_rival: Option<(SpeciesId, f64)>,
-    /// Creatures the annals mention, whose names must stay.
+    /// What the annals mention: kept when it would otherwise be forgotten.
     #[serde(default)]
-    cited: BTreeSet<CreatureId>,
+    cited: BTreeSet<Ref>,
     /// The notability a death needs for its own line, and when it was set.
     #[serde(default)]
     death_bar: (f32, f64),
+    /// When each kind of weather was last written about.
+    #[serde(default)]
+    weather: Vec<(NatureKind, f64)>,
 }
 
 /// A run of entry text: plain words, or a link to something.
@@ -522,16 +529,13 @@ impl History {
     }
 
     fn write(&mut self, kind: Kind, weight: u8, title: String, text: String, refs: Vec<Ref>) {
-        for r in &refs {
-            if let Ref::Creature(c) = r {
-                self.cited.insert(*c);
-            }
-        }
-        for token in text.split("{c:").skip(1) {
-            if let Some(id) = token.split('}').next().and_then(|n| n.parse().ok()) {
-                self.cited.insert(CreatureId(id));
-            }
-        }
+        self.cited.extend(refs.iter().copied());
+        let ids = |tag: &str| -> Vec<u64> {
+            text.split(tag).skip(1).filter_map(|t| t.split('}').next().and_then(|n| n.parse().ok())).collect()
+        };
+        self.cited.extend(ids("{c:").into_iter().map(|c| Ref::Creature(CreatureId(c))));
+        self.cited.extend(ids("{g:").into_iter().map(|g| Ref::Group(GroupId(g))));
+        self.cited.extend(ids("{p:").into_iter().map(|p| Ref::Strain(StrainId(p))));
         self.entries.push(Entry { tick: self.now, wall: self.wall, kind, weight, title, text, refs });
     }
 
@@ -608,10 +612,45 @@ impl History {
         }
     }
 
+    /// Drops a branch that died before the annals told of it, and any such
+    /// branches it leaves childless, so a long-lived world stays small.
+    fn forget(&mut self, id: SpeciesId) {
+        let Some(s) = self.species.get(&id) else { return };
+        if s.announced || s.alive() || !s.children.is_empty() {
+            return;
+        }
+        let (parent, genus) = (s.parent, s.genus.clone());
+        self.species.remove(&id);
+        if !self.species.values().any(|o| o.genus == genus) {
+            self.genera.remove(&genus);
+        }
+        if let Some(p) = parent.and_then(|p| self.species.get_mut(&p)) {
+            p.children.retain(|c| *c != id);
+            let p = p.id;
+            self.forget(p);
+        }
+    }
+
+    /// A common name no species told of so far has used.
+    fn unique_common(&self, id: SpeciesId) -> String {
+        let s = &self.species[&id];
+        let taken = |c: &str| self.species.values().any(|o| o.id != id && o.announced && o.common == c);
+        if !taken(&s.common) {
+            return s.common.clone();
+        }
+        (0..24)
+            .map(|v| names::common_name(&s.founding, id.0, v))
+            .chain((0..64).map(|k| names::marked(mix(id.0 ^ (k << 24)), &s.common)))
+            .find(|c| !taken(c))
+            .unwrap_or_else(|| s.common.clone())
+    }
+
     /// Tells of a branch of life once it has taken hold.
     fn announce(&mut self, id: SpeciesId) {
+        let common = self.unique_common(id);
         let Some(s) = self.species.get_mut(&id) else { return };
         s.announced = true;
+        s.common = common;
         let Some(p) = s.parent.and_then(|p| self.species.get(&p)) else { return };
         let s = &self.species[&id];
         let diff = names::difference(&s.founding, &p.traits);
@@ -642,6 +681,7 @@ impl History {
         s.count = 0;
         s.population.push(now, 0.0);
         if !s.announced {
+            self.forget(id);
             return;
         }
         let lasted = names::span(now - s.arose);
@@ -881,7 +921,7 @@ impl History {
                 Some(w) => {
                     let id = w.id;
                     self.notables.remove(&id);
-                    if !self.cited.contains(&id) {
+                    if !self.cited.contains(&Ref::Creature(id)) {
                         self.names.remove(&id);
                     }
                 }
@@ -932,6 +972,10 @@ impl History {
         }
         g.gone = Some(now);
         let (notable, peak, formed, species) = (g.notable, g.peak, g.formed, g.species);
+        let at_war = self.wars.iter().any(|w| w.ended.is_none() && (w.a == id || w.b == id));
+        if !notable && !at_war {
+            return;
+        }
         // A group that dies during a war was destroyed by it.
         let war = self.wars.iter().position(|w| w.ended.is_none() && (w.a == id || w.b == id));
         if let Some(wi) = war {
@@ -967,6 +1011,10 @@ impl History {
         }
         if let Some(g) = self.groups.get_mut(&defender) {
             g.losses += deaths;
+        }
+        // Only groups the chronicle knows can go to war.
+        if !self.groups.contains_key(&attacker) || !self.groups.contains_key(&defender) {
+            return;
         }
         let pair =
             |w_a: GroupId, w_b: GroupId| (w_a == attacker && w_b == defender) || (w_a == defender && w_b == attacker);
@@ -1060,6 +1108,13 @@ impl History {
         if strength < 0.25 {
             return;
         }
+        let last = self.weather.iter().find(|w| w.0 == event).map_or(f64::MIN, |w| w.1);
+        let quiet = if event == NatureKind::Lightning { NATURE_QUIET * 4.0 } else { NATURE_QUIET };
+        if self.now - last < quiet {
+            return;
+        }
+        self.weather.retain(|w| w.0 != event);
+        self.weather.push((event, self.now));
         let region = names::place(x);
         let seed = mix(self.now.to_bits());
         let (title, text) = match event {
@@ -1100,7 +1155,9 @@ impl History {
                 "Lightning walked across the ground, setting the air glowing.".into(),
             ),
         };
-        let weight = if strength > 0.75 {
+        let weight = if event == NatureKind::Lightning {
+            1
+        } else if strength > 0.75 {
             3
         } else if strength > 0.45 {
             2
@@ -1210,8 +1267,13 @@ impl History {
         let Some(s) = self.strains.get_mut(&id) else { return };
         s.gone = Some(now);
         s.infected = 0;
-        if let Some(i) = s.outbreak.take() {
-            self.end_outbreak(i, " and is gone from the world");
+        match s.outbreak.take() {
+            Some(i) => self.end_outbreak(i, " and is gone from the world"),
+            // A strain that never spread far is forgotten.
+            None if !self.cited.contains(&Ref::Strain(id)) && self.outbreaks.iter().all(|o| o.strain != id) => {
+                self.strains.remove(&id);
+            }
+            None => {}
         }
     }
 
@@ -1272,6 +1334,20 @@ impl History {
                 s.starved = s.starved.saturating_sub(s.starved / FAMINE_WINDOW as u32 + 1);
             }
         }
+        // Groups that scattered unremarked are forgotten, once the clashes
+        // reported as they broke up are in.
+        let cited = &self.cited;
+        let wars = &self.wars;
+        let parents: BTreeSet<GroupId> = self.groups.values().filter(|g| g.notable).filter_map(|g| g.parent).collect();
+        self.groups.retain(|id, g| {
+            g.notable
+                || parents.contains(id)
+                || g.gone.is_none_or(|t| now - t < GROUP_FORGET)
+                || cited.contains(&Ref::Group(*id))
+                || wars.iter().any(|w| w.a == *id || w.b == *id)
+        });
+        let groups = &self.groups;
+        self.feuds.retain(|f| groups.contains_key(&f.a) && groups.contains_key(&f.b));
         let ready: Vec<SpeciesId> = self
             .species
             .values()
@@ -1298,8 +1374,10 @@ impl History {
         }
 
         for gc in &c.groups {
-            let parent_dialect =
-                self.groups.get(&gc.id).and_then(|g| g.parent).and_then(|p| self.groups.get(&p)).map(|p| p.dialect);
+            let parent = self.groups.get(&gc.id).and_then(|g| g.parent).and_then(|p| self.groups.get(&p));
+            let parent_dialect = parent.map(|p| p.dialect);
+            // A parent long scattered and forgotten isn't worth naming.
+            let parent = parent.map(|p| p.id);
             let Some(g) = self.groups.get_mut(&gc.id) else { continue };
             g.members = gc.members;
             g.peak = g.peak.max(gc.members);
@@ -1310,7 +1388,7 @@ impl History {
             let mut news = Vec::new();
             if !g.notable && gc.members >= GROUP_NOTABLE && now - g.formed >= GROUP_SETTLE {
                 g.notable = true;
-                news.push(match g.parent {
+                news.push(match parent {
                     Some(p) => (
                         format!("{} breaks away", names::capital(&g.name)),
                         format!("{} broke away from {} and went its own way.", gr(g.id), gr(p)),
@@ -1475,7 +1553,9 @@ impl History {
         {
             e.ended = Some(since);
         }
-        self.eras.push(Era { species: top, began: since, ended: None });
+        // After an era that ended with its species, the next begins no earlier.
+        let began = self.eras.last().and_then(|e| e.ended).map_or(since, |end| since.max(end));
+        self.eras.push(Era { species: top, began, ended: None });
         self.era_rival = None;
         let name = plural(&self.common(top));
         let text = match current {
@@ -1745,7 +1825,7 @@ fn title_for(l: &Life, old: &str) -> String {
         (l.kills as f32 / 25.0, if l.kills >= 100 { "the Devourer" } else { "the Hunter" }),
         (l.offspring as f32 / 10.0, if l.offspring >= 40 { "Root of Many" } else { "the Prolific" }),
         (l.scars as f32 / 3.0, "the Scarred"),
-        (l.kindness as f32 / 1000.0, "the Generous"),
+        (l.kindness as f32 / 2500.0, "the Generous"),
         (l.rank / 2.0, "the Dominant"),
         (l.age / 1200.0, "the Old"),
     ];
@@ -1826,7 +1906,8 @@ mod tests {
         h.apply(10.0, 2.0, &Fact::SpeciesArose { id: SpeciesId(2), parent: Some(SpeciesId(1)), traits: traits(0.9) });
         h.apply(30.0, 3.0, &Fact::SpeciesExtinct { id: SpeciesId(2) });
         assert_eq!(h.entries.len(), told);
-        assert!(!h.species[&SpeciesId(2)].alive());
+        assert!(!h.species.contains_key(&SpeciesId(2)));
+        assert!(h.species[&SpeciesId(1)].children.is_empty());
     }
 
     #[test]

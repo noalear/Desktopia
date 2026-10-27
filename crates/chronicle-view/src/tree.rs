@@ -90,14 +90,23 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
     let axis_h = 34.0;
     let era_h = 22.0;
     let rows = ids.len().max(1) as f32;
-    let row_h = ((avail.height() - axis_h - era_h) / rows).clamp(7.0, 30.0);
-    let content_h = rows * row_h + axis_h + era_h;
+    // Each kingdom gets a header strip above its rows.
+    let first_motile = ids.iter().position(|id| h.species.get(id).is_some_and(|s| s.traits.kingdom == Kingdom::Motile));
+    let both = first_motile.is_some_and(|f| f > 0);
+    let head = 16.0;
+    let heads = if both { 2.0 } else { 1.0 } * head;
+    let row_h = ((avail.height() - axis_h - era_h - heads) / rows).clamp(7.0, 30.0);
+    let content_h = rows * row_h + heads + axis_h + era_h;
+    let row_top = move |row: usize| {
+        let sections = if both && first_motile.is_some_and(|f| row >= f) { 2.0 } else { 1.0 };
+        sections * head + row as f32 * row_h
+    };
 
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.add_space(0.0);
         let (resp, p) = ui.allocate_painter(vec2(ui.available_width(), content_h.max(avail.height())), Sense::click_and_drag());
         let full = resp.rect.shrink2(vec2(24.0, 0.0));
-        let plot = Rect::from_min_max(pos2(full.left(), full.top() + era_h), pos2(full.right() - label_w, full.top() + era_h + rows * row_h));
+        let plot = Rect::from_min_max(pos2(full.left(), full.top() + era_h), pos2(full.right() - label_w, full.top() + era_h + heads + rows * row_h));
         p.rect_filled(Rect::from_min_max(full.min, pos2(plot.right(), plot.bottom())), CornerRadius::same(8), BG);
 
         // Time mapping, with zoom about the pointer and dragging.
@@ -173,19 +182,23 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
         let mut hovered: Option<SpeciesId> = None;
         let mouse = resp.hover_pos();
 
-        // Kingdom divider.
-        if let Some(first_motile) = ids.iter().position(|id| h.species.get(id).is_some_and(|s| s.traits.kingdom == Kingdom::Motile))
-            && first_motile > 0
-        {
-            let y = plot.top() + first_motile as f32 * row_h;
+        // Kingdom headers.
+        let header = |y: f32, label: &str| {
             p.hline(plot.x_range(), y, Stroke::new(1.0, LINE));
-            p.text(pos2(plot.left() + 6.0, y + 2.0), Align2::LEFT_TOP, "CREATURES", crate::theme::bold(10.0), FAINT);
-            p.text(pos2(plot.left() + 6.0, plot.top() + 2.0), Align2::LEFT_TOP, "PLANTS", crate::theme::bold(10.0), FAINT);
+            p.text(pos2(plot.left() + 6.0, y + 3.0), Align2::LEFT_TOP, label, crate::theme::bold(10.0), FAINT);
+        };
+        match first_motile {
+            Some(f) if f > 0 => {
+                header(plot.top(), "PLANTS");
+                header(plot.top() + row_top(f) - head, "CREATURES");
+            }
+            Some(_) => header(plot.top(), "CREATURES"),
+            None => header(plot.top(), "PLANTS"),
         }
 
         for (row, id) in ids.iter().enumerate() {
             let Some(s) = h.species.get(id) else { continue };
-            let yc = plot.top() + (row as f32 + 0.5) * row_h;
+            let yc = plot.top() + row_top(row) + 0.5 * row_h;
             let end = s.extinct.unwrap_or(h.now);
             let color = species_color(&s.traits);
             let alpha = if s.alive() { 1.0 } else { 0.5 };
@@ -196,7 +209,7 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
             if let Some(prow) = s.parent.and_then(row_of) {
                 let x = x_of(s.arose);
                 if x >= plot.left() && x <= plot.right() {
-                    let py = plot.top() + (prow as f32 + 0.5) * row_h;
+                    let py = plot.top() + row_top(prow) + 0.5 * row_h;
                     let pc = h.species.get(&s.parent.unwrap()).map_or(color, |p| species_color(&p.traits));
                     p.line_segment([pos2(x, py), pos2(x, yc)], Stroke::new(1.0, pc.gamma_multiply(0.55 * alpha)));
                     p.circle_filled(pos2(x, py), 1.8, pc.gamma_multiply(alpha));
@@ -272,7 +285,7 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
             && let Some(s) = h.species.get(&id)
         {
             let row = row_of(id).unwrap_or(0);
-            let yc = plot.top() + (row as f32 + 0.5) * row_h;
+            let yc = plot.top() + row_top(row) + 0.5 * row_h;
             p.rect_stroke(
                 Rect::from_min_max(pos2(x_of(s.arose.max(st.start)) - 2.0, yc - row_h * 0.5), pos2(plot.right() + label_w, yc + row_h * 0.5)),
                 CornerRadius::same(4),

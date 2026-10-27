@@ -37,7 +37,10 @@ fn main() {
     }
     let live = serde_json::to_string(chronicle.history()).unwrap();
     let h = chronicle.history().clone();
+    let log = folder_size(&dir);
+    chronicle.checkpoint();
     drop(chronicle);
+    let snapshot = folder_size(&dir);
     let t = Instant::now();
     let reopened = Chronicle::open(&dir);
     let load = t.elapsed();
@@ -47,10 +50,11 @@ fn main() {
         println!("[{:>6.2}h] {:?}/{} {}: {}", e.tick / 3600.0, e.kind, e.weight, e.title, h.plain(&e.text));
     }
     println!(
-        "\n{facts} facts ({:.1} MB) over {:.2}h; on disk {:.2} MB; {:.1} µs per fact; reload {:.0} ms; same after reload: {same}",
+        "\n{facts} facts ({:.1} MB) over {:.2}h; log {:.2} MB, snapshot {:.2} MB; {:.1} µs per fact; reload {:.0} ms; same after reload: {same}",
         bytes as f64 / 1e6,
         h.now / 3600.0,
-        folder_size(&dir) as f64 / 1e6,
+        log as f64 / 1e6,
+        snapshot as f64 / 1e6,
         busy.as_secs_f64() * 1e6 / facts.max(1) as f64,
         load.as_secs_f64() * 1e3,
     );

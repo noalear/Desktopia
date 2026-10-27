@@ -139,6 +139,18 @@ pub fn common_name(t: &Traits, seed: u64, variant: u32) -> String {
     if variant > 0 && a != b { format!("{a} {b} {noun}") } else { format!("{a} {noun}") }
 }
 
+/// `name` with one more mark on it, to tell it apart from a namesake.
+pub fn marked(seed: u64, name: &str) -> String {
+    let mark = pick(
+        seed,
+        &[
+            "banded", "ringed", "spotted", "striped", "pale", "dusky", "bright", "slender", "broad", "hooked",
+            "forked", "long", "stub", "fringed", "mottled", "veiled", "sharp", "hollow", "twin", "crested",
+        ],
+    );
+    format!("{mark} {name}")
+}
+
 fn noun(t: &Traits, s: u64) -> &'static str {
     if rooted(t) {
         return match () {
@@ -217,8 +229,20 @@ pub fn group_name(seed: u64, t: Option<&Traits>) -> String {
 
 /// A creature's given name.
 pub fn creature_name(seed: u64) -> String {
-    let a = coin(seed, 1 + (mix(seed) % 2) as u32);
-    if mix(seed ^ 3).is_multiple_of(3) { format!("{a}-{}", coin(seed ^ 0x99, 1)) } else { a }
+    // Coined names that read as English words get coined again.
+    const WORDS: &[&str] = &[
+        "her", "his", "him", "she", "the", "and", "they", "them", "this", "that", "yes", "no", "hex", "sex", "nun",
+        "ham", "hen", "hum", "rot", "ram", "rat", "tax", "tar", "tin", "ton", "sir", "sin", "sun", "kin", "zen",
+    ];
+    let mut seed = seed;
+    loop {
+        let a = coin(seed, 1 + (mix(seed) % 2) as u32);
+        let name = if mix(seed ^ 3).is_multiple_of(3) { format!("{a}-{}", coin(seed ^ 0x99, 1)) } else { a };
+        if !WORDS.iter().any(|w| name.eq_ignore_ascii_case(w)) {
+            return name;
+        }
+        seed = mix(seed ^ 0x5eed);
+    }
 }
 
 /// A pathogen's name: "the Grey Wasting", "the Hollow Fluke", or for a

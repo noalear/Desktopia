@@ -30,12 +30,27 @@ It stays out of the way:
 
 On a monitor with HDR switched on, it draws in HDR, using the Windows SDR brightness setting as its white so both monitors match.
 
-Settings are in `%APPDATA%\Desktopia\config.toml`, and the log is in `%LOCALAPPDATA%\Desktopia\desktopia.log`.
+Settings are in `%APPDATA%\Desktopia\config.toml`, and the logs are in `%LOCALAPPDATA%\Desktopia`.
+
+### The chronicle
+
+Click the tray icon, or press **Win+Alt+V**, to open the chronicle: Vesper's written history. It shows
+
+- what is happening now, and the age the world is in
+- the tree of life, every species as a band that swells and thins with its numbers
+- the annals, in the order things happened, which you can filter by kind and importance
+- every species, with its lineage, what it eats and what eats it, and how its members die
+- notable lives: great hunters, leaders, the scarred and the old, and how they died
+- peoples, wars, plagues and famines
+
+Click any name to open its page, and press Backspace to go back. The window is a separate process that reads the history from disk, so nothing extra runs while it is closed. The history is kept in `%LOCALAPPDATA%\Desktopia\chronicle`; when a new world starts, the old one moves to `chronicle-past`. Change the hotkey with `chronicle_hotkey` in the settings file, or set it to `""` to have none. `desktopia.exe --chronicle-demo` opens the window on a made-up world.
 
 ## Building
 
 - `cargo build --release -p desktopia` builds the wallpaper on Windows.
 - `cargo run --release -p preview -- --scale 0.5` renders Vesper to PNG files on any OS with a GPU or a software Vulkan driver.
   Add `--crop X Y W H` to render a window of the world up close, `--lineup` to line up one creature of each body plan in that window, `--frames N --step S` for an animation, and `--storm X STRENGTH`, `--volcano V`, `--lava REACH`, `--ash A`, `--cold X STRENGTH` or `--dust X STRENGTH` to pin the weather. In `--lineup`, the creatures after the first show a sickness, a parasite, a symbiont, bleeding, and light signals in turn.
+- `cargo run --release -p vesper-chronicle --example annals -- 5` prints five days of a made-up world's annals.
+- `SHOTS=dir cargo test -p chronicle-view --test screenshots -- --ignored` renders each page of the chronicle window to PNG files. Set `CHRONICLE=dir` to render a real chronicle folder instead of a made-up world.
 
 ![Key art](docs/references/desktopia-ref-01-key-art.png)
