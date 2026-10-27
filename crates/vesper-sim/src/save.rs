@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 const MAGIC: &[u8; 8] = b"VESPERW\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Debug)]
 pub enum LoadError {

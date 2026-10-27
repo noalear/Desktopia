@@ -49,6 +49,46 @@ pub struct InfectionView {
     pub symbiont: bool,
 }
 
+/// A body's pose at one physics step.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Moment {
+    /// x along the band, depth on the ground plane (world units), and the
+    /// heading of the body's own upright plane.
+    pub pos: [f32; 2],
+    pub heading: f32,
+    /// Which way it is drawn facing, -1 .. 1, swinging over through 0 as it turns.
+    pub face: f32,
+    /// World units per body unit.
+    pub scale: f32,
+    pub parts: Vec<PartPose>,
+}
+
+/// Where one body segment's centre is in the body's plane (forward from the
+/// body's position, and altitude) and which way it points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartPose {
+    pub seg: u16,
+    pub u: f32,
+    pub alt: f32,
+    pub angle: f32,
+}
+
+impl Moment {
+    pub fn of(rig: &crate::physics::Rig, pos: [f32; 3], heading: f32) -> Self {
+        Self {
+            pos: [pos[0], pos[1]],
+            heading,
+            face: rig.face,
+            scale: rig.scale,
+            parts: rig
+                .parts
+                .iter()
+                .map(|p| PartPose { seg: p.seg, u: p.pos[0], alt: p.pos[1], angle: p.angle })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CreatureView {
     pub id: u64,
@@ -85,6 +125,9 @@ pub struct CreatureView {
     pub infection: Option<InfectionView>,
     pub group: Option<u64>,
     pub leader: bool,
+    /// The body through this tick: where it was when the tick began, then at
+    /// each physics step. Drawing samples along it.
+    pub motion: Vec<Moment>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +168,8 @@ pub struct RemainsView {
     pub decay: f32,
     /// Seconds since death.
     pub age: f32,
+    /// The body through this tick, while it is still falling or settling.
+    pub motion: Vec<Moment>,
 }
 
 #[derive(Clone, Debug)]
@@ -162,6 +207,15 @@ pub struct Frame {
     pub soil: Vec<f32>,
     /// Detritus drifting in the air per column, for marine snow.
     pub air: Vec<f32>,
+}
+
+/// The moments of a body's last tick, or where it is now if it didn't move.
+fn motion(moments: &[Moment], rig: &crate::physics::Rig, pos: [f32; 3], heading: f32) -> Vec<Moment> {
+    if moments.len() >= 2 {
+        moments.to_vec()
+    } else {
+        vec![Moment::of(rig, pos, heading)]
+    }
 }
 
 impl Frame {
@@ -221,6 +275,7 @@ impl Frame {
                 }),
                 group: c.group.map(|g| g.0),
                 leader: leaders.contains(&c.id.0),
+                motion: motion(&c.moments, &c.rig, c.pos, c.heading),
             })
             .collect();
         let plants = w
@@ -258,6 +313,7 @@ impl Frame {
                 look: r.look,
                 decay: r.decay01(),
                 age: r.age,
+                motion: r.rig.as_ref().map(|rig| motion(&r.moments, rig, r.pos, r.heading)).unwrap_or_default(),
             })
             .collect();
         let eggs = w

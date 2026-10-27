@@ -1,7 +1,7 @@
 //! Development: unrolling a genome's part graph into a body of linked
 //! segments, and reading what that body can do.
 
-use crate::genome::{Genome, MAX_PARTS, Tissue};
+use crate::genome::{Genome, MAX_PARTS, Motor, Tissue};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SEGMENTS: usize = 48;
@@ -34,6 +34,11 @@ pub struct Segment {
     pub tip: [f32; 2],
     /// Rest direction, radians from +x.
     pub dir: f32,
+    /// The joint to its parent: swing at full drive (radians), timing in the
+    /// body's rhythm (cycles), and bend when rising (radians).
+    pub amp: f32,
+    pub phase: f32,
+    pub lift: f32,
 }
 
 impl Segment {
@@ -85,7 +90,7 @@ fn grow(
     g: &Genome,
     part: usize,
     parent: i16,
-    link: Option<(f32, f32, i8, bool, f32)>,
+    link: Option<(f32, f32, i8, bool, f32, Motor)>,
     scale: f32,
     depth: u8,
     counts: &mut [u8; MAX_PARTS],
@@ -98,8 +103,11 @@ fn grow(
     if length < MIN_LENGTH || segs.len() >= MAX_SEGMENTS || depth > MAX_DEPTH {
         return;
     }
-    let (angle, along, side, membrane, onset) = link.unwrap_or((0.0, 0.0, side, false, onset));
+    let (angle, along, side, membrane, onset, motor) =
+        link.unwrap_or((0.0, 0.0, side, false, onset, Motor::default()));
     let me = segs.len() as i16;
+    let parent_phase = if parent >= 0 { segs[parent as usize].phase } else { 0.0 };
+    let split = parent >= 0 && side < 0 && segs[parent as usize].side == 0;
     segs.push(Segment {
         parent,
         tissue: p.tissue,
@@ -114,6 +122,9 @@ fn grow(
         base: [0.0; 2],
         tip: [0.0; 2],
         dir: 0.0,
+        amp: motor.amp,
+        phase: (parent_phase + motor.phase + if split { motor.pair } else { 0.0 }).rem_euclid(1.0),
+        lift: motor.lift,
     });
     counts[part] += 1;
     let last = counts[part] > p.recursion;
@@ -137,7 +148,7 @@ fn grow(
                     g,
                     to,
                     me,
-                    Some((l.angle + fan, l.along, s, l.membrane, child_onset)),
+                    Some((l.angle + fan, l.along, s, l.membrane, child_onset, l.motor)),
                     scale * l.scale,
                     depth + 1,
                     counts,

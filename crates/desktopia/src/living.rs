@@ -1,16 +1,14 @@
 //! The living world: runs the simulation on its own low-priority thread and
-//! turns its snapshots into draw lists, blending between ticks so motion
-//! stays smooth at any frame rate.
+//! turns its snapshots into draw lists, sampling the motion recorded
+//! through each tick so movement stays smooth at any frame rate.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vesper_render::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue, WorldView};
-use vesper_sim::frame::{CreatureView, Frame};
+use vesper_sim::frame::CreatureView;
 use vesper_sim::history::Locomotion;
 use vesper_sim::pose::{self, Pose};
-use vesper_sim::runner::{Frames, Options, Runner};
+use vesper_sim::runner::{Options, Runner};
 use vesper_sim::{Sim, save};
 
 /// How much time the PC was off to make up for on start, at most.
@@ -21,10 +19,6 @@ const PLANTS_EVERY: u64 = 5;
 
 pub struct Living {
     runner: Runner,
-    /// The frame the creatures were last matched against, and each id's
-    /// place in its predecessor.
-    shown: Option<Arc<Frame>>,
-    prev_at: HashMap<u64, usize>,
     plants_tick: Option<u64>,
     pose: Pose,
     segs: Vec<Seg>,
@@ -65,8 +59,6 @@ impl Living {
         let runner = Runner::start(sim, opts);
         Self {
             runner,
-            shown: None,
-            prev_at: HashMap::new(),
             plants_tick: None,
             pose: Pose::default(),
             segs: Vec::new(),
@@ -139,17 +131,12 @@ impl Living {
     }
 
     /// Fills `batch` with every creature, body and egg, blended to now.
-    pub fn creatures(&mut self, batch: &mut LifeBatch, time: f32) {
+    pub fn creatures(&mut self, batch: &mut LifeBatch) {
         let f = self.runner.frames();
-        self.match_frames(&f);
         let t = f.alpha();
         batch.clear();
-        for c in &f.next.creatures {
-            let v = match self.prev_at.get(&c.id) {
-                Some(&i) => pose::blend(&f.prev.creatures[i], c, t),
-                None => c.clone(),
-            };
-            pose::creature(&v, time, &mut self.pose);
+        for v in &f.next.creatures {
+            pose::creature(v, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
                 segs: &self.segs,
@@ -166,12 +153,12 @@ impl Living {
                     hue: i.hue,
                     symbiont: i.symbiont,
                 }),
-                clip_y: clip(&v),
+                clip_y: clip(v),
                 seed: v.id as u32,
             });
         }
         for r in &f.next.remains {
-            pose::remains(r, &mut self.pose);
+            pose::remains(r, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
                 segs: &self.segs,
@@ -219,16 +206,13 @@ impl Living {
         }
     }
 
-    /// Indexes the previous frame by creature id whenever a new tick lands.
-    fn match_frames(&mut self, f: &Frames) {
-        if self.shown.as_ref().is_some_and(|s| Arc::ptr_eq(s, &f.next)) {
-            return;
-        }
-        self.prev_at.clear();
-        for (i, c) in f.prev.creatures.iter().enumerate() {
-            self.prev_at.insert(c.id, i);
-        }
-        self.shown = Some(f.next.clone());
+    /// Where a creature is drawn now, if it is alive: its floor point on screen
+    /// and its length, in world units.
+    pub fn locate(&self, id: u64) -> Option<([f32; 2], f32)> {
+        let f = self.runner.frames();
+        let c = f.next.creatures.iter().find(|c| c.id == id)?;
+        let (at, shrink, _) = pose::project(c.pos);
+        Some((at, c.scale * c.body.extent * shrink))
     }
 
     /// Saves and stops the simulation.

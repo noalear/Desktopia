@@ -163,8 +163,10 @@ fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
     };
     // Catch up quickly, yielding often so the machine stays responsive.
     let mut behind = opts.catch_up;
+    sim.set_coarse(behind > 0.0);
     while behind > 0.0 {
         if s.control.lock().unwrap().quit {
+            sim.set_coarse(false);
             save(sim);
             return;
         }
@@ -176,6 +178,7 @@ fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
         s.history.lock().unwrap().extend(facts);
         std::thread::sleep(Duration::from_millis(5));
     }
+    sim.set_coarse(false);
     publish(sim, s);
     let mut last_save = Instant::now();
     let mut next = Instant::now();

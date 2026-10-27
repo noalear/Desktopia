@@ -108,6 +108,49 @@ pub struct LinkGene {
     pub tip_only: bool,
     /// A web of membrane spans between this part and its parent.
     pub membrane: bool,
+    /// How the joint here is driven.
+    pub motor: Motor,
+}
+
+/// A joint's drive: each joint swings on the body's rhythm, at its own
+/// timing, so gaits, strokes and waves are all heritable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Motor {
+    /// Swing either side of rest at full drive, radians.
+    pub amp: f32,
+    /// Timing after the joint it grows from, cycles. Repeated down a chain,
+    /// this makes a travelling wave.
+    pub phase: f32,
+    /// Timing added for the far one of a pair, cycles.
+    pub pair: f32,
+    /// How far it bends when the brain wants to rise, radians.
+    pub lift: f32,
+}
+
+impl Motor {
+    fn random(rng: &mut Rng) -> Self {
+        Self {
+            amp: if rng.chance(0.5) { rng.range(0.0, 0.6) } else { 0.0 },
+            phase: rng.f32(),
+            pair: if rng.chance(0.6) { 0.5 } else { rng.f32() },
+            lift: rng.signed() * 0.3,
+        }
+    }
+
+    fn mutate(&mut self, rng: &mut Rng, r: f32) {
+        if rng.chance(0.08 * r) {
+            self.amp = (self.amp + rng.normal() * 0.1).clamp(0.0, 1.2);
+        }
+        if rng.chance(0.08 * r) {
+            self.phase = (self.phase + rng.normal() * 0.08).rem_euclid(1.0);
+        }
+        if rng.chance(0.04 * r) {
+            self.pair = (self.pair + rng.normal() * 0.08).rem_euclid(1.0);
+        }
+        if rng.chance(0.05 * r) {
+            self.lift = (self.lift + rng.normal() * 0.08).clamp(-1.0, 1.0);
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -150,6 +193,8 @@ pub struct Genome {
     pub brain: BrainGenes,
     /// World units per body unit when fully grown.
     pub adult_scale: f32,
+    /// The body's rhythm at full drive, cycles per second.
+    pub gait_hz: f32,
     /// Fastest possible time from hatching to adulthood, in seconds. Food usually limits it more.
     pub growth_time: f32,
     /// How fast damage builds with age; higher lives faster and dies sooner.
@@ -316,6 +361,7 @@ impl LinkGene {
             onset: if rng.chance(0.7) { 0.0 } else { rng.range(0.0, 0.8) },
             tip_only: rng.chance(0.2),
             membrane: rng.chance(0.15),
+            motor: Motor::random(rng),
         }
     }
 }
@@ -352,7 +398,8 @@ pub enum Founder {
 
 impl Genome {
     /// A founder genome: a working body plan with random details and a random brain.
-    pub fn founder(kind: Founder, rng: &mut Rng) -> Self {
+    /// A founder exactly as designed, before the variety every founder gets.
+    pub(crate) fn founder_plan(kind: Founder, rng: &mut Rng) -> Self {
         use Tissue::*;
         let link = |to: u8, angle: f32, along: f32, scale: f32, pair: bool| LinkGene {
             to,
@@ -364,12 +411,24 @@ impl Genome {
             onset: 0.0,
             tip_only: false,
             membrane: false,
+            motor: Motor::default(),
+        };
+        // A driven joint: swing, timing, and the far one of a pair's offset.
+        let drive = |l: LinkGene, amp: f32, phase: f32, pair: f32| LinkGene {
+            motor: Motor { amp, phase, pair, lift: 0.0 },
+            ..l
         };
         let part = |tissue, length, width, recursion, links| PartGene { tissue, length, width, recursion, links };
         let (parts, scale, diet, hidden) = match kind {
             Founder::Drifter => (
                 vec![
-                    part(Float, 1.0, 0.8, 0, vec![link(1, 0.0, 1.0, 0.6, false), link(2, 2.3, 0.6, 0.7, true)]),
+                    part(
+                        Float,
+                        1.0,
+                        0.8,
+                        0,
+                        vec![link(1, 0.0, 1.0, 0.6, false), drive(link(2, 2.3, 0.6, 0.7, true), 0.5, 0.0, 0.0)],
+                    ),
                     part(Gut, 0.8, 0.6, 0, vec![link(3, 0.3, 1.0, 0.5, false)]),
                     part(LightFilm, 1.2, 0.2, 0, vec![]),
                     part(Sense, 0.5, 0.4, 0, vec![]),
@@ -387,13 +446,13 @@ impl Genome {
                         0,
                         vec![
                             link(1, 0.0, 1.0, 0.5, false),
-                            link(2, -1.7, 0.25, 0.75, true),
-                            link(2, -1.4, 0.8, 0.75, true),
+                            drive(link(2, -1.7, 0.25, 0.75, true), 1.05, 0.83, 0.5),
+                            drive(link(2, -1.2, 0.8, 0.75, true), 0.35, 0.84, 0.5),
                             link(3, 3.1, 0.0, 0.7, false),
                         ],
                     ),
                     part(Mouth, 0.6, 0.5, 0, vec![link(4, 0.6, 0.3, 0.6, false)]),
-                    part(Muscle, 1.0, 0.2, 1, vec![link(2, 0.5, 1.0, 0.8, false)]),
+                    part(Muscle, 1.0, 0.2, 1, vec![drive(link(2, 0.8, 1.0, 0.8, false), 0.45, 0.07, 0.5)]),
                     part(Gut, 0.9, 0.7, 0, vec![]),
                     part(Sense, 0.5, 0.4, 0, vec![]),
                 ],
@@ -409,12 +468,12 @@ impl Genome {
                         0.5,
                         0,
                         vec![
-                            link(1, 3.14, 0.0, 0.8, false),
+                            drive(link(1, 3.05, 0.0, 0.8, false), 0.9, 0.5, 0.0),
                             link(2, 0.0, 1.0, 0.6, false),
                             link(4, -2.2, 0.4, 0.6, true),
                         ],
                     ),
-                    part(Muscle, 0.8, 0.35, 3, vec![link(1, 0.0, 1.0, 0.8, false)]),
+                    part(Muscle, 0.8, 0.35, 3, vec![drive(link(1, -0.1, 1.0, 0.8, false), 1.0, 0.8, 0.0)]),
                     part(Mouth, 0.5, 0.5, 0, vec![link(3, 0.4, 0.2, 0.7, false)]),
                     part(Sense, 0.5, 0.4, 0, vec![]),
                     part(Gut, 0.7, 0.5, 0, vec![]),
@@ -425,10 +484,29 @@ impl Genome {
             ),
             Founder::Crawler => (
                 vec![
-                    part(Gut, 1.0, 0.6, 0, vec![link(1, 3.14, 0.0, 0.9, false), link(2, 0.0, 1.0, 0.6, false)]),
-                    part(Armor, 0.9, 0.55, 3, vec![link(1, 0.0, 1.0, 0.9, false), link(3, -1.6, 0.5, 0.5, true)]),
+                    part(
+                        Gut,
+                        1.0,
+                        0.6,
+                        0,
+                        vec![
+                            drive(link(1, 3.14, 0.0, 0.9, false), 0.5, 0.14, 0.0),
+                            link(2, 0.0, 1.0, 0.6, false),
+                            drive(link(3, -1.4, 0.5, 0.5, true), 1.2, 0.58, 0.0),
+                        ],
+                    ),
+                    part(
+                        Armor,
+                        0.9,
+                        0.55,
+                        3,
+                        vec![
+                            drive(link(1, 0.2, 1.0, 0.9, false), 1.05, 0.12, 0.0),
+                            drive(link(3, -1.6, 0.5, 0.5, true), 0.9, 0.73, 0.55),
+                        ],
+                    ),
                     part(Mouth, 0.5, 0.6, 0, vec![link(4, 0.0, 1.0, 0.6, false)]),
-                    part(Muscle, 0.5, 0.25, 0, vec![]),
+                    part(Muscle, 0.5, 0.25, 1, vec![drive(link(3, 0.8, 1.0, 0.8, false), 0.27, 0.58, 0.0)]),
                     part(Sense, 0.4, 0.3, 0, vec![]),
                 ],
                 0.006,
@@ -448,6 +526,7 @@ impl Genome {
             parts,
             brain: BrainGenes::random(rng, hidden),
             adult_scale: scale * rng.range(0.85, 1.2),
+            gait_hz: rng.range(1.2, 2.5),
             growth_time: rng.range(60.0, 180.0),
             aging: rng.range(0.8, 1.2),
             diet: diet + rng.signed() * 0.05,
@@ -470,6 +549,18 @@ impl Genome {
             marker,
         };
         g.mate_pref.copy_from_slice(&g.look[..4]);
+        // Each plan's gait was tuned at about this rhythm.
+        g.gait_hz = match kind {
+            Founder::Drifter => g.gait_hz,
+            Founder::Grazer => rng.range(2.3, 2.9),
+            Founder::Crawler => rng.range(2.1, 2.6),
+            Founder::Swimmer => rng.range(2.6, 3.2),
+        };
+        g
+    }
+
+    pub fn founder(kind: Founder, rng: &mut Rng) -> Self {
+        let mut g = Self::founder_plan(kind, rng);
         // Founders are already a little varied.
         for _ in 0..3 {
             g.mutate(rng, 1.0);
@@ -509,6 +600,7 @@ impl Genome {
         }
         mix!(
             adult_scale,
+            gait_hz,
             growth_time,
             aging,
             diet,
@@ -551,6 +643,7 @@ impl Genome {
             }
         };
         nudge(&mut self.adult_scale, 0.0006, 0.002, 0.035, rng);
+        nudge(&mut self.gait_hz, 0.15, 0.2, 6.0, rng);
         if rng.chance(0.15 * r) {
             self.growth_time = (self.growth_time * (1.0 + rng.normal() * 0.1)).clamp(20.0, 30000.0);
         }
@@ -628,6 +721,7 @@ impl Genome {
                 if rng.chance(0.008 * r) {
                     l.to = rng.below(n) as u8;
                 }
+                l.motor.mutate(rng, r);
             }
             if rng.chance(0.008 * r) && !p.links.is_empty() {
                 let i = rng.below(p.links.len());

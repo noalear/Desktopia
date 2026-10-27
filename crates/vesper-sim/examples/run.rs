@@ -14,7 +14,7 @@ fn main() {
     sim.enable_profile();
     let start = Instant::now();
     let mut facts: std::collections::BTreeMap<String, u32> = Default::default();
-    let report_every = 600.0;
+    let report_every: f64 = std::env::var("EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(600.0);
     let mut next = report_every;
     let mut step_time = Duration::ZERO;
     let mut steps = 0u32;

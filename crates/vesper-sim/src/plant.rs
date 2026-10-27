@@ -236,6 +236,9 @@ impl PlantGenome {
                     base: [0.0; 2],
                     tip: [0.0; 2],
                     dir: 0.0,
+                    amp: 0.0,
+                    phase: 0.0,
+                    lift: 0.0,
                 });
                 (segs.len() - 1) as i16
             };

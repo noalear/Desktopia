@@ -18,6 +18,7 @@ pub mod ground;
 pub mod history;
 mod life;
 pub mod mind;
+pub mod physics;
 pub mod plant;
 pub mod pose;
 pub mod rng;

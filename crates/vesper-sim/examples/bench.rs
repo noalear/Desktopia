@@ -7,7 +7,7 @@ fn main() {
         Ok(s) => s,
         Err(_) => {
             let mut s = Sim::new(1, 1_800_000_000.0);
-            for _ in 0..3000 {
+            for _ in 0..300 {
                 s.step();
             }
             save::save(&s, path).unwrap();

@@ -2,6 +2,7 @@
 //! bodies afterwards.
 
 use crate::body::Body;
+use crate::physics::{self, Rig};
 use crate::brain::Brain;
 use crate::creature::{Action, Creature, Tally, adult_matter};
 use crate::genome::{Genome, Tissue};
@@ -92,8 +93,18 @@ pub fn new_creature(
         intake: 0.0,
         target: None,
         doom: None,
+        rig: Rig::empty(),
+        drive: [0.0; 2],
+        // Hopeful about both ways at first, so it tries each.
+        stride: 0.5,
+        back: 0.5,
+        toil: 0.0,
+        climb: 0.0,
+        moments: Vec::new(),
     };
     c.refresh();
+    c.rig = Rig::new(&c.body, physics::present(&c.body, c.maturity, 0), c.scale(), pos[2]);
+    c.rig.face = if heading.cos() < 0.0 { -1.0 } else { 1.0 };
     c.energy = c.abil.energy_cap * 0.6;
     c
 }
@@ -165,7 +176,7 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
             def.tally.scars += 1;
             def.bleeding += 0.3;
             def.refresh();
-            chunk = Some((sub, m, def.body.clone(), def.scale(), def.genome.look));
+            chunk = Some((sub, m, def.body.clone(), def.scale(), def.genome.look, def.rig.piece(&def.body, sub)));
         }
     }
     let killed = def.health <= 0.0 && def.doom.is_none();
@@ -200,7 +211,7 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         let eff = 0.1 + 0.9 * att_diet;
         digest_meat(w, ai, eaten, eff, bin, toxin * 1.5);
     }
-    if let Some((sub, m, body, scale, look)) = chunk {
+    if let Some((sub, m, body, scale, look, chunk_rig)) = chunk {
         let id = w.id();
         w.remains.push(Remains {
             id,
@@ -211,7 +222,7 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
             missing: !sub,
             scale,
             look,
-            pos: [def_pos[0] + 0.004, def_pos[1], def_pos[2]],
+            pos: def_pos,
             heading: def_heading,
             matter: m,
             initial: m,
@@ -219,6 +230,8 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
             toxin,
             strain: None,
             offered_to: None,
+            rig: Some(chunk_rig),
+            moments: Vec::new(),
         });
     }
     // Group against group.
@@ -558,9 +571,9 @@ pub fn metabolism(w: &mut World, dt: f32) {
         c.age += dt;
         let light = env.light(c.pos[0], c.pos[2]);
         let temp = env.temperature(c.pos[0], c.pos[2]);
-        let move_cost = c.abil.upkeep * 1.5 * c.effort * c.effort;
+        // Moving is paid for by the muscles, in the physics.
         let glow_cost = c.flash * c.abil.upkeep * 0.3;
-        c.energy -= (c.abil.upkeep + move_cost + glow_cost) * dt;
+        c.energy -= (c.abil.upkeep + glow_cost) * dt;
         c.energy += c.abil.film * light * dt;
         let cap = c.abil.energy_cap;
         c.energy = c.energy.min(cap);
@@ -758,6 +771,8 @@ pub fn bury(w: &mut World) {
             toxin: c.genome.toxin,
             strain,
             offered_to: offered,
+            rig: Some(c.rig),
+            moments: Vec::new(),
         });
         if let Some(seed) = c.seed {
             crate::ecology::sow(w, &seed, c.pos[0], c.pos[1], 0.0, 0.0);
@@ -771,7 +786,7 @@ pub fn decay(w: &mut World, dt: f32) {
     while i < w.remains.len() {
         let r = &mut w.remains[i];
         r.age += dt;
-        if r.pos[2] > 0.0 {
+        if r.pos[2] > 0.0 && r.rig.is_none() {
             r.pos[2] = (r.pos[2] - 0.008 * dt).max(0.0);
         }
         if r.age > 150.0 {

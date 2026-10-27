@@ -301,7 +301,7 @@ mod app {
                     gpu.renderer.set_plants(&mut self.life_batch);
                     self.plants_uploaded = true;
                 }
-                life.creatures(&mut self.life_batch, world.time);
+                life.creatures(&mut self.life_batch);
                 gpu.renderer.set_creatures(&mut self.life_batch);
             }
             let mut lost = false;
