@@ -1,0 +1,16 @@
+[package]
+name = "vesper-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vesper's living world: evolving bodies, learning brains, ecology and societies"
+
+[dependencies]
+vesper-terrain = { path = "../vesper-terrain" }
+serde = { workspace = true, features = ["rc"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+
+[dev-dependencies]
+
+[[example]]
+name = "run"
