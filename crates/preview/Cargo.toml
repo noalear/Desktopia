@@ -8,6 +8,9 @@ publish = false
 [dependencies]
 vesper-render = { path = "../vesper-render" }
 vesper-forms = { path = "../vesper-forms" }
+vesper-sim = { path = "../vesper-sim" }
+vesper-terrain = { path = "../vesper-terrain" }
+log.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }

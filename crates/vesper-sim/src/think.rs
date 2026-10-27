@@ -101,7 +101,8 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             if o.species == me.species && kin > 0.6 {
                 p.kin_near += 1;
             }
-            let mut danger = if o.hunter > 0.0 { o.hunter * (o.len / my_len * 0.8).min(2.0) * (1.0 - kin) } else { 0.0 };
+            let mut danger =
+                if o.hunter > 0.0 { o.hunter * (o.len / my_len * 0.8).min(2.0) * (1.0 - kin) } else { 0.0 };
             if o.striking == Some(me.id) {
                 danger += 1.0;
             }
@@ -211,8 +212,7 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         } else {
             0.0
         };
-        inputs[i::WET] =
-            w.ground.wetness(c.pos[0], c.pos[1] / crate::world::DEPTH) * c.on_ground() as u8 as f32;
+        inputs[i::WET] = w.ground.wetness(c.pos[0], c.pos[1] / crate::world::DEPTH) * c.on_ground() as u8 as f32;
         inputs[i::ALT] = c.pos[2] / ALT_MAX;
         if let Some(f) = p.food {
             let d = dist3(c.pos, p.food_pos);
