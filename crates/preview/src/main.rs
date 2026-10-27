@@ -3,6 +3,7 @@
 //!
 //! Usage: preview [--scale S] [--time SECONDS] [--frames N] [--step SECONDS]
 //!                [--band SHIFT] [--lightning L] [--storm X STRENGTH] [--volcano V]
+//!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup]
 //!                [--crop X Y W H] [--out DIR]
 //!
@@ -25,6 +26,10 @@ struct Args {
     lightning: Option<f32>,
     storm: Option<[f32; 2]>,
     volcano: Option<f32>,
+    lava: Option<f32>,
+    ash: Option<f32>,
+    cold: Option<[f32; 2]>,
+    dust: Option<[f32; 2]>,
     seed: u64,
     life: bool,
     lineup: bool,
@@ -42,6 +47,10 @@ fn parse_args() -> Args {
         lightning: None,
         storm: None,
         volcano: None,
+        lava: None,
+        ash: None,
+        cold: None,
+        dust: None,
         seed: 7,
         life: true,
         lineup: false,
@@ -59,11 +68,18 @@ fn parse_args() -> Args {
             "--band" => a.band = Some(val().parse().unwrap()),
             "--lightning" => a.lightning = Some(val().parse().unwrap()),
             "--seed" => a.seed = val().parse().unwrap(),
-            "--storm" => {
+            "--storm" | "--cold" | "--dust" => {
                 let x = val().parse().unwrap();
-                a.storm = Some([x, it.next().expect("missing value").parse().unwrap()]);
+                let pair = Some([x, it.next().expect("missing value").parse().unwrap()]);
+                match flag.as_str() {
+                    "--storm" => a.storm = pair,
+                    "--cold" => a.cold = pair,
+                    _ => a.dust = pair,
+                }
             }
             "--volcano" => a.volcano = Some(val().parse().unwrap()),
+            "--lava" => a.lava = Some(val().parse().unwrap()),
+            "--ash" => a.ash = Some(val().parse().unwrap()),
             "--no-life" => a.life = false,
             "--lineup" => a.lineup = true,
             "--crop" => {
@@ -173,13 +189,30 @@ fn view_at(args: &Args, world_size_px: [f32; 2], t: f64) -> WorldView {
     w.band_shift = args.band.unwrap_or(0.0);
     if let Some([x, s]) = args.storm {
         w.storm_x = x;
+        w.lightning_x = x;
         w.storm = s;
+        w.wind_low = vesper_render::rhythm::CALM_LOW * (1.0 + s);
+    }
+    if let Some([x, s]) = args.cold {
+        w.cold_x = x;
+        w.cold = s;
+    }
+    if let Some([x, s]) = args.dust {
+        w.dust_x = x;
+        w.dust = s;
     }
     if let Some(l) = args.lightning {
         w.lightning = l;
     }
     if let Some(v) = args.volcano {
         w.volcano = v;
+        w.lava = vesper_render::rhythm::lava(v);
+    }
+    if let Some(r) = args.lava {
+        w.lava = r;
+    }
+    if let Some(a) = args.ash {
+        w.ash = a;
     }
     w
 }

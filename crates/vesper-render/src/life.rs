@@ -78,12 +78,29 @@ pub struct Organism<'a> {
     pub z: f32,
     /// 1 living, falling to 0 as a corpse decays.
     pub alive: f32,
-    /// Brain-driven glow flash, 0..1.
+    /// Brain-driven glow flash, 0..1, and which of 16 patterns it flashes in.
     pub signal: f32,
+    pub symbol: u8,
+    /// Glowing fluid leaking from wounds, 0..1.
+    pub bleeding: f32,
+    pub infection: Option<Infection>,
     /// Hide everything below this height (a burrower half in the ground).
     pub clip_y: Option<f32>,
     /// Stable per-individual number, so patterns don't swim between frames.
     pub seed: u32,
+}
+
+/// Something living in or on an organism.
+#[derive(Clone, Copy, Debug)]
+pub struct Infection {
+    /// 0..1 how far it has grown.
+    pub load: f32,
+    /// 0 a microbe (sores and a sickly tint) .. 1 a parasite you can see inside.
+    pub visible: f32,
+    /// 0..1 its own colour, around the same ring as look gene 0.
+    pub hue: f32,
+    /// A partner that feeds its host rather than a disease.
+    pub symbiont: bool,
 }
 
 #[repr(C)]
@@ -107,14 +124,17 @@ pub(crate) struct Prim {
     mat: [f32; 4],
     /// Pattern scale, sheen, fringe, pattern contrast.
     look: [f32; 4],
-    /// Countershading, iridescence, signal, spare.
+    /// Countershading, iridescence, signal, signal pattern.
     extra: [f32; 4],
+    /// Infection load, how visible, hue (+2 for a symbiont), bleeding.
+    state: [f32; 4],
 }
 
-pub(crate) const PRIM_ATTRIBS: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
+pub(crate) const PRIM_ATTRIBS: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_array![
     0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32x2,
     4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4,
     8 => Float32x4, 9 => Float32x4, 10 => Float32x4, 11 => Float32x4,
+    12 => Float32x4,
 ];
 
 /// Draw groups, drawn in this order with different depth rules.
@@ -226,6 +246,15 @@ impl LifeBatch {
         let clip = o.clip_y.unwrap_or(-10.0);
         let alive = o.alive.clamp(0.0, 1.0);
         let z = o.z.clamp(0.0, 1.0) * 0.98 + 0.01;
+        let state = match o.infection {
+            Some(inf) => [
+                inf.load.clamp(0.0, 1.0),
+                inf.visible.clamp(0.0, 1.0),
+                inf.hue.rem_euclid(1.0) + if inf.symbiont { 2.0 } else { 0.0 },
+                o.bleeding.clamp(0.0, 1.0),
+            ],
+            None => [0.0, 0.0, 0.0, o.bleeding.clamp(0.0, 1.0)],
+        };
 
         // Pattern coordinates run continuously down connected chains, and the
         // wind bend at a segment's root is whatever its parent's tip does.
@@ -265,7 +294,8 @@ impl LifeBatch {
                 glow: [pal.glow[0], pal.glow[1], pal.glow[2], pal.freckles],
                 mat: [tissue as u8 as f32, seed, damage.clamp(0.0, 1.0), alive],
                 look: [pal.pattern_scale, sheen, pal.fringe, pal.contrast],
-                extra: [pal.countershade, pal.iridescence, o.signal, 0.0],
+                extra: [pal.countershade, pal.iridescence, o.signal, (o.symbol % 16) as f32],
+                state,
                 ..Default::default()
             }
         };

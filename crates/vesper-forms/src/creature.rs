@@ -7,7 +7,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use vesper_render::{Look, Membrane, Seg, Tissue};
+use vesper_render::{Infection, Look, Membrane, Seg, Tissue};
 use vesper_terrain as terrain;
 
 use crate::rope::Rope;
@@ -317,6 +317,12 @@ pub struct Creature {
     /// 0 front of the ground plane .. 1 back.
     pub depth: f32,
     pub alive: f32,
+    /// Which of the 16 light signals it flashes.
+    pub symbol: u8,
+    pub bleeding: f32,
+    pub infection: Option<Infection>,
+    /// Keep the signal lit, for inspection.
+    pub signal_hold: Option<f32>,
     facing: f32,
     fx: f32,
     vel: [f32; 2],
@@ -358,7 +364,27 @@ impl Creature {
             ropes: Vec::new(),
             rng: Rng::new(rng.next_u64()),
             held: false,
+            symbol: 0,
+            bleeding: 0.0,
+            infection: None,
+            signal_hold: None,
         };
+        // Sickness, parasites and partners, from its own generator so the
+        // rest of the world's draws stay put.
+        let r = &mut c.rng;
+        c.symbol = r.int(0, 15) as u8;
+        let roll = r.f();
+        let hue = r.f();
+        c.infection = if roll < 0.12 {
+            Some(Infection { load: r.range(0.4, 1.0), visible: 0.0, hue, symbiont: false })
+        } else if roll < 0.2 {
+            Some(Infection { load: r.range(0.5, 1.0), visible: 1.0, hue, symbiont: false })
+        } else if roll < 0.28 {
+            Some(Infection { load: r.range(0.5, 1.0), visible: 0.0, hue, symbiont: true })
+        } else {
+            None
+        };
+        c.bleeding = if r.chance(0.08) { r.range(0.4, 1.0) } else { 0.0 };
         c.make_ropes();
         c
     }
@@ -399,14 +425,18 @@ impl Creature {
         if self.alive < 1.0 {
             return 0.0;
         }
+        if let Some(s) = self.signal_hold {
+            return s;
+        }
         let slot = (self.time / 7.0).floor();
         let h = ((slot * 12.9898 + self.seed as f32 * 0.001).sin() * 43758.5).fract().abs();
         if h < 0.7 {
             return 0.0;
         }
         let local = self.time - slot * 7.0;
-        let pulses = (local * 9.0).sin().max(0.0) * (-local * 0.8).exp();
-        pulses * (h - 0.7) / 0.3
+        // A burst that swells and fades; the pattern sets its rhythm.
+        let burst = (local * 2.0).min(1.0) * (-local * 0.6).exp();
+        burst * (h - 0.7) / 0.3
     }
 
     fn make_ropes(&mut self) {

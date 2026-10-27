@@ -10,7 +10,7 @@ use std::borrow::Cow;
 
 pub mod life;
 
-pub use life::{LifeBatch, Look, Membrane, Organism, Seg, Tissue};
+pub use life::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue};
 
 const COMMON_WGSL: &str = include_str!("shaders/common.wgsl");
 const BAKE_WGSL: &str = include_str!("shaders/bake.wgsl");
@@ -50,35 +50,69 @@ pub struct WorldView {
     pub time: f32,
     /// Seasonal slide of the twilight band, in world units.
     pub band_shift: f32,
-    /// Current lightning flash strength, 0..1.
+    /// Current lightning flash strength, 0..1, and where the bolt falls.
     pub lightning: f32,
+    pub lightning_x: f32,
     /// World x of the storm cell.
     pub storm_x: f32,
     /// 0 clear .. 1 full storm.
     pub storm: f32,
     /// 0 quiet, about 0.3 rumbling, 1 erupting.
     pub volcano: f32,
+    /// How far lava has run each way from the volcano, world units.
+    pub lava: f32,
+    /// 0..1 ash in the sky.
+    pub ash: f32,
     /// The river's slow drift (radians) and flood (0 normal .. 1 twice as wide).
     pub river_phase: f32,
     pub river_flood: f32,
+    /// A cold fall spilling off the glacier: 0..1 strength and its front's x.
+    pub cold: f32,
+    pub cold_x: f32,
+    /// A dust storm rolling off the day side: 0..1 strength and its centre's x.
+    pub dust: f32,
+    pub dust_x: f32,
+    /// Wind along x near the ground (day-ward, negative) and up high
+    /// (night-ward, positive), world units per second.
+    pub wind_low: f32,
+    pub wind_high: f32,
+    /// How far the high wind has carried the cloud deck, world units. The
+    /// host integrates `wind_high` into this; it may wrap like `time`.
+    pub cloud_drift: f32,
     pub exposure: f32,
 }
 
 impl WorldView {
     /// The world at a wall-clock moment, with weather and the volcano's cycle
-    /// taken from [`rhythm`] so they carry on across restarts.
+    /// taken from [`rhythm`] so they carry on across restarts. This is the
+    /// fallback when no simulation is running; with one, the host copies the
+    /// simulation's environment over these fields one for one.
     pub fn at(world_size_px: [f32; 2], unix_secs: f64, exposure: f32) -> Self {
         let w = rhythm::weather(unix_secs);
+        let volcano = rhythm::volcano(unix_secs);
+        let (cold, cold_x) = rhythm::cold_fall(unix_secs);
+        let (dust, dust_x) = rhythm::dust_storm(unix_secs);
+        let time = rhythm::shader_time(unix_secs);
         Self {
             world_size_px,
-            time: rhythm::shader_time(unix_secs),
+            time,
             band_shift: rhythm::band_shift(unix_secs),
             lightning: w.lightning,
+            lightning_x: w.lightning_x,
             storm_x: w.storm_x,
             storm: w.storm,
-            volcano: rhythm::volcano(unix_secs),
+            volcano,
+            lava: rhythm::lava(volcano),
+            ash: rhythm::ash(unix_secs),
             river_phase: 0.0,
             river_flood: 0.0,
+            cold,
+            cold_x,
+            dust,
+            dust_x,
+            wind_low: rhythm::CALM_LOW * (1.0 + w.storm),
+            wind_high: rhythm::CALM_HIGH * (1.0 + w.storm),
+            cloud_drift: time * rhythm::CALM_HIGH * 0.5,
             exposure,
         }
     }
@@ -102,7 +136,16 @@ struct Params {
     volcano: f32,
     river_phase: f32,
     river_flood: f32,
-    _pad: [f32; 2],
+    lightning_x: f32,
+    lava: f32,
+    ash: f32,
+    cold: f32,
+    cold_x: f32,
+    dust: f32,
+    dust_x: f32,
+    wind_low: f32,
+    wind_high: f32,
+    cloud_drift: f32,
 }
 
 pub struct Renderer {
@@ -374,7 +417,16 @@ impl Renderer {
             volcano: world.volcano,
             river_phase: world.river_phase,
             river_flood: world.river_flood,
-            _pad: [0.0; 2],
+            lightning_x: world.lightning_x,
+            lava: world.lava,
+            ash: world.ash,
+            cold: world.cold,
+            cold_x: world.cold_x,
+            dust: world.dust,
+            dust_x: world.dust_x,
+            wind_low: world.wind_low,
+            wind_high: world.wind_high,
+            cloud_drift: world.cloud_drift,
         };
         self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params));
 
@@ -585,8 +637,9 @@ fn draw_fullscreen(
 }
 
 /// Slow world rhythms that don't need a simulation: the seasonal slide of the
-/// twilight band and the storm's lightning. Driven by wall-clock time so the
-/// season carries on across restarts.
+/// twilight band, storms, the volcano, cold falls and dust storms. Driven by
+/// wall-clock time so they carry on across restarts, and standing in for the
+/// simulation when it is not running.
 pub mod rhythm {
     /// Length of one seasonal wobble, in days.
     pub const SEASON_DAYS: f64 = 4.0;
@@ -603,11 +656,17 @@ pub mod rhythm {
         (secs % TIME_WRAP) as f32
     }
 
+    /// Calm-air wind near the ground and up high, world units per second;
+    /// storms double both. Matches the simulation's own.
+    pub const CALM_LOW: f32 = -0.004;
+    pub const CALM_HIGH: f32 = 0.005;
+
     pub struct Weather {
         pub storm_x: f32,
         /// 0 clear .. 1 full storm.
         pub storm: f32,
         pub lightning: f32,
+        pub lightning_x: f32,
     }
 
     /// Storms are born every so often where warm and cold air meet, drift
@@ -616,7 +675,7 @@ pub mod rhythm {
         // Each 40-minute slot may hold one storm that lives up to 35 minutes.
         const SLOT: f64 = 2400.0;
         const LIFE: f64 = 2100.0;
-        let mut best = Weather { storm_x: 2.4, storm: 0.0, lightning: 0.0 };
+        let mut best = Weather { storm_x: 2.4, storm: 0.0, lightning: 0.0, lightning_x: 2.4 };
         // A storm from the previous slot may still be alive.
         for k in [-1.0, 0.0] {
             let slot = (secs / SLOT).floor() + k;
@@ -635,11 +694,14 @@ pub mod rhythm {
                 let x0 = 1.3 + 1.5 * hash(slot + 4.1);
                 // About half a monitor per half hour.
                 let x = x0 + age / 3600.0 * 0.9;
-                best = Weather { storm_x: x as f32, storm: strength, lightning: 0.0 };
+                best = Weather { storm_x: x as f32, storm: strength, lightning: 0.0, lightning_x: x as f32 };
             }
         }
         if best.storm > 0.5 {
             best.lightning = lightning(secs) * ((best.storm - 0.5) * 2.0).min(1.0);
+            // Each strike lands somewhere under the cell.
+            let strike = (secs / 50.0).floor();
+            best.lightning_x += (0.16 * (hash(strike + 3.3) - 0.5)) as f32;
         }
         best
     }
@@ -682,6 +744,64 @@ pub mod rhythm {
         rumble.max(erupt) as f32
     }
 
+    /// How far lava has run from the crater for a volcano mood.
+    pub fn lava(volcano: f32) -> f32 {
+        // Rumbling only wells up in the crater; an eruption sends it down the cone.
+        let v = volcano as f64;
+        (0.04 * v + 0.28 * v * smooth(0.35, 0.6, v)) as f32
+    }
+
+    /// Ash thrown up by eruptions over the last hour or so, thinning slowly.
+    pub fn ash(secs: f64) -> f32 {
+        let mut ash = 0.0f32;
+        for k in 0..8 {
+            let lag = k as f64 * 300.0;
+            let v = volcano(secs - lag);
+            if v > 0.5 {
+                ash = ash.max(0.8 * (v - 0.3) / 0.7 * (-lag / 1800.0).exp() as f32);
+            }
+        }
+        ash.min(0.8)
+    }
+
+    /// A front of cold air spilling off the glacier and creeping day-ward,
+    /// as (strength 0..1, x of its front). One every few hours.
+    pub fn cold_fall(secs: f64) -> (f32, f32) {
+        front(secs, 5400.0, 0.45, 3.3, -0.0012, 1.2, 11.0)
+    }
+
+    /// A wall of dust blown off the scorched day side, rolling night-ward,
+    /// as (strength 0..1, x of its centre).
+    pub fn dust_storm(secs: f64) -> (f32, f32) {
+        front(secs, 7200.0, 0.4, 0.2, 0.0015, 1.8, 23.0)
+    }
+
+    /// Something born at `x0` in some slots, travelling at `speed` until it
+    /// reaches `x_end`, then dying away over a couple of minutes.
+    fn front(secs: f64, slot_len: f64, odds: f64, x0: f64, speed: f64, x_end: f64, salt: f64) -> (f32, f32) {
+        let travel = (x_end - x0) / speed;
+        let life = travel + 480.0;
+        let mut best = (0.0f32, x0 as f32);
+        for k in [-1.0, 0.0] {
+            let slot = (secs / slot_len).floor() + k;
+            if hash(slot * 1.7 + salt) > odds {
+                continue;
+            }
+            let born = slot * slot_len + hash(slot + salt + 0.3) * (slot_len - life).max(0.0);
+            let age = secs - born;
+            if !(0.0..life).contains(&age) {
+                continue;
+            }
+            let grow = (age / 180.0).min(1.0);
+            let fade = (-(age - travel).max(0.0) / 120.0).exp();
+            let strength = ((0.4 + 0.6 * hash(slot + salt + 0.7)) * grow * fade) as f32;
+            if strength > best.0 {
+                best = (strength, (x0 + speed * age.min(travel)) as f32);
+            }
+        }
+        best
+    }
+
     fn smooth(e0: f64, e1: f64, x: f64) -> f64 {
         let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
         t * t * (3.0 - 2.0 * t)
@@ -690,5 +810,48 @@ pub mod rhythm {
     fn hash(x: f64) -> f64 {
         let s = (x * 12.9898 + 78.233).sin() * 43758.5453;
         s - s.floor()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Over two days, cold falls and dust storms both happen, stay
+        /// between where they start and where they die, and fade smoothly.
+        #[test]
+        fn fronts_come_and_go_in_range() {
+            let t0 = 1_800_000_000.0;
+            let (mut cold_seen, mut dust_seen) = (false, false);
+            let (mut last_cold, mut last_dust) = (0.0f32, 0.0f32);
+            for k in 0..(2 * 86400 / 10) {
+                let t = t0 + k as f64 * 10.0;
+                let (c, cx) = cold_fall(t);
+                let (d, dx) = dust_storm(t);
+                assert!((0.0..=1.0).contains(&c) && (0.0..=1.0).contains(&d));
+                if c > 0.05 {
+                    cold_seen = true;
+                    assert!((1.19..=3.31).contains(&cx), "cold front at {cx}");
+                }
+                if d > 0.05 {
+                    dust_seen = true;
+                    assert!((0.19..=1.81).contains(&dx), "dust storm at {dx}");
+                }
+                assert!((c - last_cold).abs() < 0.1 && (d - last_dust).abs() < 0.1, "a front jumped at {t}");
+                last_cold = c;
+                last_dust = d;
+            }
+            assert!(cold_seen && dust_seen);
+        }
+
+        #[test]
+        fn lava_and_ash_follow_the_volcano() {
+            assert_eq!(lava(0.0), 0.0);
+            assert!(lava(1.0) > 0.25 && lava(0.3) < 0.03);
+            let t0 = 1_800_000_000.0;
+            for k in 0..(86400 / 60) {
+                let a = ash(t0 + k as f64 * 60.0);
+                assert!((0.0..=0.8).contains(&a));
+            }
+        }
     }
 }

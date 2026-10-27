@@ -18,7 +18,16 @@ struct Params {
     volcano: f32,       // 0 quiet, ~0.3 rumbling, 1 erupting
     river_phase: f32,   // the river's slow drift, radians
     river_flood: f32,   // 0 normal .. 1 twice as wide
-    _pad: vec2f,
+    lightning_x: f32,   // where the bolt falls
+    lava: f32,          // how far lava has run each way from the crater
+    ash: f32,           // 0..1 ash in the sky
+    cold: f32,          // cold fall off the glacier: strength
+    cold_x: f32,        //   and its front
+    dust: f32,          // dust storm off the day side: strength
+    dust_x: f32,        //   and its centre
+    wind_low: f32,      // ground wind, world units/s, negative is day-ward
+    wind_high: f32,     // high wind, positive is night-ward
+    cloud_drift: f32,   // how far the high wind has carried the clouds
 };
 
 @group(0) @binding(0) var<uniform> P: Params;

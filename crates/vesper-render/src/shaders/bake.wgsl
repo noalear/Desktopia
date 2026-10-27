@@ -187,7 +187,7 @@ fn mid_layer(p: vec2f, top: f32) -> vec4f {
         let spread = (fk - 1.5) * 0.55;
         let xl = VOLCANO_X + spread * below * 1.1 + 0.008 * sin(below * 70.0 + fk * 2.0);
         let w = 0.0012 + 0.002 * below;
-        lava = max(lava, smoothstep(w, w * 0.3, abs(p.x - xl)) * smoothstep(0.16 + fk * 0.02, 0.0, below));
+        lava = max(lava, smoothstep(w, w * 0.3, abs(p.x - xl)) * smoothstep(0.34 + fk * 0.03, 0.0, below) * (0.5 + 0.5 * smoothstep(0.2, 0.0, below)));
     }
     col += vec3f(9.0, 2.2, 0.3) * lava;
     // Even the faint edges of a channel are tagged lava, so the frame pass
