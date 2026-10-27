@@ -15,12 +15,14 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HICON, ICONINFO, MF_CHECKED, MF_SEPARATOR, MF_STRING,
-    PBT_POWERSETTINGCHANGE, PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, TPM_NONOTIFY,
+    PBT_POWERSETTINGCHANGE, PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem,
+    TPM_NONOTIFY,
     TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE,
     WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
-use windows::core::{PCWSTR, w};
+use windows::Win32::UI::Input::KeyboardAndMouse::{HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey};
+use windows::core::{HSTRING, PCWSTR, w};
 
 const WM_TRAY: u32 = WM_APP + 1;
 /// Sent by a newer copy that is starting up.
@@ -28,6 +30,8 @@ pub const WM_QUIT_REQUEST: u32 = WM_APP + 2;
 const CMD_PAUSE: u32 = 1;
 const CMD_AUTOSTART: u32 = 2;
 const CMD_QUIT: u32 = 3;
+const CMD_CHRONICLE: u32 = 4;
+const HOTKEY_CHRONICLE: i32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Event {
@@ -41,14 +45,18 @@ pub enum Event {
     DisplayOn(bool),
     TogglePause,
     ToggleAutostart,
+    /// The tray icon, its menu or the hotkey asked for the chronicle.
+    OpenChronicle,
     Quit,
 }
 
 /// What the tray menu shows; kept up to date by the main loop.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct MenuState {
     pub paused: bool,
     pub autostart: bool,
+    /// The chronicle hotkey as typed in the settings, if it was registered.
+    pub hotkey: Option<String>,
 }
 
 thread_local! {
@@ -143,6 +151,28 @@ impl Host {
         }
     }
 
+    /// Registers the keys that open the chronicle. Returns false if they are
+    /// malformed or another program already has them.
+    pub fn register_hotkey(&self, spec: &str) -> bool {
+        unsafe {
+            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_CHRONICLE);
+        }
+        let Some((mods, vk)) = crate::config::parse_hotkey(spec) else {
+            if !spec.trim().is_empty() {
+                log::warn!("can't read the chronicle hotkey {spec:?}");
+            }
+            return false;
+        };
+        let mods = HOT_KEY_MODIFIERS(mods) | MOD_NOREPEAT;
+        match unsafe { RegisterHotKey(Some(self.hwnd), HOTKEY_CHRONICLE, mods, vk) } {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("chronicle hotkey {spec} is taken: {e}");
+                false
+            }
+        }
+    }
+
     pub fn set_tooltip(&self, text: &str) {
         let mut nid = self.tray_data();
         nid.uFlags = NIF_TIP;
@@ -158,6 +188,7 @@ impl Drop for Host {
         unsafe {
             let nid = self.tray_data();
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+            let _ = UnregisterHotKey(Some(self.hwnd), HOTKEY_CHRONICLE);
             let _ = DestroyIcon(self.icon);
             let _ = DestroyWindow(self.hwnd);
         }
@@ -181,9 +212,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_TRAY => {
             let mouse = (lp.0 & 0xffff) as u32;
-            if mouse == WM_RBUTTONUP || mouse == WM_CONTEXTMENU || mouse == WM_LBUTTONUP {
+            if mouse == WM_RBUTTONUP || mouse == WM_CONTEXTMENU {
                 unsafe { show_menu(hwnd) };
+            } else if mouse == WM_LBUTTONUP {
+                push(Event::OpenChronicle);
             }
+            LRESULT(0)
+        }
+        WM_HOTKEY if wp.0 as i32 == HOTKEY_CHRONICLE => {
+            push(Event::OpenChronicle);
             LRESULT(0)
         }
         WM_DISPLAYCHANGE | WM_DPICHANGED => {
@@ -221,10 +258,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 unsafe fn show_menu(hwnd: HWND) {
-    let state = MENU.with(|m| *m.borrow());
+    let state = MENU.with(|m| m.borrow().clone());
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let check = |on: bool| if on { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let open = match &state.hotkey {
+            Some(keys) => HSTRING::from(format!("Open the chronicle\t{keys}")),
+            None => HSTRING::from("Open the chronicle"),
+        };
+        let _ = AppendMenuW(menu, MF_STRING, CMD_CHRONICLE as usize, &open);
+        let _ = SetMenuDefaultItem(menu, CMD_CHRONICLE, 0);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, check(state.paused), CMD_PAUSE as usize, w!("Pause"));
         let _ = AppendMenuW(menu, check(state.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -240,6 +284,7 @@ unsafe fn show_menu(hwnd: HWND) {
             CMD_PAUSE => push(Event::TogglePause),
             CMD_AUTOSTART => push(Event::ToggleAutostart),
             CMD_QUIT => push(Event::Quit),
+            CMD_CHRONICLE => push(Event::OpenChronicle),
             _ => {}
         }
     }
