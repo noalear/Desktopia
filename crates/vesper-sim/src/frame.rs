@@ -211,11 +211,7 @@ pub struct Frame {
 
 /// The moments of a body's last tick, or where it is now if it didn't move.
 fn motion(moments: &[Moment], rig: &crate::physics::Rig, pos: [f32; 3], heading: f32) -> Vec<Moment> {
-    if moments.len() >= 2 {
-        moments.to_vec()
-    } else {
-        vec![Moment::of(rig, pos, heading)]
-    }
+    if moments.len() >= 2 { moments.to_vec() } else { vec![Moment::of(rig, pos, heading)] }
 }
 
 impl Frame {

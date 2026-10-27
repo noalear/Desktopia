@@ -9,9 +9,9 @@
 use crate::body::{Body, Segment};
 use crate::creature::Action;
 use crate::frame::{CreatureView, Moment, PartPose, PlantView, RemainsView};
-use crate::world::DEPTH;
 use crate::genome::Tissue;
 use crate::history::Locomotion;
+use crate::world::DEPTH;
 use vesper_terrain as terrain;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

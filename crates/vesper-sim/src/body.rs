@@ -103,8 +103,7 @@ fn grow(
     if length < MIN_LENGTH || segs.len() >= MAX_SEGMENTS || depth > MAX_DEPTH {
         return;
     }
-    let (angle, along, side, membrane, onset, motor) =
-        link.unwrap_or((0.0, 0.0, side, false, onset, Motor::default()));
+    let (angle, along, side, membrane, onset, motor) = link.unwrap_or((0.0, 0.0, side, false, onset, Motor::default()));
     let me = segs.len() as i16;
     let parent_phase = if parent >= 0 { segs[parent as usize].phase } else { 0.0 };
     let split = parent >= 0 && side < 0 && segs[parent as usize].side == 0;

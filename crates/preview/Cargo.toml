@@ -9,6 +9,7 @@ publish = false
 vesper-render = { path = "../vesper-render" }
 vesper-forms = { path = "../vesper-forms" }
 vesper-sim = { path = "../vesper-sim" }
+vesper-chronicle = { path = "../vesper-chronicle" }
 vesper-terrain = { path = "../vesper-terrain" }
 log.workspace = true
 wgpu.workspace = true

@@ -14,21 +14,43 @@ fn main() {
                 r.3 += c.matter / c.abil.body_matter.max(1e-9);
                 r.4 += c.drive[0].abs();
             }
-            print!("{:>4.0}s ", t as f32 * 0.2);
+            let upended = w
+                .creatures
+                .iter()
+                .filter(|c| c.rig.grounded && c.rig.parts.first().is_some_and(|p| p.angle.cos() < -0.18))
+                .count();
+            print!("{:>4.0}s upended {upended} ", t as f32 * 0.2);
             for (k, r) in rows {
                 let n = r.0 as f32;
-                print!("| {k} {} stride {:.2} energy {:.2} matter {:.2} power {:.2} ", r.0, r.1 / n, r.2 / n, r.3 / n, r.4 / n);
+                print!(
+                    "| {k} {} stride {:.2} energy {:.2} matter {:.2} power {:.2} ",
+                    r.0,
+                    r.1 / n,
+                    r.2 / n,
+                    r.3 / n,
+                    r.4 / n
+                );
             }
             println!();
         }
         sim.step();
         if t == 100 {
-            for c in sim.world().creatures.iter().filter(|c| c.abil.locomotion == Some(vesper_sim::history::Locomotion::Walk)).take(10) {
+            for c in sim
+                .world()
+                .creatures
+                .iter()
+                .filter(|c| c.abil.locomotion == Some(vesper_sim::history::Locomotion::Walk))
+                .take(10)
+            {
                 let v = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1]).sqrt() / c.length();
                 for (flow, power) in [(0.0, 1.0), (0.0, -1.0), (-0.004, 1.0), (0.004, 1.0), (0.0, 0.5)] {
                     let mut rig = c.rig.clone();
                     let start = rig.centre()[0];
-                    let m = vesper_sim::physics::Medium { density: vesper_sim::physics::AIR, flow: [flow, 0.0], ceiling: 0.68 };
+                    let m = vesper_sim::physics::Medium {
+                        density: vesper_sim::physics::AIR,
+                        flow: [flow, 0.0],
+                        ceiling: 0.68,
+                    };
                     for _ in 0..300 {
                         rig.step(vesper_sim::physics::Drive { power, rise: 0.0, hz: c.genome.gait_hz, limp: false }, m);
                     }
@@ -36,7 +58,16 @@ fn main() {
                     print!("   alone flow {flow} power {power}: {alone:+.2} len/s");
                 }
                 println!(" | back {:+.2}", c.back);
-                println!("   walker power {:+.2} speed {:.2} len/s stride {:+.2} maturity {:.2} parts {} grounded {} action {:?}", c.drive[0], v, c.stride, c.maturity, c.rig.parts.len(), c.rig.grounded, c.action);
+                println!(
+                    "   walker power {:+.2} speed {:.2} len/s stride {:+.2} maturity {:.2} parts {} grounded {} action {:?}",
+                    c.drive[0],
+                    v,
+                    c.stride,
+                    c.maturity,
+                    c.rig.parts.len(),
+                    c.rig.grounded,
+                    c.action
+                );
             }
         }
     }

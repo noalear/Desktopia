@@ -13,6 +13,7 @@ vesper-terrain = { path = "../vesper-terrain" }
 wgpu.workspace = true
 pollster.workspace = true
 log.workspace = true
+vesper-chronicle = { path = "../vesper-chronicle" }
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }

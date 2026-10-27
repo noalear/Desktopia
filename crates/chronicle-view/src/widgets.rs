@@ -95,9 +95,10 @@ pub fn entry(ui: &mut Ui, nav: &mut Nav, h: &History, e: &Entry, show_day: bool)
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.horizontal(|ui| {
                 let stamp = if show_day { when(e.tick) } else { clock(e.tick) };
-                ui.label(RichText::new(stamp).small().color(FAINT))
-                    .on_hover_text(ago((h.wall - e.wall).max(0.0)));
-                ui.label(RichText::new(e.kind.label().to_uppercase()).font(bold(10.5)).color(color.gamma_multiply(0.9)));
+                ui.label(RichText::new(stamp).small().color(FAINT)).on_hover_text(ago((h.wall - e.wall).max(0.0)));
+                ui.label(
+                    RichText::new(e.kind.label().to_uppercase()).font(bold(10.5)).color(color.gamma_multiply(0.9)),
+                );
             });
             let size = match e.weight {
                 3 => 19.0,
@@ -113,17 +114,18 @@ pub fn entry(ui: &mut Ui, nav: &mut Nav, h: &History, e: &Entry, show_day: bool)
 
 /// A big number with a caption.
 pub fn tile(ui: &mut Ui, value: &str, caption: &str, color: Color32) {
-    egui::Frame::new().fill(CARD).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 12)).show(
-        ui,
-        |ui| {
+    egui::Frame::new()
+        .fill(CARD)
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(egui::Margin::symmetric(16, 12))
+        .show(ui, |ui| {
             ui.set_min_width(118.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.label(RichText::new(value).font(serif_bold(28.0)).color(color));
                 ui.label(RichText::new(caption).small().color(DIM));
             });
-        },
-    );
+        });
 }
 
 /// A rounded card around some content.

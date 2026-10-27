@@ -4,11 +4,13 @@
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use vesper_chronicle::Chronicle;
 use vesper_render::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue, WorldView};
 use vesper_sim::frame::CreatureView;
+use vesper_sim::history::Fact;
 use vesper_sim::history::Locomotion;
 use vesper_sim::pose::{self, Pose};
-use vesper_sim::runner::{Options, Runner};
+use vesper_sim::runner::{Options, Recorder, Runner};
 use vesper_sim::{Sim, save};
 
 /// How much time the PC was off to make up for on start, at most.
@@ -28,10 +30,16 @@ pub struct Living {
 }
 
 impl Living {
-    /// Loads the saved world, or starts a new one if there is none.
-    pub fn start(save_path: Option<PathBuf>, on_start: Option<Box<dyn FnOnce() + Send>>) -> Self {
+    /// Loads the saved world, or starts a new one if there is none, keeping
+    /// its chronicle in `chronicle_dir`.
+    pub fn start(
+        save_path: Option<PathBuf>,
+        chronicle_dir: Option<PathBuf>,
+        on_start: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
         let now = unix_now();
         let loaded = save_path.as_deref().map(save::load);
+        let mut chronicle = chronicle_dir.map(Chronicle::open);
         let (sim, catch_up) = match loaded {
             Some(Ok(sim)) => {
                 let behind = (now - (sim.epoch() + sim.time())).clamp(0.0, CATCH_UP_MAX);
@@ -41,6 +49,10 @@ impl Living {
                     sim.world().creatures.len(),
                     behind
                 );
+                // History the world lost with an older save is lost here too.
+                if let Some(c) = &mut chronicle {
+                    c.rewind_to(sim.time());
+                }
                 (sim, behind)
             }
             other => {
@@ -48,23 +60,21 @@ impl Living {
                     log::warn!("no saved world ({e}); a new one begins");
                 }
                 let seed = now as u64 ^ 0x5eed_7e57;
-                (Sim::new(seed, now), 0.0)
+                let sim = Sim::new(seed, now);
+                if let Some(c) = &mut chronicle {
+                    c.new_world();
+                }
+                (sim, 0.0)
             }
         };
-        Self::run(sim, Options { save_path, save_every: SAVE_EVERY, catch_up, on_start })
+        let recorder = chronicle.map(|c| Box::new(Chronicler(c)) as Box<dyn Recorder>);
+        Self::run(sim, Options { save_path, save_every: SAVE_EVERY, catch_up, on_start, recorder })
     }
 
     /// Runs a world already in hand, e.g. one the preview tool fast-forwarded.
     pub fn run(sim: Sim, opts: Options) -> Self {
         let runner = Runner::start(sim, opts);
-        Self {
-            runner,
-            plants_tick: None,
-            pose: Pose::default(),
-            segs: Vec::new(),
-            membranes: Vec::new(),
-            cloud: None,
-        }
+        Self { runner, plants_tick: None, pose: Pose::default(), segs: Vec::new(), membranes: Vec::new(), cloud: None }
     }
 
     /// The landscape's weather and river as the simulation has them now.
@@ -208,6 +218,7 @@ impl Living {
 
     /// Where a creature is drawn now, if it is alive: its floor point on screen
     /// and its length, in world units.
+    #[allow(dead_code)] // for the preview tool
     pub fn locate(&self, id: u64) -> Option<([f32; 2], f32)> {
         let f = self.runner.frames();
         let c = f.next.creatures.iter().find(|c| c.id == id)?;
@@ -218,6 +229,19 @@ impl Living {
     /// Saves and stops the simulation.
     pub fn stop(self) {
         self.runner.stop();
+    }
+}
+
+/// Writes the world's history down for the chronicle window, on the sim thread.
+struct Chronicler(Chronicle);
+
+impl Recorder for Chronicler {
+    fn record(&mut self, facts: Vec<(f64, Fact)>) {
+        self.0.record_all(facts);
+    }
+
+    fn saved(&mut self) {
+        self.0.checkpoint();
     }
 }
 

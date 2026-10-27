@@ -2,14 +2,14 @@
 
 use crate::body::{Body, Phenotype};
 use crate::brain::{Brain, NO};
+use crate::frame::Moment;
 use crate::genome::{Genome, Tissue};
 use crate::history::{CreatureId, DeathCause, GroupId, Life, Locomotion, SpeciesId};
 use crate::mind::Mind;
+use crate::physics::Rig;
 use crate::plant::Seed;
 use crate::strain::Infection;
 use crate::world::{BASAL, BRAIN_COST, E_PER_MATTER, MATTER_DENSITY};
-use crate::frame::Moment;
-use crate::physics::Rig;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

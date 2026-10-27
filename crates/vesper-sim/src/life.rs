@@ -2,12 +2,12 @@
 //! bodies afterwards.
 
 use crate::body::Body;
-use crate::physics::{self, Rig};
 use crate::brain::Brain;
 use crate::creature::{Action, Creature, Tally, adult_matter};
 use crate::genome::{Genome, Tissue};
 use crate::history::{Behavior, CreatureId, DeathCause, Fact, SpeciesId, StrainId};
 use crate::mind::{self, Mind, creature_bin};
+use crate::physics::{self, Rig};
 use crate::strain::{Infection, Strain};
 use crate::think::season_quarter;
 use crate::world::{

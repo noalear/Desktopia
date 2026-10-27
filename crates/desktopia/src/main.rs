@@ -3,9 +3,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![cfg_attr(not(windows), allow(dead_code))]
 
-mod config;
 #[cfg(windows)]
 mod chronicle;
+mod config;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
@@ -103,14 +103,13 @@ mod app {
             force_frame: false,
             life: Some(Living::start(
                 config::dir("LOCALAPPDATA").map(|d| d.join("world.vesper")),
+                crate::chronicle::dir(),
                 Some(Box::new(system::lower_thread_priority)),
             )),
             life_batch: LifeBatch::new(),
             plants_uploaded: false,
             hotkey: false,
         };
-        // Let trailing tentacles and feelers settle before the first frame.
-        app.life.warm_up(5.0);
         app.hotkey = app.host.register_hotkey(&app.cfg.chronicle_hotkey);
         app.sync_menu();
         app.run(timer);

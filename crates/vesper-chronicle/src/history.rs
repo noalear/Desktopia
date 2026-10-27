@@ -606,8 +606,7 @@ impl History {
         if first {
             let s = &self.species[&id];
             let title = format!("The {} take hold", plural(&s.common));
-            let text =
-                format!("{} are among the first life on Vesper, found in {}.", sps(id), names::region(t.zone));
+            let text = format!("{} are among the first life on Vesper, found in {}.", sps(id), names::region(t.zone));
             self.write(Kind::Origin, 1, title, text, vec![Ref::Species(id)]);
         }
     }

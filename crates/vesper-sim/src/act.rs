@@ -3,14 +3,14 @@
 
 use crate::brain::o;
 use crate::creature::{Action, Creature};
+use crate::frame::Moment;
 use crate::genome::{Genome, Tissue};
+use crate::ground::Ground;
 use crate::history::{Behavior, DeathCause};
 use crate::life;
 use crate::mind::{self, creature_bin, plant_bin};
-use crate::think::{Food, Percept, season_quarter};
-use crate::frame::Moment;
-use crate::ground::Ground;
 use crate::physics::{self, AIR, Drive, MOTOR_COST, Medium, Rig, STEP, STEPS_PER_TICK, WATER};
+use crate::think::{Food, Percept, season_quarter};
 use crate::world::{
     ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, Env, TICK, World, col_of, dist3, pair_mut, wrap_angle,
 };

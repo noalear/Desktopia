@@ -20,12 +20,21 @@ pub struct Options {
     pub catch_up: f64,
     /// Runs on the sim thread before anything else, e.g. to lower its priority.
     pub on_start: Option<Box<dyn FnOnce() + Send>>,
+    /// Takes the facts on the sim thread instead of `Runner::drain_history`.
+    pub recorder: Option<Box<dyn Recorder>>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { save_path: None, save_every: Duration::from_secs(600), catch_up: 0.0, on_start: None }
+        Self { save_path: None, save_every: Duration::from_secs(600), catch_up: 0.0, on_start: None, recorder: None }
     }
+}
+
+/// Keeps the world's facts as they happen, on the sim thread, e.g. its chronicle.
+pub trait Recorder: Send {
+    fn record(&mut self, facts: Vec<(f64, Fact)>);
+    /// The world has just been saved with every fact recorded so far.
+    fn saved(&mut self);
 }
 
 #[derive(Default)]
@@ -84,7 +93,7 @@ impl Runner {
                 if let Some(f) = opts.on_start.take() {
                     f();
                 }
-                run(&mut sim, &s, &opts);
+                run(&mut sim, &s, &mut opts);
             })
             .expect("can't start the simulation thread");
         Self { shared, thread: Some(thread) }
@@ -140,25 +149,41 @@ impl Drop for Runner {
     }
 }
 
-fn publish(sim: &mut Sim, s: &Shared) {
+fn publish(sim: &mut Sim, s: &Shared, recorder: &mut Option<Box<dyn Recorder>>) {
     let frame = Arc::new(Frame::of(sim.world()));
     {
         let mut f = s.frames.lock().unwrap();
         f.prev = std::mem::replace(&mut f.next, frame);
         f.made = Instant::now();
     }
+    hand_on(sim, s, recorder);
+}
+
+/// Passes the latest facts to the recorder, or keeps them for the host.
+fn hand_on(sim: &mut Sim, s: &Shared, recorder: &mut Option<Box<dyn Recorder>>) {
     let facts = sim.drain_history();
-    if !facts.is_empty() {
-        s.history.lock().unwrap().extend(facts);
+    if facts.is_empty() {
+        return;
+    }
+    match recorder {
+        Some(r) => r.record(facts),
+        None => s.history.lock().unwrap().extend(facts),
     }
 }
 
-fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
-    let save = |sim: &Sim| {
-        if let Some(p) = &opts.save_path
-            && let Err(e) = save::save(sim, p)
-        {
-            eprintln!("vesper-sim: saving failed: {e}");
+fn run(sim: &mut Sim, s: &Shared, opts: &mut Options) {
+    let mut recorder = opts.recorder.take();
+    let save_path = opts.save_path.clone();
+    let save = |sim: &mut Sim, recorder: &mut Option<Box<dyn Recorder>>| {
+        hand_on(sim, s, recorder);
+        let Some(p) = &save_path else { return };
+        match save::save(sim, p) {
+            Ok(()) => {
+                if let Some(r) = recorder {
+                    r.saved();
+                }
+            }
+            Err(e) => eprintln!("vesper-sim: saving failed: {e}"),
         }
     };
     // Catch up quickly, yielding often so the machine stays responsive.
@@ -167,19 +192,18 @@ fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
     while behind > 0.0 {
         if s.control.lock().unwrap().quit {
             sim.set_coarse(false);
-            save(sim);
+            save(sim, &mut recorder);
             return;
         }
         let ran = sim.advance(behind.min(20.0), Duration::from_millis(15));
         behind -= ran;
         *s.status.lock().unwrap() = (sim.time(), true);
         // Keep facts flowing but don't build frames nobody is looking at.
-        let facts = sim.drain_history();
-        s.history.lock().unwrap().extend(facts);
+        hand_on(sim, s, &mut recorder);
         std::thread::sleep(Duration::from_millis(5));
     }
     sim.set_coarse(false);
-    publish(sim, s);
+    publish(sim, s, &mut recorder);
     let mut last_save = Instant::now();
     let mut next = Instant::now();
     let mut owed = 0.0f64;
@@ -194,7 +218,7 @@ fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
             break;
         }
         if save_now || last_save.elapsed() >= opts.save_every {
-            save(sim);
+            save(sim, &mut recorder);
             last_save = Instant::now();
         }
         if paused || speed <= 0.0 {
@@ -210,7 +234,7 @@ fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
             owed -= TICK as f64;
             steps += 1;
         }
-        publish(sim, s);
+        publish(sim, s, &mut recorder);
         *s.status.lock().unwrap() = (sim.time(), false);
         next += Duration::from_secs_f32(TICK);
         let now = Instant::now();
@@ -222,5 +246,5 @@ fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
             next = now;
         }
     }
-    save(sim);
+    save(sim, &mut recorder);
 }

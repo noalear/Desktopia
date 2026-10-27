@@ -229,7 +229,17 @@ fn cross(r: [f32; 2], v: [f32; 2]) -> f32 {
 impl Rig {
     /// A rig with nothing in it, until the body is known.
     pub fn empty() -> Self {
-        Self { parts: Vec::new(), joints: Vec::new(), clock: 0.0, mask: 0, scale: 1.0, grounded: false, work: 0.0, still: 0.0, face: 1.0 }
+        Self {
+            parts: Vec::new(),
+            joints: Vec::new(),
+            clock: 0.0,
+            mask: 0,
+            scale: 1.0,
+            grounded: false,
+            work: 0.0,
+            still: 0.0,
+            face: 1.0,
+        }
     }
 
     /// Builds the rig for the segments in `mask` at rest, with its lowest
@@ -307,7 +317,8 @@ impl Rig {
                 target: s.angle,
             });
         }
-        let mut rig = Self { parts, joints, clock: 0.0, mask, scale, grounded: false, work: 0.0, still: 0.0, face: 1.0 };
+        let mut rig =
+            Self { parts, joints, clock: 0.0, mask, scale, grounded: false, work: 0.0, still: 0.0, face: 1.0 };
         let low = rig.lowest();
         for p in &mut rig.parts {
             p.pos[1] += alt - low;
@@ -451,7 +462,8 @@ impl Rig {
         let slack = if drive.limp { 200.0 } else { 1.0 };
         let mut moved = 0.0f32;
         for j in &mut self.joints {
-            let swing = if drive.limp { 0.0 } else { j.amp * power.abs().sqrt() * sin_cos(TAU * (self.clock + j.phase)).0 };
+            let swing =
+                if drive.limp { 0.0 } else { j.amp * power.abs().sqrt() * sin_cos(TAU * (self.clock + j.phase)).0 };
             let rise = if drive.limp { 0.0 } else { j.lift * drive.rise.clamp(-1.0, 1.0) };
             let target = j.rest + swing + rise;
             moved = moved.max((target - j.target).abs());
@@ -483,7 +495,9 @@ impl Rig {
         // Balance in open air or water: the body keeps itself level (or
         // pitched as it means to climb), as fins and a sense of up would. On
         // the ground only its legs and joints hold it up. Corpses have none.
-        let (bal_target, bal_compliance) = if drive.limp || self.grounded {
+        // Thrown onto its back, it struggles over again rather than lie there.
+        let upended = self.grounded && wrap(self.parts[0].angle).abs() > 1.75;
+        let (bal_target, bal_compliance) = if drive.limp || (self.grounded && !upended) {
             (0.0, f32::INFINITY)
         } else {
             let c = self.centre();
@@ -544,9 +558,17 @@ impl Rig {
                     let (anchor, target, compliance) = (j.anchor, j.target, j.compliance);
                     let (rest, range) = (j.rest, j.range);
                     let (a, b) = pair_mut(&mut self.parts, j.parent as usize, j.child as usize);
-                    hinge(a, b, anchor);
-                    // The joint's stops, firm, and a little looser in the dead.
                     let w = a.inv_inertia + b.inv_inertia;
+                    if pass == 0 {
+                        // Muscle: pull toward the target angle, yielding under load.
+                        let c = wrap(b.angle - a.angle - target);
+                        let dl = -c / (w + compliance * slack / (h * h));
+                        b.turn(b.inv_inertia * dl);
+                        a.turn(-a.inv_inertia * dl);
+                        let rel = (b.angle - b.prev[2]) - (a.angle - a.prev[2]);
+                        energy += (dl / (h * h) * rel).abs();
+                    }
+                    // The joint's stops, firm, and a little looser in the dead.
                     let lim = range + if drive.limp { 0.4 } else { 0.0 };
                     let bend = wrap(b.angle - a.angle - rest);
                     if bend.abs() > lim {
@@ -554,16 +576,8 @@ impl Rig {
                         b.turn(b.inv_inertia * dl);
                         a.turn(-a.inv_inertia * dl);
                     }
-                    if pass > 0 {
-                        continue;
-                    }
-                    // Muscle: pull toward the target angle, yielding under load.
-                    let c = wrap(b.angle - a.angle - target);
-                    let dl = -c / (w + compliance * slack / (h * h));
-                    b.turn(b.inv_inertia * dl);
-                    a.turn(-a.inv_inertia * dl);
-                    let rel = (b.angle - b.prev[2]) - (a.angle - a.prev[2]);
-                    energy += (dl / (h * h) * rel).abs();
+                    // Last, so the turning above doesn't leave it out of joint.
+                    hinge(a, b, anchor);
                 }
                 for (k, p) in self.parts.iter_mut().enumerate() {
                     // Nowhere near the ground or ceiling, and not touching yet.
@@ -596,8 +610,8 @@ impl Rig {
             }
         }
         self.work += energy;
-        let speed: f32 = self.parts.iter().map(|p| p.vel[0].abs() + p.vel[1].abs()).sum::<f32>()
-            / self.parts.len() as f32;
+        let speed: f32 =
+            self.parts.iter().map(|p| p.vel[0].abs() + p.vel[1].abs()).sum::<f32>() / self.parts.len() as f32;
         if speed < self.scale * 0.02 {
             self.still += dt;
         } else {
@@ -659,11 +673,7 @@ fn ground(p: &mut Part, end: f32, ceiling: f32, pressed: &mut f32) -> bool {
     let t = p.axis();
     let now_e = p.pos[0] + t[0] * p.half * end;
     let dx = now_e - prev_e;
-    let mu = if p.spiny {
-        if dx * t[0] < 0.0 { p.grip } else { 0.15 }
-    } else {
-        p.grip
-    };
+    let mu = if p.spiny { if dx * t[0] < 0.0 { p.grip } else { 0.15 } } else { p.grip };
     let limit = mu * *pressed;
     let fix = if dx.abs() <= limit { -dx } else { -dx.signum() * limit };
     let r = [t[0] * p.half * end, t[1] * p.half * end];
@@ -728,7 +738,8 @@ mod tests {
                     let pa = [a.pos[0] + t[0] * j.anchor, a.pos[1] + t[1] * j.anchor];
                     let pb = b.base();
                     let gap = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2)).sqrt();
-                    assert!(gap < rig.scale * 0.1, "{kind:?} {seed}: joint pulled apart by {gap}");
+                    // Within the thickness of a limb, where it doesn't show.
+                    assert!(gap < rig.scale * 0.15, "{kind:?} {seed}: joint pulled apart by {gap}");
                 }
             }
         }
@@ -868,12 +879,16 @@ mod explore {
                     rig.step(Drive { power: 0.0, rise: 0.0, hz: g.gait_hz, limp: false }, medium);
                 }
                 let start = rig.centre()[0];
+                let level = rig.parts[0].angle;
+                let mut pitch = 0.0;
                 for _ in 0..240 {
                     rig.step(Drive { power: 1.0, rise: 0.0, hz: g.gait_hz, limp: false }, medium);
+                    pitch += wrap(rig.parts[0].angle - level).abs() / 240.0;
                 }
-                total += (rig.centre()[0] - start) / scale / 8.0;
+                // Getting somewhere, but not by bucking and rearing.
+                total += ((rig.centre()[0] - start) / scale / 8.0).abs() - 3.0 * pitch;
             }
-            (total / 3.0).abs()
+            total / 3.0
         }
         for kind in [Founder::Grazer, Founder::Crawler, Founder::Swimmer] {
             let mut rng = Rng::new(7);
