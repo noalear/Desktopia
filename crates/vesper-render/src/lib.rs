@@ -2,16 +2,25 @@
 //! hand it a wgpu device and a texture view per output.
 //!
 //! Each output (one per monitor) owns a baked landscape texture that is redrawn
-//! rarely, plus a cheap per-frame pass that animates on top and tone maps for
-//! that display, SDR or HDR.
+//! rarely. Every frame, a cheap pass animates the landscape into an HDR scene
+//! texture, creatures and plants are drawn into it as instanced tissue, and a
+//! last pass tone maps the scene for that display, SDR or HDR.
 
 use std::borrow::Cow;
+
+pub mod life;
+
+pub use life::{LifeBatch, Look, Membrane, Organism, Seg, Tissue};
 
 const COMMON_WGSL: &str = include_str!("shaders/common.wgsl");
 const BAKE_WGSL: &str = include_str!("shaders/bake.wgsl");
 const FRAME_WGSL: &str = include_str!("shaders/frame.wgsl");
+const LIFE_WGSL: &str = include_str!("shaders/life.wgsl");
+const COMPOSITE_WGSL: &str = include_str!("shaders/composite.wgsl");
 
 const BAKED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// How a display wants its pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,7 +54,34 @@ pub struct WorldView {
     pub lightning: f32,
     /// World x of the storm cell.
     pub storm_x: f32,
+    /// 0 clear .. 1 full storm.
+    pub storm: f32,
+    /// 0 quiet, about 0.3 rumbling, 1 erupting.
+    pub volcano: f32,
+    /// The river's slow drift (radians) and flood (0 normal .. 1 twice as wide).
+    pub river_phase: f32,
+    pub river_flood: f32,
     pub exposure: f32,
+}
+
+impl WorldView {
+    /// The world at a wall-clock moment, with weather and the volcano's cycle
+    /// taken from [`rhythm`] so they carry on across restarts.
+    pub fn at(world_size_px: [f32; 2], unix_secs: f64, exposure: f32) -> Self {
+        let w = rhythm::weather(unix_secs);
+        Self {
+            world_size_px,
+            time: rhythm::shader_time(unix_secs),
+            band_shift: rhythm::band_shift(unix_secs),
+            lightning: w.lightning,
+            storm_x: w.storm_x,
+            storm: w.storm,
+            volcano: rhythm::volcano(unix_secs),
+            river_phase: 0.0,
+            river_flood: 0.0,
+            exposure,
+        }
+    }
 }
 
 #[repr(C)]
@@ -62,6 +98,10 @@ struct Params {
     peak: f32,
     lightning: f32,
     storm_x: f32,
+    storm: f32,
+    volcano: f32,
+    river_phase: f32,
+    river_flood: f32,
     _pad: [f32; 2],
 }
 
@@ -71,9 +111,19 @@ pub struct Renderer {
     bake_layout: wgpu::BindGroupLayout,
     frame_layout: wgpu::BindGroupLayout,
     bake_pipeline: wgpu::RenderPipeline,
-    frame_module: wgpu::ShaderModule,
+    frame_pipeline: wgpu::RenderPipeline,
+    composite_module: wgpu::ShaderModule,
     frame_pipeline_layout: wgpu::PipelineLayout,
+    life_pipelines: [wgpu::RenderPipeline; life::GROUPS],
     sampler: wgpu::Sampler,
+    plants: LifeBuffer,
+    creatures: LifeBuffer,
+}
+
+/// Instances for one kind of life, kept on the GPU between frames.
+struct LifeBuffer {
+    buffer: Option<wgpu::Buffer>,
+    ranges: [std::ops::Range<u32>; life::GROUPS],
 }
 
 pub struct Output {
@@ -81,9 +131,14 @@ pub struct Output {
     params: wgpu::Buffer,
     _baked: wgpu::Texture,
     baked_view: wgpu::TextureView,
+    _scene: wgpu::Texture,
+    scene_view: wgpu::TextureView,
+    _depth: wgpu::Texture,
+    depth_view: wgpu::TextureView,
     bake_group: wgpu::BindGroup,
     frame_group: wgpu::BindGroup,
-    frame_pipeline: wgpu::RenderPipeline,
+    composite_group: wgpu::BindGroup,
+    composite_pipeline: wgpu::RenderPipeline,
     baked_band_shift: Option<f32>,
 }
 
@@ -102,7 +157,7 @@ impl Renderer {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let uniform_entry = wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -139,11 +194,16 @@ impl Renderer {
 
         let bake_module = shader(&device, "bake", BAKE_WGSL);
         let frame_module = shader(&device, "frame", FRAME_WGSL);
+        let life_module = shader(&device, "life", LIFE_WGSL);
+        let composite_module = shader(&device, "composite", COMPOSITE_WGSL);
 
         let bake_pipeline_layout = pipeline_layout(&device, "bake", &bake_layout);
         let frame_pipeline_layout = pipeline_layout(&device, "frame", &frame_layout);
         let bake_pipeline =
             fullscreen_pipeline(&device, "bake", &bake_pipeline_layout, &bake_module, "fs_bake", BAKED_FORMAT);
+        let frame_pipeline =
+            fullscreen_pipeline(&device, "frame", &frame_pipeline_layout, &frame_module, "fs_frame", SCENE_FORMAT);
+        let life_pipelines = life_pipelines(&device, &frame_pipeline_layout, &life_module);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("baked"),
@@ -154,7 +214,32 @@ impl Renderer {
             ..Default::default()
         });
 
-        Self { device, queue, bake_layout, frame_layout, bake_pipeline, frame_module, frame_pipeline_layout, sampler }
+        let empty = || LifeBuffer { buffer: None, ranges: Default::default() };
+        Self {
+            device,
+            queue,
+            bake_layout,
+            frame_layout,
+            bake_pipeline,
+            frame_pipeline,
+            composite_module,
+            frame_pipeline_layout,
+            life_pipelines,
+            sampler,
+            plants: empty(),
+            creatures: empty(),
+        }
+    }
+
+    /// Replaces the plants. They change slowly, so call this only when they do;
+    /// the wind is animated on the GPU.
+    pub fn set_plants(&mut self, batch: &mut LifeBatch) {
+        upload_life(&self.device, &self.queue, &mut self.plants, batch, "plants");
+    }
+
+    /// Replaces the creatures. Call once per frame, before rendering the outputs.
+    pub fn set_creatures(&mut self, batch: &mut LifeBatch) {
+        upload_life(&self.device, &self.queue, &mut self.creatures, batch, "creatures");
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -188,6 +273,33 @@ impl Renderer {
             view_formats: &[],
         });
         let baked_view = baked.create_view(&wgpu::TextureViewDescriptor::default());
+        let size = wgpu::Extent3d {
+            width: config.size_px[0].max(1),
+            height: config.size_px[1].max(1),
+            depth_or_array_layers: 1,
+        };
+        let scene = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("scene"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SCENE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("life depth"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
         let bake_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bake"),
             layout: &self.bake_layout,
@@ -202,12 +314,21 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        let frame_pipeline = fullscreen_pipeline(
+        let composite_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("composite"),
+            layout: &self.frame_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&scene_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        let composite_pipeline = fullscreen_pipeline(
             device,
-            "frame",
+            "composite",
             &self.frame_pipeline_layout,
-            &self.frame_module,
-            "fs_frame",
+            &self.composite_module,
+            "fs_composite",
             config.format,
         );
         Output {
@@ -215,9 +336,14 @@ impl Renderer {
             params,
             _baked: baked,
             baked_view,
+            _scene: scene,
+            scene_view,
+            _depth: depth,
+            depth_view,
             bake_group,
             frame_group,
-            frame_pipeline,
+            composite_group,
+            composite_pipeline,
             baked_band_shift: None,
         }
     }
@@ -244,6 +370,10 @@ impl Renderer {
             peak,
             lightning: world.lightning,
             storm_x: world.storm_x,
+            storm: world.storm,
+            volcano: world.volcano,
+            river_phase: world.river_phase,
+            river_flood: world.river_flood,
             _pad: [0.0; 2],
         };
         self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params));
@@ -258,9 +388,128 @@ impl Renderer {
             draw_fullscreen(&mut encoder, "bake", &output.baked_view, &self.bake_pipeline, &output.bake_group);
             output.baked_band_shift = Some(world.band_shift);
         }
-        draw_fullscreen(&mut encoder, "frame", target, &output.frame_pipeline, &output.frame_group);
+        draw_fullscreen(&mut encoder, "frame", &output.scene_view, &self.frame_pipeline, &output.frame_group);
+        self.draw_life(&mut encoder, output);
+        draw_fullscreen(&mut encoder, "composite", target, &output.composite_pipeline, &output.composite_group);
         self.queue.submit(Some(encoder.finish()));
     }
+}
+
+impl Renderer {
+    fn draw_life(&self, encoder: &mut wgpu::CommandEncoder, output: &Output) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("life"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &output.scene_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &output.depth_view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // The frame group carries the baked landscape, which translucent
+        // bodies show through.
+        pass.set_bind_group(0, &output.frame_group, &[]);
+        // Each group draws plants first, then creatures, far to near.
+        for (g, pipeline) in self.life_pipelines.iter().enumerate() {
+            pass.set_pipeline(pipeline);
+            for lb in [&self.plants, &self.creatures] {
+                let Some(buf) = &lb.buffer else { continue };
+                if lb.ranges[g].is_empty() {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, buf.slice(..));
+                pass.draw(0..6, lb.ranges[g].clone());
+            }
+        }
+    }
+}
+
+fn upload_life(device: &wgpu::Device, queue: &wgpu::Queue, lb: &mut LifeBuffer, batch: &mut LifeBatch, label: &str) {
+    let (prims, ranges) = batch.finish();
+    lb.ranges = ranges;
+    if prims.is_empty() {
+        return;
+    }
+    let bytes: &[u8] = bytemuck::cast_slice(&prims);
+    let fits = lb.buffer.as_ref().is_some_and(|b| b.size() >= bytes.len() as u64);
+    if !fits {
+        // Grow with headroom so a growing population doesn't reallocate every frame.
+        let size = (bytes.len() as u64 * 3 / 2).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
+        lb.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+    }
+    queue.write_buffer(lb.buffer.as_ref().unwrap(), 0, bytes);
+}
+
+fn life_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+) -> [wgpu::RenderPipeline; life::GROUPS] {
+    let make = |label: &str, vs: &str, fs: &str, write_depth: bool| {
+        // Premultiplied alpha. Glow writes alpha 0, which makes it additive.
+        let blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        };
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some(vs),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<life::Prim>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &life::PRIM_ATTRIBS,
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(write_depth),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some(fs),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SCENE_FORMAT,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    };
+    [
+        make("life body", "vs_seg", "fs_body", true),
+        make("life inner", "vs_seg", "fs_inner", false),
+        make("life membrane", "vs_membrane", "fs_membrane", false),
+        make("life glow", "vs_glow", "fs_glow", false),
+    ]
 }
 
 fn shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
@@ -354,6 +603,47 @@ pub mod rhythm {
         (secs % TIME_WRAP) as f32
     }
 
+    pub struct Weather {
+        pub storm_x: f32,
+        /// 0 clear .. 1 full storm.
+        pub storm: f32,
+        pub lightning: f32,
+    }
+
+    /// Storms are born every so often where warm and cold air meet, drift
+    /// night-ward on the high wind, rain themselves out and fade.
+    pub fn weather(secs: f64) -> Weather {
+        // Each 40-minute slot may hold one storm that lives up to 35 minutes.
+        const SLOT: f64 = 2400.0;
+        const LIFE: f64 = 2100.0;
+        let mut best = Weather { storm_x: 2.4, storm: 0.0, lightning: 0.0 };
+        // A storm from the previous slot may still be alive.
+        for k in [-1.0, 0.0] {
+            let slot = (secs / SLOT).floor() + k;
+            if hash(slot * 1.31 + 0.2) < 0.35 {
+                continue;
+            }
+            let born = slot * SLOT + hash(slot + 7.3) * (SLOT - 300.0);
+            let age = secs - born;
+            if !(0.0..LIFE).contains(&age) {
+                continue;
+            }
+            let grow = (age / 360.0).min(1.0);
+            let fade = ((LIFE - age) / 600.0).min(1.0);
+            let strength = (grow * fade * (0.6 + 0.4 * hash(slot + 2.9))) as f32;
+            if strength > best.storm {
+                let x0 = 1.3 + 1.5 * hash(slot + 4.1);
+                // About half a monitor per half hour.
+                let x = x0 + age / 3600.0 * 0.9;
+                best = Weather { storm_x: x as f32, storm: strength, lightning: 0.0 };
+            }
+        }
+        if best.storm > 0.5 {
+            best.lightning = lightning(secs) * ((best.storm - 0.5) * 2.0).min(1.0);
+        }
+        best
+    }
+
     /// Lightning strength at a moment. Strikes are rare (one window per
     /// 50 seconds, most of them empty) and each fades over about a second.
     pub fn lightning(secs: f64) -> f32 {
@@ -372,6 +662,29 @@ pub mod rhythm {
         let fade = (-(local) * 3.0).exp();
         let flicker = if (0.18..0.3).contains(&local) { 0.4 } else { 1.0 };
         (fade * flicker) as f32
+    }
+
+    /// The volcano's mood. Long quiet spells with a steam plume, a rumbling
+    /// build-up as the crater glows, then an eruption that dies back slowly.
+    pub fn volcano(secs: f64) -> f32 {
+        // Cycles of 2.5 to 4 hours; about two in three end in an eruption.
+        const CYCLE: f64 = 3.0 * 3600.0;
+        let slot = (secs / CYCLE).floor();
+        let local = (secs - slot * CYCLE) / CYCLE;
+        if hash(slot * 3.7 + 1.0) < 0.35 {
+            // A cycle that only rumbles.
+            return (0.25 * smooth(0.6, 0.75, local) * smooth(0.95, 0.85, local)) as f32;
+        }
+        let start = 0.55 + 0.25 * hash(slot + 9.1);
+        let rumble = smooth(start - 0.15, start, local) * (1.0 - smooth(start, start + 0.1, local)) * 0.3;
+        // Erupts within a minute, then dies back over about half an hour.
+        let erupt = smooth(start, start + 0.005, local) * (-(local - start).max(0.0) * 10.0).exp();
+        rumble.max(erupt) as f32
+    }
+
+    fn smooth(e0: f64, e1: f64, x: f64) -> f64 {
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
     }
 
     fn hash(x: f64) -> f64 {

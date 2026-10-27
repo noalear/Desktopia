@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/vesper-render", "crates/desktopia", "crates/preview"]
+members = ["crates/vesper-terrain", "crates/vesper-render", "crates/vesper-forms", "crates/desktopia", "crates/preview"]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +12,7 @@ wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 lto = "thin"

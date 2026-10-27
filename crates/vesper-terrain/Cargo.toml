@@ -1,0 +1,13 @@
+[package]
+name = "vesper-terrain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vesper's land shape, shared by the simulation and the renderer"
+
+[dependencies]
+serde = { workspace = true, optional = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]

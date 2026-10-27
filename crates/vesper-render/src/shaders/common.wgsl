@@ -14,6 +14,10 @@ struct Params {
     peak: f32,          // HDR only: peak brightness in scRGB units
     lightning: f32,     // 0..1 current flash strength
     storm_x: f32,       // world x of the storm cell
+    storm: f32,         // 0 clear .. 1 full storm
+    volcano: f32,       // 0 quiet, ~0.3 rumbling, 1 erupting
+    river_phase: f32,   // the river's slow drift, radians
+    river_flood: f32,   // 0 normal .. 1 twice as wide
     _pad: vec2f,
 };
 
@@ -47,6 +51,19 @@ fn hash21(p: vec2f) -> f32 {
     var q = fract(p * vec2f(123.34, 456.21));
     q += dot(q, q + 45.32);
     return fract(q.x * q.y);
+}
+
+// Integer hash (pcg2d) for patterns that must never visibly repeat.
+fn pcg2(p: vec2f) -> vec2f {
+    var v = vec2u(vec2i(p) + vec2i(100000));
+    v = v * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v = v ^ (v >> vec2u(16u));
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    v = v ^ (v >> vec2u(16u));
+    return vec2f(v) / 4294967295.0;
 }
 
 fn hash22(p: vec2f) -> vec2f {
@@ -114,13 +131,30 @@ fn ground_top(x: f32) -> f32 {
 
 // Near hills just behind the ground plane. The glacier rises on the night edge.
 fn near_top(x: f32) -> f32 {
-    let hills = 0.24 + 0.075 * (fbm(vec2f(x * 3.6, 5.3), 5) - 0.5) + 0.02 * (ridged(vec2f(x * 9.0, 2.0), 3) - 0.3);
+    // Rolling foothills that sometimes sink below the plain's back edge, so
+    // the layers behind show through instead of stacking into flat bands.
+    let roll = fbm(vec2f(x * 1.7, 5.3), 4);
+    let hills = 0.2 + 0.13 * (roll - 0.45) + 0.03 * (fbm(vec2f(x * 6.0, 2.1), 4) - 0.5)
+        + 0.015 * (ridged(vec2f(x * 9.0, 2.0), 3) - 0.3);
     return hills + glacier_lift(x);
 }
 
+// The ice wall: a broad rise broken into leaning serac blocks of uneven width.
 fn glacier_lift(x: f32) -> f32 {
-    let rise = smoothstep(3.02, 3.32, x);
-    return rise * (0.24 + 0.07 * (ridged(vec2f(x * 14.0, 1.1), 4) - 0.35));
+    let rise = smoothstep(3.0, 3.3, x);
+    let b = serac(x);
+    let bevel = smoothstep(0.0, 0.25, b.y) * smoothstep(1.0, 0.75, b.y);
+    let h = hash21(vec2f(b.x, 3.7));
+    let lean = (hash21(vec2f(b.x, 8.1)) - 0.5) * 0.04;
+    let block = (0.03 * h + lean * (b.y - 0.5)) * mix(0.6, 1.0, bevel);
+    return rise * (0.19 + 0.07 * fbm(vec2f(x * 2.5, 1.1), 3) + block + 0.006 * (fbm(vec2f(x * 60.0, 4.0), 3) - 0.5));
+}
+
+// Which serac block x falls in, and how far across it (0..1). Blocks vary
+// in width so the wall never reads as a grid.
+fn serac(x: f32) -> vec2f {
+    let w = x / 0.03 + 1.6 * fbm(vec2f(x * 9.0, 6.6), 3);
+    return vec2f(floor(w), fract(w));
 }
 
 fn volcano(x: f32) -> f32 {
@@ -140,14 +174,28 @@ fn far_top(x: f32) -> f32 {
     return 0.36 + 0.15 * (ridged(vec2f(x * 1.6, 13.7), 7) - 0.3);
 }
 
-// Centre and half-width of the river on the ground plane. It leaves the
-// glacier foot on the right and boils away near the sun on the left.
+// Centre and half-width of the river on the ground plane. It runs out from
+// under the ice along the back of the plain on the right, and spreads into a
+// shallow salt pan on the left where it boils away (see pan_wet).
 fn river(x: f32) -> vec2f {
-    let c = 0.085 + 0.03 * sin(x * 2.3 + 0.5) + 0.018 * sin(x * 5.1 + 2.0) + 0.02 * (fbm(vec2f(x * 2.8, 4.0), 3) - 0.5);
-    let near = 0.5 + 1.6 * (0.12 - c) / 0.12;
-    let w = 0.02 * near * smoothstep(3.2, 2.95, x) * smoothstep(0.28, 0.75, x)
-        * (0.75 + 0.5 * fbm(vec2f(x * 6.0, 9.0), 2));
+    var c = 0.085 + 0.03 * sin(x * 2.3 + 0.5 + P.river_phase) + 0.018 * sin(x * 5.1 + 2.0 + P.river_phase * 1.7)
+        + 0.02 * (fbm(vec2f(x * 2.8, 4.0), 3) - 0.5);
+    c = mix(c, ground_top(x) - 0.006, smoothstep(2.6, 3.15, x));
+    let near = max(0.5 + 1.6 * (0.12 - c) / 0.12, 0.15);
+    let pan = smoothstep(0.95, 0.4, x);
+    let w = 0.02 * near * (0.75 + 0.5 * fbm(vec2f(x * 6.0, 9.0), 2)) * (1.0 + 0.6 * pan) * (1.0 + P.river_flood);
     return vec2f(c, w);
+}
+
+// In the salt pan the river frays into braided channels that thin out
+// toward the sun. 1 where there is still water, 0 on dry salt.
+fn pan_wet(p: vec2f) -> f32 {
+    let dry = smoothstep(0.95, 0.3, p.x);
+    if (dry <= 0.0) {
+        return 1.0;
+    }
+    let braid = fbm(vec2f(p.x * 22.0, p.y * 95.0), 4);
+    return smoothstep(dry * 0.62, dry * 0.62 + 0.04, braid) * smoothstep(0.3, 0.42, p.x + braid * 0.08);
 }
 
 // ---------------------------------------------------------------- sky
