@@ -4,12 +4,19 @@
 //! Usage: preview [--scale S] [--time SECONDS] [--frames N] [--step SECONDS]
 //!                [--band SHIFT] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
-//!                [--seed N] [--no-life] [--lineup]
+//!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
 //!                [--crop X Y W H] [--out DIR]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
 //! its size, in monitor heights) at full 4K density times `--scale`, for
 //! looking at creatures up close.
+//!
+//! `--sim` grows a real simulated world for that many sim minutes and draws
+//! it exactly as the wallpaper does, in place of the stand-in menagerie.
+
+#[path = "../../desktopia/src/living.rs"]
+#[allow(dead_code)]
+mod living;
 
 use vesper_forms::Menagerie;
 use vesper_render::{LifeBatch, OutputConfig, OutputMode, Renderer, WorldView};
@@ -33,6 +40,7 @@ struct Args {
     seed: u64,
     life: bool,
     lineup: bool,
+    sim: Option<f64>,
     crop: Option<[f32; 4]>,
     out: std::path::PathBuf,
 }
@@ -54,6 +62,7 @@ fn parse_args() -> Args {
         seed: 7,
         life: true,
         lineup: false,
+        sim: None,
         crop: None,
         out: "preview-out".into(),
     };
@@ -82,6 +91,7 @@ fn parse_args() -> Args {
             "--ash" => a.ash = Some(val().parse().unwrap()),
             "--no-life" => a.life = false,
             "--lineup" => a.lineup = true,
+            "--sim" => a.sim = Some(val().parse().unwrap()),
             "--crop" => {
                 let mut c = [0.0; 4];
                 for v in &mut c {
@@ -106,6 +116,10 @@ fn main() {
     eprintln!("adapter: {:?}", adapter.get_info().name);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut renderer = Renderer::new(device, queue);
+
+    if let Some(minutes) = args.sim {
+        return render_sim(&mut renderer, &args, minutes);
+    }
 
     let mut world = match (args.lineup, args.crop) {
         (true, Some(c)) => Menagerie::lineup(args.seed, c[0], c[2]),
@@ -180,6 +194,69 @@ fn main() {
 
         let stats = hdr_stats(&read_rgba16f(&renderer, &hdr_tex, w, h));
         eprintln!("{} | HDR right: max {:.1} nits, mean {:.1} nits, bad {}", path.display(), stats.0, stats.1, stats.2);
+    }
+}
+
+/// Grows a simulated world and renders it the way the wallpaper does.
+fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
+    let epoch = 1_800_000_000.0;
+    let mut sim = vesper_sim::Sim::new(args.seed, epoch);
+    let ticks = (minutes * 60.0 / 0.2) as u64;
+    for t in 0..ticks {
+        sim.step();
+        if t % 3000 == 0 {
+            eprintln!(
+                "sim {:.0} min: {} creatures, {} plants",
+                t as f64 * 0.2 / 60.0,
+                sim.world().creatures.len(),
+                sim.world().plants.len()
+            );
+        }
+    }
+    let mut life = living::Living::run(sim, Default::default());
+    let mut batch = LifeBatch::new();
+    life.plants(&mut batch);
+    renderer.set_plants(&mut batch);
+
+    let w = (MONITOR[0] as f32 * args.scale) as u32;
+    let h = (MONITOR[1] as f32 * args.scale) as u32;
+    let world_size = [w as f32 * 2.0, h as f32];
+    let sdr = wgpu::TextureFormat::Rgba8Unorm;
+    let mut outs: Vec<_> = (0..2)
+        .map(|i| {
+            renderer.create_output(OutputConfig {
+                origin_px: [w as f32 * i as f32, 0.0],
+                size_px: [w, h],
+                format: sdr,
+                mode: OutputMode::Sdr,
+            })
+        })
+        .collect();
+    let texs: Vec<_> = (0..2).map(|_| target(renderer.device(), w, h, sdr)).collect();
+    for f in 0..args.frames {
+        if f > 0 {
+            std::thread::sleep(std::time::Duration::from_secs_f64(args.step));
+            if life.plants(&mut batch) {
+                renderer.set_plants(&mut batch);
+            }
+        }
+        let world = life.world_view(view_at(args, world_size, args.time + f as f64 * args.step));
+        life.creatures(&mut batch, world.time);
+        renderer.set_creatures(&mut batch);
+        let mut img = image::RgbaImage::new(w * 2, h);
+        for i in 0..2 {
+            renderer.render(&mut outs[i], &world, &view(&texs[i]));
+            let px = read_rgba8(renderer, &texs[i], w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    let k = ((y * w + x) * 4) as usize;
+                    img.put_pixel(x + w * i as u32, y, image::Rgba([px[k], px[k + 1], px[k + 2], 255]));
+                }
+            }
+        }
+        let path = args.out.join(format!("sim-{f:03}.png"));
+        img.save(&path).unwrap();
+        eprintln!("{}", path.display());
     }
 }
 
