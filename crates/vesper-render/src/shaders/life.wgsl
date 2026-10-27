@@ -35,7 +35,8 @@ struct Inst {
     @location(8) glow: vec4f,  // glow colour, freckles
     @location(9) mat: vec4f,   // tissue, seed, damage, alive
     @location(10) look: vec4f, // pattern scale, sheen, fringe, contrast
-    @location(11) extra: vec4f,// countershade, iridescence, signal
+    @location(11) extra: vec4f,// countershade, iridescence, signal, signal pattern
+    @location(12) state: vec4f,// infection load, visible, hue (+2 symbiont), bleeding
 };
 
 struct LOut {
@@ -52,6 +53,7 @@ struct LOut {
     @location(9) @interpolate(flat) look: vec4f,
     @location(10) @interpolate(flat) extra: vec4f,
     @location(11) bary: vec3f,
+    @location(12) @interpolate(flat) state: vec4f,
 };
 
 struct FOut {
@@ -69,14 +71,19 @@ fn to_clip(w: vec2f, z: f32) -> vec4f {
     return vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
 }
 
-// Ground wind blows day-ward (toward -x) in gusts, harder under the storm.
+// Ground wind blows day-ward (toward -x) in gusts: harder under a storm,
+// in a dust storm, and at the head of a cold fall pouring off the ice.
 fn wind(x: f32) -> f32 {
     let t = P.time;
     let gust = vnoise(vec2f(x * 2.5 + t * 0.12, t * 0.07));
-    let dx = x - P.storm_x;
-    let storm = exp(-dx * dx * 8.0);
-    let flutter = 0.18 * sin(t * 1.7 + x * 53.0) * (0.5 + gust);
-    return -(0.25 + 0.75 * gust * gust) * (1.0 + 2.5 * storm) + flutter;
+    let ds = x - P.storm_x;
+    let dd = (x - P.dust_x) / 0.4;
+    let dc = (x - P.cold_x - 0.05) / 0.2;
+    let local = 1.0 + 1.5 * exp(-ds * ds * 8.0) * P.storm + 2.0 * exp(-dd * dd) * P.dust + 1.5 * exp(-dc * dc) * P.cold;
+    // The sim's calm ground wind is -0.004 units/s; this is that as 1.
+    let base = P.wind_low / 0.004;
+    let flutter = 0.18 * sin(t * 1.7 + x * 53.0) * (0.5 + gust) * min(abs(base), 2.0);
+    return base * (0.25 + 0.75 * gust * gust) * local + flutter;
 }
 
 fn bend(q: vec2f, amount: f32) -> vec2f {
@@ -99,6 +106,7 @@ fn pass_through(o: ptr<function, LOut>, inst: Inst, a: vec2f, b: vec2f, c: vec2f
     (*o).mat = inst.mat;
     (*o).look = inst.look;
     (*o).extra = inst.extra;
+    (*o).state = inst.state;
 }
 
 // A box around the tube, padded for hair and antialiasing.
@@ -292,6 +300,31 @@ fn clipped(i: LOut, p: vec2f) -> bool {
 
 // ---------------------------------------------------------------- body
 
+// One of sixteen light signals: four shapes on the skin, each flashed in one
+// of four rhythms, so kin can tell "danger" from "mate" across the dark.
+fn signal_pattern(symbol: i32, u: f32, v: f32, scale: f32, seed: f32) -> f32 {
+    let su = u / scale;
+    var shape = 0.0;
+    switch (symbol % 4) {
+        case 0: { shape = smoothstep(0.3, 0.1, abs(fract(su * 0.5) - 0.5)); }               // bands
+        case 1: {                                                                            // spots
+            let q = vec2f(su, v * 2.0);
+            shape = smoothstep(0.32, 0.18, length(fract(q) - 0.5)) * step(0.4, hash21(floor(q) + seed));
+        }
+        case 2: { shape = smoothstep(0.35, 0.15, abs(v - 0.15)); }                          // flank stripe
+        default: { shape = smoothstep(0.25, 0.08, abs(fract(su * 0.5 + abs(v) * 0.6) - 0.5)); } // chevrons
+    }
+    let t = P.time;
+    var beat = 1.0;
+    switch (symbol / 4) {
+        case 1: { beat = 0.5 + 0.5 * sin(t * 3.0); }                       // slow throb
+        case 2: { beat = step(0.5, fract(t * 4.0)); }                       // strobe
+        case 3: { beat = 0.5 + 0.5 * sin(su * 1.6 - t * 7.0); }             // ripple down the body
+        default: {}
+    }
+    return shape * beat;
+}
+
 @fragment
 fn fs_body(i: LOut) -> FOut {
     let p = i.p;
@@ -306,6 +339,10 @@ fn fs_body(i: LOut) -> FOut {
     let tb = tube(p, i.ab.xy, i.ab.zw, i.cr.z, i.cr.w);
     let px = px_world();
     let u = mix(i.zinfo.z, i.zinfo.w, tb.h);
+    // Anything sized by the local radius counts from this segment's own
+    // start: the chain's running coordinate is large, and dividing it by a
+    // tapering radius makes it race and shimmer.
+    let ul = u - i.zinfo.z;
 
     let night = nightness(p.x);
     let day = daylight(p.x);
@@ -316,7 +353,7 @@ fn fs_body(i: LOut) -> FOut {
     var hair_len = 0.0;
     if (fringe > 0.0 && tb.d > tb.r - px) {
         let down = -tb.nrm.y * sign(tb.v);
-        let strand = u / max(tb.r * 0.09, px * 1.5);
+        let strand = ul / max(tb.r * 0.09, px * 1.5);
         let len = fringe * (0.35 + 0.65 * hash21(vec2f(floor(strand), seed))) * smoothstep(-0.2, 0.6, down);
         hair_len = (tb.d - tb.r) / max(len, 1e-6);
         let wisp = smoothstep(0.5, 0.15, abs(fract(strand) - 0.5));
@@ -330,7 +367,7 @@ fn fs_body(i: LOut) -> FOut {
     let v = clamp(tb.v, -1.0, 1.0);
     let nz = sqrt(max(1.0 - v * v, 0.0));
     // Skin grain: wrinkles across the body and fine pores, as normal wobble.
-    let gq = vec2f(u, v * tb.r) / max(tb.r * 0.35, px * 3.0);
+    let gq = vec2f(ul, v * tb.r) / max(tb.r * 0.35, px * 3.0);
     let grain = vec2f(vnoise(gq * vec2f(0.6, 2.2) + seed), vnoise(gq * 1.7 + seed + 9.0)) - 0.5;
     let n = normalize(vec3f(tb.nrm * v + vec2f(grain.x, grain.y) * 0.22 * nz, nz));
     let L = light_dir(p);
@@ -348,7 +385,7 @@ fn fs_body(i: LOut) -> FOut {
     }
     if (tissue == T_ARMOR) {
         // Overlapping plates with dark seams and a mineral grain.
-        let plate = fract(u / max(tb.r * 1.3, 1e-4) + seed);
+        let plate = fract(ul / max(tb.r * 1.3, 1e-4) + seed);
         let seam = smoothstep(0.0, 0.1, plate) * smoothstep(1.0, 0.82, plate);
         albedo *= (0.35 + 0.65 * seam) * (0.75 + 0.5 * fbm(q * 3.0, 2));
         albedo = mix(albedo, i.accent.rgb * 0.6, pattern(kind, q * 0.7, seed) * i.look.w * 0.5);
@@ -357,8 +394,34 @@ fn fs_body(i: LOut) -> FOut {
         albedo *= 0.75 + 0.5 * tb.h;
     }
     if (tissue == T_FILM) {
-        let vein = smoothstep(0.08, 0.0, abs(fract(u / max(tb.r * 0.8, 1e-4)) - 0.5) - 0.42);
+        let vein = smoothstep(0.08, 0.0, abs(fract(ul / max(tb.r * 0.8, 1e-4)) - 0.5) - 0.42);
         albedo = mix(albedo, albedo * 0.35, vein);
+    }
+
+    // ---- what lives in it
+    let load = i.state.x;
+    let symbiont = i.state.z >= 2.0;
+    let ihue = fract(i.state.z);
+    let icol = 0.5 + 0.5 * cos(6.283 * (ihue + vec3f(0.0, 0.33, 0.67)));
+    // Caps share one coordinate, so marks keep to the tube's middle.
+    let mid = smoothstep(0.0, 0.08, tb.h) * smoothstep(1.0, 0.92, tb.h);
+    var sores = 0.0;
+    var sore_core = 0.0;
+    if (load > 0.0 && !symbiont) {
+        let sick = load * (1.0 - i.state.y);
+        // A microbe drains the colour toward a jaundiced, bruised tint in blotches.
+        let blotch = smoothstep(0.35, 0.7, fbm(q * 0.8 + seed * 7.0, 3));
+        let jaundice = mix(vec3f(0.32, 0.3, 0.06), icol * 0.25, 0.35);
+        albedo = mix(albedo, mix(vec3f(luma(albedo)), jaundice, 0.7), clamp(sick * (0.35 + 0.65 * blotch), 0.0, 0.8));
+        // Open sores: pale weeping centres with angry dark rims.
+        let sq = vec2f(ul, v * tb.r) / max(tb.r * 0.6, 1e-4);
+        let sc = floor(sq);
+        let sd = length(fract(sq) - (0.3 + 0.4 * hash22(sc + seed + 13.0)));
+        let has = step(1.0 - 0.5 * sick, hash21(sc + seed + 17.0));
+        let size = 0.6 + 0.6 * hash21(sc + seed + 23.0);
+        let sdn = sd / size + (vnoise(sq * 6.0 + seed) - 0.5) * 0.12;
+        sores = has * smoothstep(0.3, 0.2, sdn) * step(0.15, sick) * mid;
+        sore_core = sores * smoothstep(0.17, 0.05, sdn);
     }
 
     // Death: colour drains to bruise and ochre, flesh opens onto bone.
@@ -424,6 +487,10 @@ fn fs_body(i: LOut) -> FOut {
         let dot_ = step(1.0 - 0.35 * i.glow.w, hash21(cell + seed + 4.4)) * smoothstep(0.22, 0.05, length(fract(fq) - fc));
         col += glowc * dot_ * (0.15 + 1.8 * night + 3.0 * signal) * alive;
     }
+    if (signal > 0.0 && patterned && alive > 0.5) {
+        let sp = signal_pattern(i32(i.extra.w + 0.5), u, v, max(i.look.x * 2.0, 0.008), seed);
+        col += glowc * sp * signal * (1.2 + 2.0 * night);
+    }
     if (tissue == T_SENSE) {
         // Wet black pits that catch a pin of reflected light.
         col += glowc * 0.05 * night;
@@ -460,6 +527,49 @@ fn fs_body(i: LOut) -> FOut {
         let tint = mix(vec3f(1.0), albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-3), 0.6);
         col = mix(col, bg * tint * 0.9 + col * 0.15, see);
     }
+    // Marks on and in the body go over the see-through, so they show on
+    // glassy creatures too. Sores: angry dark rims around pale weeping centres.
+    if (sores > 0.0) {
+        let lit = sun * diffuse * 0.6 + amb * 1.3;
+        col = mix(col, mix(vec3f(0.16, 0.02, 0.03), vec3f(0.75, 0.66, 0.38), sore_core) * lit, sores * 0.9);
+    }
+
+    // Bleeding: a few open wounds on the flank, each with glowing fluid
+    // trickling from it down toward the belly.
+    let bleed = i.state.w;
+    if (bleed > 0.0 && alive > 0.0) {
+        let cs = max(tb.r * 1.6, 1e-4);
+        let cu = floor(ul / cs);
+        let has = step(1.0 - bleed * 0.5, hash21(vec2f(cu, seed + 31.0)));
+        let du = abs(ul - (cu + 0.3 + 0.4 * hash21(vec2f(cu, seed + 37.0))) * cs) / tb.r;
+        let torn = vnoise(vec2f(ul, v * tb.r) / max(tb.r * 0.15, 1e-4) + seed) - 0.5;
+        let gash = smoothstep(0.26, 0.1, length(vec2f(du * 0.8, (n.y - 0.35) * 2.0)) + torn * 0.15);
+        let run = smoothstep(0.1, 0.03, du) * smoothstep(0.45, -0.1, n.y) * step(-0.95, n.y);
+        let flow = 0.45 + 0.55 * smoothstep(0.3, 0.9, fract(n.y * 3.0 + P.time * 0.5 + hash21(vec2f(cu, 3.0))));
+        let wet = has * max(gash, run * flow) * mid;
+        col = mix(col, vec3f(0.1, 0.9, 0.6) * (0.5 + night), wet * min(bleed * 1.3, 1.0));
+    }
+
+    // A parasite seen inside: pale coils shifting slowly under the skin, plain
+    // through thin flesh and as moving ridges through thick.
+    if (load > 0.0 && i.state.y > 0.0 && !symbiont && tissue != T_ARMOR) {
+        let wu = ul / max(tb.r * 1.2, 1e-4);
+        let path = 0.55 * sin(wu * 2.1 + seed * 9.0 + P.time * 0.25) + 0.25 * sin(wu * 4.7 - P.time * 0.4);
+        let worm = smoothstep(0.16, 0.06, abs(v - path)) * step(0.3, fract(wu * 0.12 + seed)) * mid;
+        let seen = load * i.state.y * worm;
+        let wcol = mix(vec3f(0.85, 0.8, 0.6), icol, 0.4) * (sun * 0.4 + sky_light(p.x) + 0.05);
+        col = mix(col, mix(col * 0.55, wcol, 0.4 + 0.6 * i.color.a), seen * 0.85);
+        col += icol * seen * night * 0.25;
+    }
+
+    // A symbiont: a healthy bloom of its own colour across the back.
+    if (symbiont && load > 0.0) {
+        let lq = vec2f(ul, v * tb.r) / max(tb.r * 0.4, 1e-4);
+        let lichen = smoothstep(0.5, 0.7, fbm(lq + seed * 3.0, 3)) * smoothstep(-0.2, 0.6, n.y) * mid;
+        col = mix(col, icol * (amb * 1.3 + sun * diffuse * 0.6), lichen * load * 0.7);
+        col += icol * lichen * load * night * 0.6;
+    }
+
     var alpha = cover;
     if (cover < 0.5 && hair > 0.0) {
         let hc = albedo * 0.7 * (amb + sun * (0.25 + 0.4 * day)) + sun * edge * 0.1;
@@ -500,17 +610,17 @@ fn fs_inner(i: LOut) -> FOut {
     var shape = 1.0;
     if (tissue == T_GUT) {
         // Slow peristalsis travelling down the gut.
-        albedo *= 0.6 + 0.6 * smoothstep(-0.3, 0.8, sin(u / max(tb.r, 1e-4) * 2.0 - P.time * 0.8));
+        albedo *= 0.6 + 0.6 * smoothstep(-0.3, 0.8, sin((u - i.zinfo.z) / max(tb.r, 1e-4) * 2.0 - P.time * 0.8));
     } else if (tissue == T_BROOD) {
         // A cluster of eggs, each with a dark embryo.
-        let q = vec2f(u, v * tb.r) / max(tb.r * 0.7, 1e-4);
+        let q = vec2f(u - i.zinfo.z, v * tb.r) / max(tb.r * 0.7, 1e-4);
         let cell = floor(q);
         let c = 0.35 + 0.3 * hash22(cell + seed);
         let d = length(fract(q) - c);
         shape = smoothstep(0.42, 0.3, d);
         albedo = mix(albedo, albedo * 0.15, smoothstep(0.16, 0.08, d));
     } else if (tissue == T_STORE) {
-        let q = vec2f(u, v * tb.r) / max(tb.r * 0.5, 1e-4);
+        let q = vec2f(u - i.zinfo.z, v * tb.r) / max(tb.r * 0.5, 1e-4);
         albedo *= 0.7 + 0.5 * smoothstep(0.3, 0.6, vnoise(q + seed));
     }
     let sun = sun_light(p.x);

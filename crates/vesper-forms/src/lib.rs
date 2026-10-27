@@ -124,6 +124,9 @@ impl Menagerie {
                 z: p.z,
                 alive: p.alive,
                 signal: 0.0,
+                symbol: 0,
+                bleeding: 0.0,
+                infection: None,
                 clip_y: None,
                 seed: p.seed,
             });
@@ -144,9 +147,33 @@ impl Menagerie {
                 z: c.z(),
                 alive: c.alive,
                 signal: c.signal(),
+                symbol: c.symbol,
+                bleeding: c.bleeding,
+                infection: c.infection,
                 clip_y: c.clip_y(),
                 seed: c.seed,
             });
+        }
+    }
+}
+
+/// Gives the lineup's `i`th creature one condition each, so they can be
+/// compared side by side: healthy, a microbe, a parasite, a symbiont,
+/// bleeding, and the rest flashing different signals.
+fn show_state(c: &mut Creature, i: usize) {
+    use vesper_render::Infection;
+    c.infection = None;
+    c.bleeding = 0.0;
+    c.signal_hold = None;
+    match i {
+        1 => c.infection = Some(Infection { load: 0.9, visible: 0.0, hue: 0.2, symbiont: false }),
+        2 => c.infection = Some(Infection { load: 0.9, visible: 1.0, hue: 0.1, symbiont: false }),
+        3 => c.infection = Some(Infection { load: 0.9, visible: 0.0, hue: 0.45, symbiont: true }),
+        4 => c.bleeding = 1.0,
+        0 => {}
+        _ => {
+            c.signal_hold = Some(1.0);
+            c.symbol = (i * 5 % 16) as u8;
         }
     }
 }
@@ -195,6 +222,7 @@ impl Menagerie {
             let x = x0 + width * (i as f32 + 0.5) / ground.len() as f32;
             let mut c = Creature::new(form, look, &mut rng, x, 0.12);
             c.hold();
+            show_state(&mut c, i);
             creatures.push(c);
         }
         for (i, &plan) in air.iter().enumerate() {
@@ -204,6 +232,7 @@ impl Menagerie {
             let mut c = Creature::new(form, look, &mut rng, x, 0.12);
             c.alt = 0.17 + 0.1 * (i % 2) as f32;
             c.hold();
+            show_state(&mut c, i + 3);
             creatures.push(c);
         }
         Self { creatures, plants: Vec::new(), river: terrain::RiverState::default() }

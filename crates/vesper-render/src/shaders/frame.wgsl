@@ -11,15 +11,16 @@ fn clouds(p: vec2f, base: vec3f) -> vec3f {
     let t = nightness(p.x);
     let day = daylight(p.x);
     // High wind carries the cloud deck night-ward.
-    let q = vec2f(p.x * 1.4 - P.time * 0.0035, p.y * 5.5);
+    let q = vec2f((p.x - P.cloud_drift) * 1.4, p.y * 5.5);
     let n = fbm(q, 5);
     let band = smoothstep(0.5, 0.62, p.y) * smoothstep(0.98, 0.78, p.y);
     let dens = smoothstep(0.52, 0.78, n) * band;
     let under = smoothstep(0.9, 0.5, p.y);
     let lit = vec3f(1.6, 0.55, 0.18) * day * under + vec3f(0.12, 0.05, 0.22) * (1.0 - t) * 0.5;
     let shadow = band3(vec3f(0.12, 0.03, 0.03), vec3f(0.05, 0.02, 0.08), vec3f(0.004, 0.005, 0.012), t);
-    let cc = mix(shadow, lit, smoothstep(0.55, 0.85, n));
-    return mix(base, cc, dens * 0.85);
+    // Ash from an eruption dulls the deck and thickens it.
+    let cc = mix(mix(shadow, lit, smoothstep(0.55, 0.85, n)), shadow * 0.6, P.ash * 0.5);
+    return mix(base, cc, min(dens * (0.85 + 0.3 * P.ash), 0.95));
 }
 
 fn storm(p: vec2f, base: vec3f) -> vec3f {
@@ -42,9 +43,9 @@ fn storm(p: vec2f, base: vec3f) -> vec3f {
     col += vec3f(0.08, 0.09, 0.16) * rain;
     // Lightning lights the cloud from inside and drops one forked bolt.
     if (P.lightning > 0.0) {
-        let gd = length(vec2f(dx * 1.4, p.y - 0.64));
+        let gd = length(vec2f((p.x - P.lightning_x) * 1.4, p.y - 0.64));
         col += vec3f(0.9, 0.8, 1.7) * P.lightning * exp(-gd * 13.0) * (0.25 + 1.2 * deck) * cell;
-        let bx = P.storm_x + 0.025 * (fbm(vec2f(p.y * 30.0, floor(P.time * 0.05)), 4) - 0.5)
+        let bx = P.lightning_x + 0.025 * (fbm(vec2f(p.y * 30.0, floor(P.time * 0.05)), 4) - 0.5)
             + 0.04 * (0.55 - p.y);
         let bolt = smoothstep(0.0016, 0.0, abs(p.x - bx)) * step(p.y, 0.56) * step(0.5, P.storm);
         col += vec3f(12.0, 12.0, 20.0) * bolt * P.lightning;
@@ -83,6 +84,15 @@ fn smoke(p: vec2f, base: vec3f) -> vec3f {
         col += vec3f(10.0, 3.0, 0.5) * spray * (v - 0.5) * 2.0;
     }
     return col;
+}
+
+// How frosted the ground is: behind the cold fall's front, back toward the ice.
+fn frost(p: vec2f) -> f32 {
+    if (P.cold < 0.01) {
+        return 0.0;
+    }
+    let dx = p.x - P.cold_x + 0.08 * (fbm(vec2f(min(p.y, ground_top(p.x)) * 30.0, p.x * 3.0), 3) - 0.5);
+    return P.cold * smoothstep(0.0, 0.18, dx) * exp(-max(dx - 0.3, 0.0) * 1.5);
 }
 
 // Light from the crater on the rock and air around it.
@@ -161,11 +171,13 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         let tint = mix(vec3f(3.0, 1.2, 0.3) * day, vec3f(0.2, 1.2, 1.8), t);
         col += tint * glint * 0.35 + col * (rip - 0.5) * 0.4;
     } else if (is_mat(m, 0.25)) {
-        // Flows run further down the cone the harder it erupts, and crust
-        // over to a dull red when it is quiet.
+        // Flows glow as far as the lava has run, brightest at the front,
+        // cooling as the eruption dies and crusting over when it is quiet.
         let below = volcano(p.x) - p.y;
-        let reach = smoothstep(0.16 * P.volcano + 0.012, 0.0, below);
-        let heat = mix(0.03, 1.0, reach * smoothstep(0.05, 0.6, P.volcano));
+        let run = max(abs(p.x - VOLCANO_X), below * 0.8);
+        let reach = smoothstep(P.lava + 0.01, P.lava - 0.025, run) * smoothstep(0.0, 0.03, P.lava);
+        let front = exp(-pow((run - P.lava) / 0.012, 2.0)) * reach;
+        let heat = mix(0.03, 1.0, reach * (0.45 + 0.55 * smoothstep(0.0, 0.4, P.volcano))) + front * 0.8;
         col *= heat * (0.75 + 0.35 * sin(P.time * 0.6 + p.y * 90.0 - p.x * 30.0));
     } else if (is_mat(m, 0.75)) {
         let n = fbm(vec2f(p.x * 14.0, p.y * 20.0 + P.time * 0.02), 3);
@@ -179,7 +191,7 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
             * smoothstep(0.06, 0.0, foot)
             * (0.5 + 0.5 * smoothstep(0.3, 1.0, fract(p.y * 60.0 + P.time * 0.8 + hash21(vec2f(col_id, 2.0)))));
         col += vec3f(0.2, 0.7, 1.1) * fall * 0.35;
-    } else if (t > 0.5) {
+    } else if (t > 0.5 && frost(p) < 0.05) {
         // Glow speckles on night-side ground, slowly breathing.
         let gq = p * 160.0;
         let g = floor(gq);
@@ -194,6 +206,18 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
     }
 
     col += crater_glow(p);
+
+    // Hoarfrost where a cold fall has passed over the plain and the water.
+    let fr = frost(p);
+    if (fr > 0.002 && (is_mat(m, 0.0) || is_mat(m, 0.5)) && p.y < ground_top(p.x) + 0.004) {
+        // A cool bloom over the ground, gathered in hollows, with glints.
+        let n = fbm(p * vec2f(40.0, 110.0), 3);
+        let rime = band3(vec3f(1.2, 0.85, 0.8), vec3f(0.5, 0.45, 0.75), vec3f(0.06, 0.08, 0.16), t);
+        col = mix(col, rime * (0.5 + 0.5 * n), fr * smoothstep(0.3, 0.7, n) * 0.4);
+        let g = floor(p * 900.0);
+        let glint = step(0.996, hash21(g)) * (0.5 + 0.5 * sin(P.time * 2.0 + hash21(g + 3.0) * 40.0));
+        col += rime * glint * fr * 1.5;
+    }
 
     // Mist where the river boils off near the sun.
     let mist_zone = smoothstep(0.1, 0.35, p.x) * smoothstep(1.0, 0.45, p.x)
