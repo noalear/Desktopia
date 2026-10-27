@@ -6,6 +6,8 @@ license.workspace = true
 description = "Vesper's written history: species tree, notable lives, wars, plagues and eras"
 
 [dependencies]
+vesper-sim = { path = "../vesper-sim" }
+vesper-terrain = { path = "../vesper-terrain" }
 serde.workspace = true
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log.workspace = true

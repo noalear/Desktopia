@@ -181,9 +181,9 @@ fn noun(t: &Traits, s: u64) -> &'static str {
 }
 
 /// Where on the view an x position lies.
-/// The world's width in world units, as in `vesper_terrain::WORLD_W`. Facts give
-/// positions in these units, from the day edge at 0 to the night edge.
-pub const WORLD_W: f32 = 7680.0 / 2160.0;
+/// The world's width. Facts give positions in world units, from the day edge
+/// at 0 to the night edge at this.
+pub use vesper_terrain::WORLD_W;
 
 /// The region at world position `x`.
 pub fn place(x: f32) -> &'static str {

@@ -3106,6 +3106,8 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "vesper-sim",
+ "vesper-terrain",
 ]
 
 [[package]]
