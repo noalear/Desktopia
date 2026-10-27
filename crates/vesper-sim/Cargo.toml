@@ -7,7 +7,7 @@ description = "Vesper's living world: evolving bodies, learning brains, ecology 
 
 [dependencies]
 vesper-terrain = { path = "../vesper-terrain" }
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 
 [dev-dependencies]

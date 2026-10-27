@@ -1,0 +1,223 @@
+//! Runs a world on its own background thread in real time, so the host only
+//! has to pick up frames and facts. The thread does a few milliseconds of
+//! work every 200 ms and sleeps the rest.
+
+use crate::frame::Frame;
+use crate::history::Fact;
+use crate::save;
+use crate::sim::Sim;
+use crate::world::TICK;
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+pub struct Options {
+    /// Where the world is saved; None never saves.
+    pub save_path: Option<PathBuf>,
+    pub save_every: Duration,
+    /// Sim seconds to run quickly at the start, to catch up on time the PC was off.
+    pub catch_up: f64,
+    /// Runs on the sim thread before anything else, e.g. to lower its priority.
+    pub on_start: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { save_path: None, save_every: Duration::from_secs(600), catch_up: 0.0, on_start: None }
+    }
+}
+
+#[derive(Default)]
+struct Control {
+    paused: bool,
+    quit: bool,
+    save_now: bool,
+    /// Sim seconds per real second.
+    speed: f32,
+}
+
+/// The two most recent frames and when the newer one was made, so the
+/// renderer can draw smoothly between ticks.
+#[derive(Clone)]
+pub struct Frames {
+    pub prev: Arc<Frame>,
+    pub next: Arc<Frame>,
+    pub made: Instant,
+}
+
+impl Frames {
+    /// How far to blend from `prev` to `next` right now, 0..1.
+    pub fn alpha(&self) -> f32 {
+        (self.made.elapsed().as_secs_f32() / TICK).clamp(0.0, 1.0)
+    }
+}
+
+struct Shared {
+    control: Mutex<Control>,
+    wake: Condvar,
+    frames: Mutex<Frames>,
+    history: Mutex<Vec<(f64, Fact)>>,
+    /// Sim time, and whether it's still catching up.
+    status: Mutex<(f64, bool)>,
+}
+
+pub struct Runner {
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Runner {
+    pub fn start(mut sim: Sim, mut opts: Options) -> Self {
+        let first = Arc::new(Frame::of(sim.world()));
+        let shared = Arc::new(Shared {
+            control: Mutex::new(Control { speed: 1.0, ..Default::default() }),
+            wake: Condvar::new(),
+            frames: Mutex::new(Frames { prev: first.clone(), next: first, made: Instant::now() }),
+            history: Mutex::new(Vec::new()),
+            status: Mutex::new((sim.time(), opts.catch_up > 0.0)),
+        });
+        let s = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name("vesper-sim".into())
+            .spawn(move || {
+                if let Some(f) = opts.on_start.take() {
+                    f();
+                }
+                run(&mut sim, &s, &opts);
+            })
+            .expect("can't start the simulation thread");
+        Self { shared, thread: Some(thread) }
+    }
+
+    pub fn frames(&self) -> Frames {
+        self.shared.frames.lock().unwrap().clone()
+    }
+
+    /// Facts since the last call, for the chronicle.
+    pub fn drain_history(&self) -> Vec<(f64, Fact)> {
+        std::mem::take(&mut *self.shared.history.lock().unwrap())
+    }
+
+    /// Sim seconds since the world's birth, and whether it is still catching up.
+    pub fn status(&self) -> (f64, bool) {
+        *self.shared.status.lock().unwrap()
+    }
+
+    /// Stops time, e.g. while a game needs the machine. Nothing runs while paused.
+    pub fn pause(&self, paused: bool) {
+        self.shared.control.lock().unwrap().paused = paused;
+        self.shared.wake.notify_all();
+    }
+
+    /// Sim seconds per real second (1 is real time).
+    pub fn set_speed(&self, speed: f32) {
+        self.shared.control.lock().unwrap().speed = speed.clamp(0.0, 64.0);
+    }
+
+    pub fn save_now(&self) {
+        self.shared.control.lock().unwrap().save_now = true;
+        self.shared.wake.notify_all();
+    }
+
+    /// Saves and stops the thread.
+    pub fn stop(mut self) {
+        self.shutdown();
+    }
+
+    fn shutdown(&mut self) {
+        self.shared.control.lock().unwrap().quit = true;
+        self.shared.wake.notify_all();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl Drop for Runner {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn publish(sim: &mut Sim, s: &Shared) {
+    let frame = Arc::new(Frame::of(sim.world()));
+    {
+        let mut f = s.frames.lock().unwrap();
+        f.prev = std::mem::replace(&mut f.next, frame);
+        f.made = Instant::now();
+    }
+    let facts = sim.drain_history();
+    if !facts.is_empty() {
+        s.history.lock().unwrap().extend(facts);
+    }
+}
+
+fn run(sim: &mut Sim, s: &Shared, opts: &Options) {
+    let save = |sim: &Sim| {
+        if let Some(p) = &opts.save_path
+            && let Err(e) = save::save(sim, p)
+        {
+            eprintln!("vesper-sim: saving failed: {e}");
+        }
+    };
+    // Catch up quickly, yielding often so the machine stays responsive.
+    let mut behind = opts.catch_up;
+    while behind > 0.0 {
+        if s.control.lock().unwrap().quit {
+            save(sim);
+            return;
+        }
+        let ran = sim.advance(behind.min(20.0), Duration::from_millis(15));
+        behind -= ran;
+        *s.status.lock().unwrap() = (sim.time(), true);
+        // Keep facts flowing but don't build frames nobody is looking at.
+        let facts = sim.drain_history();
+        s.history.lock().unwrap().extend(facts);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    publish(sim, s);
+    let mut last_save = Instant::now();
+    let mut next = Instant::now();
+    let mut owed = 0.0f64;
+    loop {
+        let (paused, quit, save_now, speed) = {
+            let mut c = s.control.lock().unwrap();
+            let r = (c.paused, c.quit, c.save_now, c.speed);
+            c.save_now = false;
+            r
+        };
+        if quit {
+            break;
+        }
+        if save_now || last_save.elapsed() >= opts.save_every {
+            save(sim);
+            last_save = Instant::now();
+        }
+        if paused || speed <= 0.0 {
+            let c = s.control.lock().unwrap();
+            let _ = s.wake.wait_timeout(c, Duration::from_millis(500));
+            next = Instant::now();
+            continue;
+        }
+        owed += speed as f64 * TICK as f64;
+        let mut steps = 0;
+        while owed >= TICK as f64 && steps < 64 {
+            sim.step();
+            owed -= TICK as f64;
+            steps += 1;
+        }
+        publish(sim, s);
+        *s.status.lock().unwrap() = (sim.time(), false);
+        next += Duration::from_secs_f32(TICK);
+        let now = Instant::now();
+        if next > now {
+            let c = s.control.lock().unwrap();
+            let _ = s.wake.wait_timeout(c, next - now);
+        } else {
+            // Fell behind (the PC was busy or asleep): don't try to make it up.
+            next = now;
+        }
+    }
+    save(sim);
+}

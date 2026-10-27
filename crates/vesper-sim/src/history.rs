@@ -102,26 +102,46 @@ pub struct Traits {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DeathCause {
-    Predation { killer: CreatureId, killer_species: SpeciesId },
+    Predation {
+        killer: CreatureId,
+        killer_species: SpeciesId,
+    },
     /// Killed and eaten by its own species.
-    Cannibalism { killer: CreatureId },
+    Cannibalism {
+        killer: CreatureId,
+    },
     /// Killed young by an adult that wasn't its parent.
-    Infanticide { killer: CreatureId },
+    Infanticide {
+        killer: CreatureId,
+    },
     /// Killed by another group in a fight over ground.
-    Violence { by_group: GroupId, killer: CreatureId },
+    Violence {
+        by_group: GroupId,
+        killer: CreatureId,
+    },
     /// Died fighting in defence of kin or young.
-    Sacrifice { defending: CreatureId },
+    Sacrifice {
+        defending: CreatureId,
+    },
     /// Gave its own body to its young.
-    Devoured { by_offspring: CreatureId },
+    Devoured {
+        by_offspring: CreatureId,
+    },
     Starvation,
-    Disease { strain: StrainId },
+    Disease {
+        strain: StrainId,
+    },
     /// Burst open by a parasite, or drained by one.
-    Parasite { strain: StrainId },
+    Parasite {
+        strain: StrainId,
+    },
     Age,
     Heat,
     Cold,
     /// Caught by a trap plant.
-    Trap { plant_species: SpeciesId },
+    Trap {
+        plant_species: SpeciesId,
+    },
     Lava,
     Lightning,
     /// Swept away by a flood.
@@ -140,7 +160,7 @@ pub enum NatureKind {
 }
 
 /// A behavior seen for the first time anywhere in the world.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Behavior {
     Hunting,
     Scavenging,
@@ -261,17 +281,60 @@ pub struct Census {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Fact {
-    SpeciesArose { id: SpeciesId, parent: Option<SpeciesId>, traits: Traits },
-    SpeciesExtinct { id: SpeciesId },
-    Death { who: CreatureId, species: SpeciesId, cause: DeathCause, life: Life },
-    GroupFormed { id: GroupId, species: SpeciesId, parent_group: Option<GroupId>, members: u32 },
-    GroupGone { id: GroupId },
+    SpeciesArose {
+        id: SpeciesId,
+        parent: Option<SpeciesId>,
+        traits: Traits,
+    },
+    SpeciesExtinct {
+        id: SpeciesId,
+    },
+    Death {
+        who: CreatureId,
+        species: SpeciesId,
+        cause: DeathCause,
+        life: Life,
+    },
+    GroupFormed {
+        id: GroupId,
+        species: SpeciesId,
+        parent_group: Option<GroupId>,
+        members: u32,
+    },
+    GroupGone {
+        id: GroupId,
+    },
     /// Members of one group attacked another's over the last stretch of time.
-    Clash { attacker: GroupId, defender: GroupId, deaths: u32, x: f32 },
-    LeaderChanged { group: GroupId, old: Option<CreatureId>, new: CreatureId, overthrown: bool },
-    PathogenArose { id: StrainId, parent: Option<StrainId>, host: SpeciesId, traits: StrainTraits },
-    PathogenGone { id: StrainId },
-    Nature { kind: NatureKind, x: f32, strength: f32 },
-    First { behavior: Behavior, species: SpeciesId, who: Option<CreatureId> },
+    Clash {
+        attacker: GroupId,
+        defender: GroupId,
+        deaths: u32,
+        x: f32,
+    },
+    LeaderChanged {
+        group: GroupId,
+        old: Option<CreatureId>,
+        new: CreatureId,
+        overthrown: bool,
+    },
+    PathogenArose {
+        id: StrainId,
+        parent: Option<StrainId>,
+        host: SpeciesId,
+        traits: StrainTraits,
+    },
+    PathogenGone {
+        id: StrainId,
+    },
+    Nature {
+        kind: NatureKind,
+        x: f32,
+        strength: f32,
+    },
+    First {
+        behavior: Behavior,
+        species: SpeciesId,
+        who: Option<CreatureId>,
+    },
     Census(Census),
 }
