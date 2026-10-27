@@ -19,11 +19,21 @@ pub struct Config {
     pub hdr: bool,
     /// Brightness multiplier for the whole scene.
     pub exposure: f32,
+    /// Keys that open the chronicle, like "Win+Alt+V". Empty turns them off.
+    pub chronicle_hotkey: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { fps: 30, battery_fps: 10, busy_fps: 10, busy_cpu_percent: 80.0, hdr: true, exposure: 1.0 }
+        Self {
+            fps: 30,
+            battery_fps: 10,
+            busy_fps: 10,
+            busy_cpu_percent: 80.0,
+            hdr: true,
+            exposure: 1.0,
+            chronicle_hotkey: "Win+Alt+V".into(),
+        }
     }
 }
 
@@ -45,7 +55,48 @@ hdr = true
 
 # Brightness multiplier for the whole scene.
 exposure = 1.0
+
+# Keys that open the chronicle, like \"Win+Alt+V\" or \"Ctrl+Shift+F12\". Empty turns them off.
+chronicle_hotkey = \"Win+Alt+V\"
 ";
+
+/// Modifier flags as `RegisterHotKey` takes them.
+pub const MOD_ALT: u32 = 1;
+pub const MOD_CONTROL: u32 = 2;
+pub const MOD_SHIFT: u32 = 4;
+pub const MOD_WIN: u32 = 8;
+
+/// Reads "Win+Alt+V" as modifier flags and a virtual-key code. Keys can be a
+/// letter, a digit, F1 to F24, Space, Pause or ScrollLock.
+pub fn parse_hotkey(spec: &str) -> Option<(u32, u32)> {
+    let mut mods = 0;
+    let mut key = None;
+    for part in spec.split('+').map(|p| p.trim().to_ascii_lowercase()) {
+        match part.as_str() {
+            "" => return None,
+            "win" | "windows" | "super" => mods |= MOD_WIN,
+            "alt" => mods |= MOD_ALT,
+            "ctrl" | "control" => mods |= MOD_CONTROL,
+            "shift" => mods |= MOD_SHIFT,
+            "space" => key = Some(0x20),
+            "pause" => key = Some(0x13),
+            "scrolllock" => key = Some(0x91),
+            p if p.len() == 1 && p.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                key = Some(p.to_ascii_uppercase().as_bytes()[0] as u32)
+            }
+            p if p.starts_with('f') => match p[1..].parse::<u32>() {
+                Ok(n @ 1..=24) => key = Some(0x6f + n),
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    // A bare letter would steal typing everywhere.
+    match key {
+        Some(k) if mods != 0 || (0x70..=0x87).contains(&k) || k == 0x13 || k == 0x91 => Some((mods, k)),
+        _ => None,
+    }
+}
 
 pub fn dir(var: &str) -> Option<PathBuf> {
     std::env::var_os(var).map(|v| PathBuf::from(v).join("Desktopia"))
@@ -81,5 +132,17 @@ mod tests {
         assert_eq!(cfg.fps, def.fps);
         assert_eq!(cfg.busy_cpu_percent, def.busy_cpu_percent);
         assert_eq!(cfg.exposure, def.exposure);
+        assert_eq!(cfg.chronicle_hotkey, def.chronicle_hotkey);
+    }
+
+    #[test]
+    fn hotkeys_parse() {
+        use super::*;
+        assert_eq!(parse_hotkey("Win+Alt+V"), Some((MOD_WIN | MOD_ALT, 'V' as u32)));
+        assert_eq!(parse_hotkey("ctrl + shift + f12"), Some((MOD_CONTROL | MOD_SHIFT, 0x7b)));
+        assert_eq!(parse_hotkey("F9"), Some((0, 0x78)));
+        assert_eq!(parse_hotkey("V"), None);
+        assert_eq!(parse_hotkey("Win+Banana"), None);
+        assert_eq!(parse_hotkey(""), None);
     }
 }

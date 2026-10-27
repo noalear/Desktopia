@@ -1,5 +1,5 @@
-//! A small file logger: `%LOCALAPPDATA%\Desktopia\desktopia.log`, started
-//! fresh each run, with the previous run kept as `desktopia.old.log`.
+//! A small file logger: `%LOCALAPPDATA%\Desktopia\<name>.log`, started fresh
+//! each run, with the previous run kept as `<name>.old.log`.
 
 use std::fs::File;
 use std::io::Write;
@@ -47,11 +47,11 @@ impl log::Log for FileLogger {
     }
 }
 
-pub fn init() {
+pub fn init(name: &str) {
     let file = crate::config::dir("LOCALAPPDATA").and_then(|dir| {
         std::fs::create_dir_all(&dir).ok()?;
-        let path = dir.join("desktopia.log");
-        let _ = std::fs::rename(&path, dir.join("desktopia.old.log"));
+        let path = dir.join(format!("{name}.log"));
+        let _ = std::fs::rename(&path, dir.join(format!("{name}.old.log")));
         File::create(path).ok()
     });
     let logger = Box::leak(Box::new(FileLogger { file: Mutex::new(file), start: Instant::now() }));
@@ -59,7 +59,7 @@ pub fn init() {
         log::set_max_level(log::LevelFilter::Info);
     }
     let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    log::info!("Desktopia {} starting (unix time {unix})", env!("CARGO_PKG_VERSION"));
+    log::info!("Desktopia {} {name} starting (unix time {unix})", env!("CARGO_PKG_VERSION"));
 
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

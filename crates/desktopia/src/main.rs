@@ -5,6 +5,8 @@
 
 mod config;
 #[cfg(windows)]
+mod chronicle;
+#[cfg(windows)]
 mod desktop;
 #[cfg(windows)]
 mod governor;
@@ -25,7 +27,13 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    app::run();
+    // The chronicle window runs as its own process, so it must not reach the
+    // single-instance check, which would replace the running wallpaper.
+    match std::env::args().nth(1).as_deref() {
+        Some("--chronicle") => chronicle::window(false),
+        Some("--chronicle-demo") => chronicle::window(true),
+        _ => app::run(),
+    }
 }
 
 #[cfg(windows)]
@@ -58,7 +66,7 @@ mod app {
     const IDLE_WAIT: Duration = Duration::from_millis(250);
 
     pub fn run() {
-        logger::init();
+        logger::init("desktopia");
         let Some(_instance) = system::single_instance() else {
             log::info!("already running");
             return;
@@ -99,7 +107,11 @@ mod app {
             )),
             life_batch: LifeBatch::new(),
             plants_uploaded: false,
+            hotkey: false,
         };
+        // Let trailing tentacles and feelers settle before the first frame.
+        app.life.warm_up(5.0);
+        app.hotkey = app.host.register_hotkey(&app.cfg.chronicle_hotkey);
         app.sync_menu();
         app.run(timer);
 
@@ -138,6 +150,8 @@ mod app {
         life: Option<Living>,
         life_batch: LifeBatch,
         plants_uploaded: bool,
+        /// The chronicle hotkey is registered.
+        hotkey: bool,
     }
 
     impl App {
@@ -203,6 +217,7 @@ mod app {
                     self.autostart = system::autostart_enabled();
                     self.sync_menu();
                 }
+                Event::OpenChronicle => crate::chronicle::show(),
                 Event::Quit => return false,
             }
             true
@@ -213,7 +228,11 @@ mod app {
         }
 
         fn sync_menu(&self) {
-            host::set_menu_state(MenuState { paused: self.governor.user_paused, autostart: self.autostart });
+            host::set_menu_state(MenuState {
+                paused: self.governor.user_paused,
+                autostart: self.autostart,
+                hotkey: self.hotkey.then(|| self.cfg.chronicle_hotkey.clone()),
+            });
         }
 
         /// Rebuilds when asked or when the windows have died, and follows HDR changes.
