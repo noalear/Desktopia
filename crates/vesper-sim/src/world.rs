@@ -37,7 +37,7 @@ pub const E_DETRITUS: f32 = 35.0;
 /// Upkeep per unit of matter^0.75 per second.
 pub const BASAL: f32 = 0.12;
 pub const BRAIN_COST: f32 = 0.0006;
-pub const MAX_CREATURES: usize = 2200;
+pub const MAX_CREATURES: usize = 1000;
 pub const MAX_PLANTS: usize = 2600;
 /// Ticks between plant updates; plants grow on a one-second step.
 pub const PLANT_EVERY: u64 = 5;
@@ -52,6 +52,11 @@ pub fn row_of(depth: f32) -> usize {
 
 pub fn cell_of(x: f32, depth: f32) -> usize {
     col_of(x) * ROWS + row_of(depth)
+}
+
+pub fn dist2(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 }
 
 pub fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -242,6 +247,8 @@ pub struct World {
     pub egrid: Grid,
     #[serde(skip)]
     pub canopy: Vec<f32>,
+    #[serde(skip)]
+    pub ground: crate::ground::Ground,
 }
 
 impl World {
@@ -582,7 +589,7 @@ pub fn fields(w: &mut World, dt: f32) {
             }
             let x = (c as f32 + 0.5) / COLS as f32 * WORLD_W;
             let depth = (r as f32 + 0.5) / ROWS as f32 * DEPTH;
-            if c > 0 && terrain::in_river(x, depth / DEPTH, w.env.river) {
+            if c > 0 && w.ground.in_river(x, depth / DEPTH) {
                 let d = v * 0.0008 * dt * (1.0 + w.env.river.flood * 3.0);
                 flow[i] -= d;
                 flow[i - ROWS] += d;

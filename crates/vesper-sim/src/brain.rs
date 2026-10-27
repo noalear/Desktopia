@@ -101,6 +101,16 @@ pub struct Brain {
     trace_keep: f32,
 }
 
+/// tanh to within about 2e-4, without the libm call.
+#[inline]
+fn fast_tanh(x: f32) -> f32 {
+    let x = x.clamp(-4.97, 4.97);
+    let x2 = x * x;
+    let p = x * (135135.0 + x2 * (17325.0 + x2 * (378.0 + x2)));
+    let q = 135135.0 + x2 * (62370.0 + x2 * (3150.0 + x2 * 28.0));
+    p / q
+}
+
 fn f(v: &[i8]) -> Vec<f32> {
     v.iter().map(|&x| x as f32 / 32.0).collect()
 }
@@ -132,52 +142,82 @@ impl Brain {
     /// One step of thought.
     pub fn step(&mut self, input: &[f32; NI]) -> &[f32; NO] {
         let hn = self.hidden;
-        let mut next = [0.0f32; 32];
-        for (k, v) in next.iter_mut().enumerate().take(hn) {
-            let mut s = self.b_h[k];
-            for (j, x) in input.iter().enumerate() {
-                s += x * self.w_ih[j * hn + k];
+        // Most senses are quiet most of the time, so only the active ones are
+        // summed. Every loop below runs along contiguous weights.
+        let mut active = [0u8; NI];
+        let mut na = 0;
+        for (j, &x) in input.iter().enumerate() {
+            if x != 0.0 {
+                active[na] = j as u8;
+                na += 1;
             }
-            for j in 0..hn {
-                s += self.h[j] * self.w_hh[j * hn + k];
-            }
-            *v = s.tanh();
         }
-        self.h.copy_from_slice(&next[..hn]);
-        for o in 0..NO {
-            let mut s = self.b_o[o];
-            for k in 0..hn {
-                s += self.h[k] * self.w_ho[k * NO + o];
+        let active = &active[..na];
+        let mut acc = [0.0f32; 32];
+        let acc_h = &mut acc[..hn];
+        acc_h.copy_from_slice(&self.b_h);
+        for &j in active {
+            let x = input[j as usize];
+            let row = &self.w_ih[j as usize * hn..][..hn];
+            for (a, w) in acc_h.iter_mut().zip(row) {
+                *a += x * w;
             }
-            for (j, x) in input.iter().enumerate() {
-                s += x * self.w_io[j * NO + o];
+        }
+        for (j, &x) in self.h.iter().enumerate() {
+            let row = &self.w_hh[j * hn..][..hn];
+            for (a, w) in acc_h.iter_mut().zip(row) {
+                *a += x * w;
             }
-            self.out[o] = s.tanh();
+        }
+        for (h, a) in self.h.iter_mut().zip(acc_h.iter()) {
+            *h = fast_tanh(*a);
+        }
+        let mut acc_o = self.out;
+        acc_o.copy_from_slice(&self.b_o);
+        for (k, &x) in self.h.iter().enumerate() {
+            let row = &self.w_ho[k * NO..][..NO];
+            for (a, w) in acc_o.iter_mut().zip(row) {
+                *a += x * w;
+            }
+        }
+        for &j in active {
+            let x = input[j as usize];
+            let row = &self.w_io[j as usize * NO..][..NO];
+            for (a, w) in acc_o.iter_mut().zip(row) {
+                *a += x * w;
+            }
+        }
+        for (o, a) in self.out.iter_mut().zip(acc_o) {
+            *o = fast_tanh(a);
         }
         self.input = *input;
-        // Eligibility: what just fired together, by the evolved rule.
+        // Eligibility: what just fired together, by the evolved rule
+        // a*pre*post + b*pre + c*post + d, split into a part that scales with
+        // pre and a part that doesn't.
         let [a, b, c, d, _] = self.rule;
         let keep = self.trace_keep;
-        for k in 0..hn {
-            let pre = self.h[k];
+        let mut u = [0.0f32; NO];
+        let mut v = [0.0f32; NO];
+        for o in 0..NO {
+            u[o] = a * self.out[o] + b;
+            v[o] = c * self.out[o] + d;
+        }
+        for (k, &pre) in self.h.iter().enumerate() {
+            let row = &mut self.e_ho[k * NO..][..NO];
             for o in 0..NO {
-                let post = self.out[o];
-                let e = &mut self.e_ho[k * NO + o];
-                *e = keep * *e + (a * pre * post + b * pre + c * post + d);
+                row[o] = keep * row[o] + pre * u[o] + v[o];
             }
         }
-        for j in 0..NI {
-            let pre = input[j];
+        for (j, &pre) in input.iter().enumerate() {
+            let row = &mut self.e_io[j * NO..][..NO];
             if pre == 0.0 {
-                for o in 0..NO {
-                    self.e_io[j * NO + o] *= keep;
+                for e in row.iter_mut() {
+                    *e *= keep;
                 }
-                continue;
-            }
-            for o in 0..NO {
-                let post = self.out[o];
-                let e = &mut self.e_io[j * NO + o];
-                *e = keep * *e + (a * pre * post + b * pre + c * post + d);
+            } else {
+                for o in 0..NO {
+                    row[o] = keep * row[o] + pre * u[o] + v[o];
+                }
             }
         }
         &self.out

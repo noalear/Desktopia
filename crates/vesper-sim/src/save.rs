@@ -80,6 +80,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Sim, LoadError> {
     }
     w.canopy = vec![0.0; COLS];
     w.rebuild_index();
+    w.ground.refresh(w.env.river);
     ecology::rebuild_plant_grid(&mut w);
     Ok(Sim::from_world(w))
 }

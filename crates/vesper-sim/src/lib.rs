@@ -14,6 +14,7 @@ mod ecology;
 pub mod frame;
 pub mod genome;
 mod grid;
+pub mod ground;
 pub mod history;
 mod life;
 pub mod mind;

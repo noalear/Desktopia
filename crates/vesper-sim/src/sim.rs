@@ -59,6 +59,7 @@ impl Sim {
             rgrid: Default::default(),
             egrid: Default::default(),
             canopy: vec![0.0; COLS],
+            ground: Default::default(),
         };
         w.env.storm_x = 2.2;
         w.env.next_eruption = w.rng.range(1.0, 4.0) as f64 * 3600.0;
@@ -72,6 +73,7 @@ impl Sim {
                 w.soil[c * ROWS + r] *= rich;
             }
         }
+        w.ground.refresh(w.env.river);
         let mut sim = Self { w, percepts: Vec::new(), profile: None };
         sim.genesis();
         sim.w.matter_total = sim.w.matter_now();
@@ -213,6 +215,7 @@ impl Sim {
         w.tick += 1;
         w.time += TICK as f64;
         index_creatures(w);
+        w.ground.refresh(w.env.river);
         let dt_slow = TICK * PLANT_EVERY as f32;
         if w.tick % PLANT_EVERY == 0 {
             world::weather(w, dt_slow);

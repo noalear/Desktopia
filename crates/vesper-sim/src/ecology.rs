@@ -15,7 +15,7 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
     let x = x.clamp(0.03, WORLD_W - 0.03);
     let depth = depth.clamp(0.005, DEPTH - 0.005);
     let ok = w.plants.len() < MAX_PLANTS
-        && (floats || !terrain::in_river(x, depth / DEPTH, w.env.river))
+        && (floats || !w.ground.in_river(x, depth / DEPTH))
         && !w.env.lava_at(x)
         && crowd(w, x, depth) < 7;
     if !ok {
@@ -106,7 +106,7 @@ pub fn plants(w: &mut World, dt: f32) {
         let water = if floats {
             0.4 + env.rain(p.x)
         } else {
-            terrain::wetness(p.x, p.depth / DEPTH, env.river) + env.rain(p.x) * 0.8 + 0.15
+            w.ground.wetness(p.x, p.depth / DEPTH) + env.rain(p.x) * 0.8 + 0.15
         };
         let water_factor = (1.0 + g.thirst * 0.8) * (1.0 - g.thirst * (1.0 - water.min(1.0)));
         let temp = env.temperature(p.x, p.alt);

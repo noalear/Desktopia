@@ -13,7 +13,7 @@ use crate::world::{
     ALT_MAX, DEPTH, E_MEAT, E_PER_MATTER, Egg, MAX_CREATURES, Remains, Spores, TICK, World, dist3, pair_mut,
 };
 use std::sync::Arc;
-use vesper_terrain::{self as terrain, WORLD_W};
+use vesper_terrain::WORLD_W;
 
 /// Seconds of life for a creature of adult scale 0.01 and ageing 1.
 pub const LIFESPAN_K: f32 = 1200.0;
@@ -270,7 +270,10 @@ fn digest_meat(w: &mut World, ci: usize, m: f32, eff: f32, bin: usize, harm: f32
 /// Breeding. With a father, each young mixes both genomes; without, it is a
 /// mutated copy. Young are born live, budded, laid as eggs, or scattered as spores.
 pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
-    if w.creatures.len() + w.eggs.len() >= MAX_CREATURES {
+    // Crowding: breeding gets harder well before the hard ceiling, so the
+    // population settles below it rather than pressing against it.
+    let full = (w.creatures.len() + w.eggs.len()) as f32 / MAX_CREATURES as f32;
+    if full >= 1.0 || w.rng.chance(full.powi(6)) {
         return;
     }
     let now = w.time;
@@ -659,7 +662,7 @@ pub fn metabolism(w: &mut World, dt: f32) {
         } else if flood > 0.6
             && grounded
             && c.length() < 0.02
-            && terrain::in_river(c.pos[0], c.pos[1] / DEPTH, env.river)
+            && w.ground.in_river(c.pos[0], c.pos[1] / DEPTH)
             && roll < 0.002 * dt
         {
             Some(DeathCause::Flood)
@@ -775,7 +778,7 @@ pub fn decay(w: &mut World, dt: f32) {
             r.strain = None;
         }
         let warm = (w.env.temperature(r.pos[0], 0.0) + 1.3).clamp(0.2, 2.6);
-        let wet = terrain::wetness(r.pos[0], r.pos[1] / DEPTH, w.env.river);
+        let wet = w.ground.wetness(r.pos[0], r.pos[1] / DEPTH);
         let rot = r.initial / (40.0 + 400.0 * r.initial.sqrt()) * warm * (1.0 + wet) * dt;
         let m = rot.min(r.matter);
         r.matter -= m;

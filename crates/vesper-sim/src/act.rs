@@ -9,7 +9,7 @@ use crate::life;
 use crate::mind::{self, creature_bin, plant_bin};
 use crate::think::{Food, Percept, season_quarter};
 use crate::world::{ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, TICK, World, col_of, dist3, pair_mut, wrap_angle};
-use vesper_terrain::{self as terrain, WORLD_W};
+use vesper_terrain::WORLD_W;
 
 fn unit(from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -77,7 +77,7 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         let loco = c.abil.locomotion;
         let airborne = matches!(loco, Some(Locomotion::Drift | Locomotion::Swim | Locomotion::Glide));
         let on_floor = !airborne || c.pos[2] <= 0.0;
-        let wet = on_floor && terrain::in_river(c.pos[0], c.pos[1] / DEPTH, w.env.river);
+        let wet = on_floor && w.ground.in_river(c.pos[0], c.pos[1] / DEPTH);
         if wet {
             speed *= 0.5;
         }

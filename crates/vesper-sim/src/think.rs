@@ -4,8 +4,7 @@
 use crate::brain::{NI, i};
 use crate::genome::{Genome, Tissue};
 use crate::mind::{self, creature_bin, plant_bin};
-use crate::world::{ALT_MAX, World, col_of, dist3};
-use vesper_terrain as terrain;
+use crate::world::{ALT_MAX, World, col_of, dist2, dist3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Food {
@@ -80,6 +79,7 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         let c = &w.creatures[ci];
         let me = &seen[ci];
         let r = c.abil.sense;
+        let r2 = r * r;
         let mut p = Percept { other_dist: f32::MAX, ..Default::default() };
         let mut young = 0.0f32;
         let my_len = me.len.max(1e-4);
@@ -88,10 +88,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                 return;
             }
             let o = &seen[j];
-            let d = dist3(me.pos, o.pos);
-            if d > r {
+            let d2 = dist2(me.pos, o.pos);
+            if d2 > r2 {
                 return;
             }
+            let d = d2.sqrt();
             if d < p.other_dist {
                 p.other_dist = d;
                 p.other = Some(j);
@@ -134,10 +135,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                     return;
                 }
                 let at = [pp[0], pp[1], reach_alt.min(pl.top).max(pp[2])];
-                let d = dist3(c.pos, at);
-                if d > r {
+                let d2 = dist2(c.pos, at);
+                if d2 > r2 {
                     return;
                 }
+                let d = d2.sqrt();
                 let taste = c.mind.taste(pl.bin as usize);
                 let s = herb * (1.0 + taste) * pl.value / (d + 0.02);
                 if s > best {
@@ -148,10 +150,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             });
             w.rgrid.near(c.pos, r, |j| {
                 let rm = &w.remains[j];
-                let d = dist3(c.pos, rm.pos);
-                if d > r {
+                let d2 = dist2(c.pos, rm.pos);
+                if d2 > r2 {
                     return;
                 }
+                let d = d2.sqrt();
                 let taste = c.mind.taste(creature_bin(&rm.look, rm.scale * rm.body.extent));
                 let rot = rm.decay01();
                 let s = (diet * 0.9 + rot * 0.3 + 0.05) * (1.0 + taste) * rm.matter.powf(0.3) / (d + 0.02);
@@ -167,10 +170,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                 if e.mother == Some(c.id) {
                     return;
                 }
-                let d = dist3(c.pos, e.pos);
-                if d > r {
+                let d2 = dist2(c.pos, e.pos);
+                if d2 > r2 {
                     return;
                 }
+                let d = d2.sqrt();
                 let s = diet * 1.2 * e.matter.powf(0.3) / (d + 0.02);
                 if s > best {
                     best = s;
@@ -208,7 +212,7 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             0.0
         };
         inputs[i::WET] =
-            terrain::wetness(c.pos[0], c.pos[1] / crate::world::DEPTH, w.env.river) * c.on_ground() as u8 as f32;
+            w.ground.wetness(c.pos[0], c.pos[1] / crate::world::DEPTH) * c.on_ground() as u8 as f32;
         inputs[i::ALT] = c.pos[2] / ALT_MAX;
         if let Some(f) = p.food {
             let d = dist3(c.pos, p.food_pos);
