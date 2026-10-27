@@ -5,14 +5,15 @@
 //!                [--band SHIFT] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
-//!                [--crop X Y W H] [--out DIR]
+//!                [--follow] [--crop X Y W H] [--out DIR]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
 //! its size, in monitor heights) at full 4K density times `--scale`, for
 //! looking at creatures up close.
 //!
 //! `--sim` grows a real simulated world for that many sim minutes and draws
-//! it exactly as the wallpaper does, in place of the stand-in menagerie.
+//! it exactly as the wallpaper does, in place of the stand-in menagerie;
+//! `--follow` then frames the walker with the most limbs, close up.
 
 #[path = "../../desktopia/src/living.rs"]
 #[allow(dead_code)]
@@ -42,6 +43,8 @@ struct Args {
     lineup: bool,
     sim: Option<f64>,
     crop: Option<[f32; 4]>,
+    /// With --sim: frame one walking creature instead of the whole world.
+    follow: bool,
     out: std::path::PathBuf,
 }
 
@@ -64,6 +67,7 @@ fn parse_args() -> Args {
         lineup: false,
         sim: None,
         crop: None,
+        follow: false,
         out: "preview-out".into(),
     };
     let mut it = std::env::args().skip(1);
@@ -92,6 +96,7 @@ fn parse_args() -> Args {
             "--no-life" => a.life = false,
             "--lineup" => a.lineup = true,
             "--sim" => a.sim = Some(val().parse().unwrap()),
+            "--follow" => a.follow = true,
             "--crop" => {
                 let mut c = [0.0; 4];
                 for v in &mut c {
@@ -213,10 +218,25 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
             );
         }
     }
+    // With --follow, frame the walker with the most limbs, nearer ones first.
+    let follow = args.follow.then(|| {
+        let w = sim.world();
+        w.creatures
+            .iter()
+            .filter(|c| c.abil.locomotion == Some(vesper_sim::history::Locomotion::Walk))
+            .max_by_key(|c| c.body.segments.len() as i64 * 100 - (c.pos[1] * 1000.0) as i64)
+            .or(w.creatures.first())
+            .map(|c| c.id.0)
+    });
+    let follow = follow.flatten();
     let mut life = living::Living::run(sim, Default::default());
     let mut batch = LifeBatch::new();
-    life.plants(&mut batch);
-    renderer.set_plants(&mut batch);
+    // Following one creature, the plants would only hide it.
+    let show_plants = follow.is_none();
+    if show_plants {
+        life.plants(&mut batch);
+        renderer.set_plants(&mut batch);
+    }
 
     let w = (MONITOR[0] as f32 * args.scale) as u32;
     let h = (MONITOR[1] as f32 * args.scale) as u32;
@@ -236,12 +256,12 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
     for f in 0..args.frames {
         if f > 0 {
             std::thread::sleep(std::time::Duration::from_secs_f64(args.step));
-            if life.plants(&mut batch) {
+            if show_plants && life.plants(&mut batch) {
                 renderer.set_plants(&mut batch);
             }
         }
         let world = life.world_view(view_at(args, world_size, args.time + f as f64 * args.step));
-        life.creatures(&mut batch, world.time);
+        life.creatures(&mut batch);
         renderer.set_creatures(&mut batch);
         let mut img = image::RgbaImage::new(w * 2, h);
         for i in 0..2 {
@@ -253,6 +273,18 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
                     img.put_pixel(x + w * i as u32, y, image::Rgba([px[k], px[k + 1], px[k + 2], 255]));
                 }
             }
+        }
+        if let Some((at, len)) = follow.and_then(|id| life.locate(id)) {
+            // A window a few body lengths across, centred on it, enlarged.
+            let px = h as f32;
+            let half = (len * 1.2).max(0.02) * px;
+            let cx = at[0] * px;
+            let cy = (1.0 - at[1]) * px - half * 0.3;
+            let x0 = (cx - half).clamp(0.0, (w * 2) as f32 - 2.0 * half) as u32;
+            let y0 = (cy - half).clamp(0.0, h as f32 - 2.0 * half) as u32;
+            let side = (2.0 * half) as u32;
+            let sub = image::imageops::crop_imm(&img, x0, y0, side, side).to_image();
+            img = image::imageops::resize(&sub, 512, 512, image::imageops::FilterType::Triangle);
         }
         let path = args.out.join(format!("sim-{f:03}.png"));
         img.save(&path).unwrap();

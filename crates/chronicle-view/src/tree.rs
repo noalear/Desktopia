@@ -3,7 +3,9 @@
 
 use crate::theme::*;
 use crate::widgets::{Nav, thousands, when};
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Mesh, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2};
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, Mesh, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2,
+};
 use vesper_chronicle::history::{Species, plural};
 use vesper_chronicle::names::{capital, span};
 use vesper_chronicle::{History, Kind, Kingdom, Ref, SpeciesId};
@@ -41,7 +43,11 @@ fn order(h: &History, st: &TreeState) -> Vec<SpeciesId> {
     };
     let mut roots: Vec<&Species> =
         h.species.values().filter(|s| s.parent.is_none_or(|p| !h.species.contains_key(&p))).collect();
-    roots.sort_by(|a, b| (a.founding.kingdom == Kingdom::Motile).cmp(&(b.founding.kingdom == Kingdom::Motile)).then(a.arose.total_cmp(&b.arose)));
+    roots.sort_by(|a, b| {
+        (a.founding.kingdom == Kingdom::Motile)
+            .cmp(&(b.founding.kingdom == Kingdom::Motile))
+            .then(a.arose.total_cmp(&b.arose))
+    });
     let mut out = Vec::new();
     let mut stack: Vec<SpeciesId> = roots.iter().rev().map(|s| s.id).collect();
     while let Some(id) = stack.pop() {
@@ -62,9 +68,11 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
             ui.label(RichText::new("Tree of life").font(serif_bold(30.0)));
             ui.add_space(12.0);
             ui.label(
-                RichText::new("Each band is a species, as thick as its numbers. Scroll to zoom, drag to move through time.")
-                    .font(italic(15.0))
-                    .color(DIM),
+                RichText::new(
+                    "Each band is a species, as thick as its numbers. Scroll to zoom, drag to move through time.",
+                )
+                .font(italic(15.0))
+                .color(DIM),
             );
         });
         ui.horizontal(|ui| {
@@ -104,9 +112,13 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
 
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.add_space(0.0);
-        let (resp, p) = ui.allocate_painter(vec2(ui.available_width(), content_h.max(avail.height())), Sense::click_and_drag());
+        let (resp, p) =
+            ui.allocate_painter(vec2(ui.available_width(), content_h.max(avail.height())), Sense::click_and_drag());
         let full = resp.rect.shrink2(vec2(24.0, 0.0));
-        let plot = Rect::from_min_max(pos2(full.left(), full.top() + era_h), pos2(full.right() - label_w, full.top() + era_h + heads + rows * row_h));
+        let plot = Rect::from_min_max(
+            pos2(full.left(), full.top() + era_h),
+            pos2(full.right() - label_w, full.top() + era_h + heads + rows * row_h),
+        );
         p.rect_filled(Rect::from_min_max(full.min, pos2(plot.right(), plot.bottom())), CornerRadius::same(8), BG);
 
         // Time mapping, with zoom about the pointer and dragging.
@@ -157,21 +169,39 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
             let x = x_of(t);
             let day_start = (t % 86_400.0).abs() < 1.0;
             p.vline(x, plot.y_range(), Stroke::new(1.0, if day_start { LINE } else { LINE.gamma_multiply(0.4) }));
-            let label = if tick >= 86_400.0 || day_start { format!("Day {}", (t / 86_400.0).floor() as u64 + 1) } else { when(t)[..].split(", ").nth(1).unwrap_or("").to_string() };
-            p.text(pos2(x, plot.bottom() + 6.0), Align2::CENTER_TOP, label, FontId::proportional(11.0), if day_start { DIM } else { FAINT });
+            let label = if tick >= 86_400.0 || day_start {
+                format!("Day {}", (t / 86_400.0).floor() as u64 + 1)
+            } else {
+                when(t)[..].split(", ").nth(1).unwrap_or("").to_string()
+            };
+            p.text(
+                pos2(x, plot.bottom() + 6.0),
+                Align2::CENTER_TOP,
+                label,
+                FontId::proportional(11.0),
+                if day_start { DIM } else { FAINT },
+            );
             t += tick;
         }
 
         // Markers for the great events.
         let mut hovered_marker = None;
-        for e in h.entries.iter().filter(|e| e.weight >= 3 && matches!(e.kind, Kind::Extinction | Kind::War | Kind::Nature | Kind::First)) {
+        for e in h
+            .entries
+            .iter()
+            .filter(|e| e.weight >= 3 && matches!(e.kind, Kind::Extinction | Kind::War | Kind::Nature | Kind::First))
+        {
             let x = x_of(e.tick);
             if x < plot.left() || x > plot.right() {
                 continue;
             }
             let y = plot.bottom() + 24.0;
             let c = kind_color(e.kind);
-            p.add(Shape::convex_polygon(vec![pos2(x, y - 4.0), pos2(x + 4.0, y + 3.0), pos2(x - 4.0, y + 3.0)], c, Stroke::NONE));
+            p.add(Shape::convex_polygon(
+                vec![pos2(x, y - 4.0), pos2(x + 4.0, y + 3.0), pos2(x - 4.0, y + 3.0)],
+                c,
+                Stroke::NONE,
+            ));
             if resp.hover_pos().is_some_and(|m| (m - pos2(x, y)).length() < 7.0) {
                 hovered_marker = Some(e);
             }
@@ -226,7 +256,11 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
                 let mut prev: Option<(Pos2, Pos2)> = None;
                 for i in 0..=steps {
                     let t = t0 + (t1 - t0) * i as f64 / steps as f64;
-                    let v = s.population.at(t).max(if t <= s.arose + 60.0 { s.population.points.first().map_or(1.0, |p| p.1) } else { 0.0 });
+                    let v = s.population.at(t).max(if t <= s.arose + 60.0 {
+                        s.population.points.first().map_or(1.0, |p| p.1)
+                    } else {
+                        0.0
+                    });
                     let hh = half(v).max(0.6);
                     let x = x_of(t);
                     let (a, b) = (pos2(x, yc - hh), pos2(x, yc + hh));
@@ -246,7 +280,10 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
                     && t <= st.start + span_t
                 {
                     let x = x_of(t);
-                    p.line_segment([pos2(x, yc - row_h * 0.3), pos2(x, yc + row_h * 0.3)], Stroke::new(1.5, CRIMSON.gamma_multiply(0.8)));
+                    p.line_segment(
+                        [pos2(x, yc - row_h * 0.3), pos2(x, yc + row_h * 0.3)],
+                        Stroke::new(1.5, CRIMSON.gamma_multiply(0.8)),
+                    );
                 }
                 if let Some(m) = mouse
                     && (m.y - yc).abs() <= row_h * 0.5
@@ -267,7 +304,13 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
             } else if row_h >= 11.0 {
                 let x = x_of(end) + 6.0;
                 if x > plot.left() && x < plot.right() - 60.0 {
-                    p.text(pos2(x, yc), Align2::LEFT_CENTER, capital(&s.common), FontId::proportional(size * 0.92), FAINT);
+                    p.text(
+                        pos2(x, yc),
+                        Align2::LEFT_CENTER,
+                        capital(&s.common),
+                        FontId::proportional(size * 0.92),
+                        FAINT,
+                    );
                 }
             }
             if mouse.is_some_and(|m| m.x > plot.right() && (m.y - yc).abs() <= row_h * 0.5) {
@@ -287,7 +330,10 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
             let row = row_of(id).unwrap_or(0);
             let yc = plot.top() + row_top(row) + 0.5 * row_h;
             p.rect_stroke(
-                Rect::from_min_max(pos2(x_of(s.arose.max(st.start)) - 2.0, yc - row_h * 0.5), pos2(plot.right() + label_w, yc + row_h * 0.5)),
+                Rect::from_min_max(
+                    pos2(x_of(s.arose.max(st.start)) - 2.0, yc - row_h * 0.5),
+                    pos2(plot.right() + label_w, yc + row_h * 0.5),
+                ),
                 CornerRadius::same(4),
                 Stroke::new(1.0, species_color(&s.traits).gamma_multiply(0.6)),
                 egui::StrokeKind::Inside,
@@ -298,7 +344,11 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
                 Some(t) => format!("Extinct {} after {}", when(t), span(t - s.arose)),
                 None => format!("{} alive now", thousands(s.count as u64)),
             };
-            let parent = s.parent.and_then(|p| h.species.get(&p)).map(|p| format!("\nFrom the {}", plural(&p.common))).unwrap_or_default();
+            let parent = s
+                .parent
+                .and_then(|p| h.species.get(&p))
+                .map(|p| format!("\nFrom the {}", plural(&p.common)))
+                .unwrap_or_default();
             resp.clone().on_hover_text(format!(
                 "{}\n{}\nArose {}\n{status}\n{} at {} · peak {}{parent}",
                 capital(&s.common),
@@ -324,6 +374,17 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
 
 /// A round time step near `raw` seconds.
 fn nice_step(raw: f64) -> f64 {
-    const STEPS: [f64; 10] = [600.0, 1800.0, 3600.0, 7200.0, 3.0 * 3600.0, 6.0 * 3600.0, 12.0 * 3600.0, 86_400.0, 2.0 * 86_400.0, 7.0 * 86_400.0];
+    const STEPS: [f64; 10] = [
+        600.0,
+        1800.0,
+        3600.0,
+        7200.0,
+        3.0 * 3600.0,
+        6.0 * 3600.0,
+        12.0 * 3600.0,
+        86_400.0,
+        2.0 * 86_400.0,
+        7.0 * 86_400.0,
+    ];
     STEPS.iter().copied().find(|s| *s >= raw).unwrap_or(30.0 * 86_400.0)
 }

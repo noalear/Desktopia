@@ -2,9 +2,11 @@
 
 use crate::body::{Body, Phenotype};
 use crate::brain::{Brain, NO};
+use crate::frame::Moment;
 use crate::genome::{Genome, Tissue};
 use crate::history::{CreatureId, DeathCause, GroupId, Life, Locomotion, SpeciesId};
 use crate::mind::Mind;
+use crate::physics::Rig;
 use crate::plant::Seed;
 use crate::strain::Infection;
 use crate::world::{BASAL, BRAIN_COST, E_PER_MATTER, MATTER_DENSITY};
@@ -138,6 +140,26 @@ pub struct Creature {
     /// Set when it dies this tick; the body is laid out at the end of the tick.
     #[serde(skip)]
     pub doom: Option<DeathCause>,
+    /// The body as a physical thing.
+    pub rig: Rig,
+    /// What the brain asks of the body: power (-1..1) and rise (-1..1).
+    pub drive: [f32; 2],
+    /// Body lengths per second along its heading it has been making per unit
+    /// of power, running its rhythm forward and in reverse; it uses whichever
+    /// has served it better, as it has no other way to know which way its own
+    /// body carries it.
+    pub stride: f32,
+    #[serde(default)]
+    pub back: f32,
+    /// Muscle work per second at full power, and altitude gained per second
+    /// at full rise, as it has found them; for moving it when fast-forwarding.
+    #[serde(default)]
+    pub toil: f32,
+    #[serde(default)]
+    pub climb: f32,
+    /// Its pose at each physics step this tick, the first being where the tick began.
+    #[serde(skip)]
+    pub moments: Vec<Moment>,
 }
 
 impl Creature {

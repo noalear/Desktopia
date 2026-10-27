@@ -8,9 +8,10 @@
 
 use crate::body::{Body, Segment};
 use crate::creature::Action;
-use crate::frame::{CreatureView, PlantView, RemainsView};
+use crate::frame::{CreatureView, Moment, PartPose, PlantView, RemainsView};
 use crate::genome::Tissue;
 use crate::history::Locomotion;
+use crate::world::DEPTH;
 use vesper_terrain as terrain;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,7 +89,7 @@ pub fn blend(a: &CreatureView, b: &CreatureView, t: f32) -> CreatureView {
     c
 }
 
-fn gone(body: &Body, lost: u64) -> u64 {
+pub(crate) fn gone(body: &Body, lost: u64) -> u64 {
     let mut g = lost;
     for (i, s) in body.segments.iter().enumerate() {
         if s.parent >= 0 && g & (1 << s.parent) != 0 {
@@ -98,19 +99,19 @@ fn gone(body: &Body, lost: u64) -> u64 {
     g
 }
 
-struct Place {
-    origin: [f32; 2],
+pub(crate) struct Place {
+    pub origin: [f32; 2],
     /// World units per body unit, after perspective.
-    scale: f32,
+    pub scale: f32,
     /// +1 facing right, -1 facing left.
-    face: f32,
+    pub face: f32,
     /// How much of its length is seen (it's turned toward or away from us).
-    fore: f32,
-    tilt: f32,
+    pub fore: f32,
+    pub tilt: f32,
 }
 
 impl Place {
-    fn map(&self, p: [f32; 2]) -> [f32; 2] {
+    pub fn map(&self, p: [f32; 2]) -> [f32; 2] {
         let (s, c) = self.tilt.sin_cos();
         let x = p[0] * c - p[1] * s;
         let y = p[0] * s + p[1] * c;
@@ -118,17 +119,13 @@ impl Place {
     }
 }
 
-/// Lays out a body with extra bend per segment and emits it.
-#[allow(clippy::too_many_arguments)]
-fn emit(
+/// Where each segment's base and tip land on screen, with extra bend per segment.
+pub(crate) fn layout(
     body: &Body,
-    skip: u64,
     bend: impl Fn(usize, &Segment) -> f32,
-    keep: impl Fn(usize, &Segment) -> bool,
-    damage: impl Fn(usize, &Segment) -> f32,
-    sway: impl Fn(&Segment) -> f32,
     place: &Place,
-    out: &mut Pose,
+    base_out: &mut Vec<[f32; 2]>,
+    tip_out: &mut Vec<[f32; 2]>,
 ) {
     let n = body.segments.len();
     let mut base = vec![[0.0f32; 2]; n];
@@ -151,26 +148,44 @@ fn emit(
         let off = if s.side < 0 { [-0.04, 0.03] } else { [0.0, 0.0] };
         tip[i] = [b[0] + d.cos() * s.length + off[0], b[1] + d.sin() * s.length + off[1]];
     }
+    base_out.clear();
+    tip_out.clear();
+    base_out.extend(base.iter().map(|&p| place.map(p)));
+    tip_out.extend(tip.iter().map(|&p| place.map(p)));
+}
+
+/// Emits segments and membranes laid out at the given screen positions.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw(
+    body: &Body,
+    skip: u64,
+    keep: impl Fn(usize, &Segment) -> bool,
+    damage: impl Fn(usize, &Segment) -> f32,
+    sway: impl Fn(&Segment) -> f32,
+    base: &[[f32; 2]],
+    tip: &[[f32; 2]],
+    scale: f32,
+    out: &mut Pose,
+) {
     for (i, s) in body.segments.iter().enumerate() {
         if skip & (1 << i) != 0 || !keep(i, s) {
             continue;
         }
-        let r = s.width * 0.5 * place.scale;
+        let r = s.width * 0.5 * scale;
         let taper = match s.tissue {
             Tissue::Spine | Tissue::Mouth => 0.25,
             Tissue::Muscle => 0.7,
             Tissue::Float => 0.85,
             _ => 0.8,
         };
-        let dmg = damage(i, s);
         let sw = sway(s);
         out.segs.push(Seg {
-            a: place.map(base[i]),
-            b: place.map(tip[i]),
+            a: base[i],
+            b: tip[i],
             ra: r,
             rb: r * taper,
             tissue: s.tissue,
-            damage: dmg,
+            damage: damage(i, s),
             side: s.side,
             sway: sw,
         });
@@ -178,9 +193,9 @@ fn emit(
             let p = s.parent as usize;
             let far = if s.along < 0.5 { tip[p] } else { base[p] };
             out.membranes.push(Membrane {
-                a: place.map(base[i]),
-                b: place.map(tip[i]),
-                c: place.map([(far[0] + tip[i][0]) * 0.5, (far[1] + tip[i][1]) * 0.5]),
+                a: base[i],
+                b: tip[i],
+                c: [(far[0] + tip[i][0]) * 0.5, (far[1] + tip[i][1]) * 0.5],
                 tissue: s.tissue,
                 sway: sw,
             });
@@ -188,9 +203,111 @@ fn emit(
     }
 }
 
-/// Poses a living creature. `time` is any running clock in seconds, for idle motion.
-pub fn creature(c: &CreatureView, time: f32, out: &mut Pose) {
+/// Lays out a body with extra bend per segment and emits it.
+#[allow(clippy::too_many_arguments)]
+fn emit(
+    body: &Body,
+    skip: u64,
+    bend: impl Fn(usize, &Segment) -> f32,
+    keep: impl Fn(usize, &Segment) -> bool,
+    damage: impl Fn(usize, &Segment) -> f32,
+    sway: impl Fn(&Segment) -> f32,
+    place: &Place,
+    out: &mut Pose,
+) {
+    let (mut base, mut tip) = (Vec::new(), Vec::new());
+    layout(body, bend, place, &mut base, &mut tip);
+    draw(body, skip, keep, damage, sway, &base, &tip, place.scale, out);
+}
+
+/// A body's pose `t` of the way (0..1) through its tick.
+pub fn sample(motion: &[Moment], t: f32) -> Option<Moment> {
+    match motion.len() {
+        0 => None,
+        1 => Some(motion[0].clone()),
+        n => {
+            let f = t.clamp(0.0, 1.0) * (n - 1) as f32;
+            let i = (f as usize).min(n - 2);
+            let k = f - i as f32;
+            let (a, b) = (&motion[i], &motion[i + 1]);
+            if a.parts.len() != b.parts.len() || a.parts.iter().zip(&b.parts).any(|(p, q)| p.seg != q.seg) {
+                return Some(if k < 0.5 { a.clone() } else { b.clone() });
+            }
+            let lerp = |x: f32, y: f32| x + (y - x) * k;
+            let turn = |x: f32, y: f32| x + crate::world::wrap_angle(y - x) * k;
+            Some(Moment {
+                pos: [lerp(a.pos[0], b.pos[0]), lerp(a.pos[1], b.pos[1])],
+                heading: turn(a.heading, b.heading),
+                face: lerp(a.face, b.face),
+                scale: lerp(a.scale, b.scale),
+                parts: a
+                    .parts
+                    .iter()
+                    .zip(&b.parts)
+                    .map(|(p, q)| PartPose {
+                        seg: p.seg,
+                        u: lerp(p.u, q.u),
+                        alt: lerp(p.alt, q.alt),
+                        angle: turn(p.angle, q.angle),
+                    })
+                    .collect(),
+            })
+        }
+    }
+}
+
+/// Lays out a body from its physical pose and emits it.
+fn physical(
+    body: &Body,
+    m: &Moment,
+    keep: impl Fn(usize, &Segment) -> bool,
+    damage: impl Fn(usize, &Segment) -> f32,
+    out: &mut Pose,
+) {
+    let (at, shrink, z) = project([m.pos[0], m.pos[1] / DEPTH, 0.0]);
+    out.z = z;
+    out.at = at;
+    out.shrink = shrink;
+    // Turned toward or away from us, a body is seen shortened, but never so
+    // much that it vanishes into a line.
+    let fore = m.face * m.heading.cos().abs().max(0.45);
+    let n = body.segments.len();
+    let mut base = vec![[0.0f32; 2]; n];
+    let mut tip = vec![[0.0f32; 2]; n];
+    let mut mask = 0u64;
+    for p in &m.parts {
+        let i = p.seg as usize;
+        let Some(s) = body.segments.get(i) else { continue };
+        let half = s.length * m.scale * 0.5;
+        let (sa, ca) = p.angle.sin_cos();
+        let screen = |u: f32, alt: f32| [at[0] + u * fore * shrink, at[1] + alt * shrink];
+        base[i] = screen(p.u - ca * half, p.alt - sa * half);
+        tip[i] = screen(p.u + ca * half, p.alt + sa * half);
+        mask |= 1 << i;
+    }
+    draw(body, !mask, keep, damage, |_| 0.0, &base, &tip, m.scale * shrink, out);
+}
+
+/// Poses a living creature `t` of the way (0..1) through the tick its view
+/// came from, from the physics of its body.
+pub fn creature(c: &CreatureView, t: f32, out: &mut Pose) {
     out.clear();
+    let wounded = 1.0 - c.health;
+    let damage = |i: usize, _: &Segment| {
+        // Stumps where a limb was torn off, and a general toll from wounds.
+        let stump = body_has_lost_child(&c.body, c.lost, i);
+        (wounded * 0.6 + if stump { 0.8 } else { 0.0 } + c.bleeding * 0.3).min(1.0)
+    };
+    if let Some(m) = sample(&c.motion, t) {
+        physical(&c.body, &m, |_, _| true, damage, out);
+        return;
+    }
+    scripted(c, out);
+}
+
+/// A creature without physics, posed from its gait alone.
+fn scripted(c: &CreatureView, out: &mut Pose) {
+    let time = 0.0;
     let (at, shrink, z) = project(c.pos);
     let speed = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1]).sqrt();
     let climb = if speed > 1e-4 || c.vel[2].abs() > 1e-4 { (c.vel[2]).atan2(speed.max(1e-4)) * 0.4 } else { 0.0 };
@@ -234,7 +351,7 @@ pub fn creature(c: &CreatureView, time: f32, out: &mut Pose) {
     emit(&c.body, skip, bend, keep, damage, |_| 0.0, &place, out);
 }
 
-fn body_has_lost_child(body: &Body, lost: u64, i: usize) -> bool {
+pub(crate) fn body_has_lost_child(body: &Body, lost: u64, i: usize) -> bool {
     lost != 0 && body.segments.iter().enumerate().any(|(j, s)| s.parent == i as i16 && lost & (1 << j) != 0)
 }
 
@@ -261,8 +378,14 @@ pub fn plant(p: &PlantView, out: &mut Pose) {
 }
 
 /// Poses a body or piece of one, lying where it fell and falling apart.
-pub fn remains(r: &RemainsView, out: &mut Pose) {
+pub fn remains(r: &RemainsView, t: f32, out: &mut Pose) {
     out.clear();
+    if let Some(m) = sample(&r.motion, t) {
+        let d = r.decay;
+        let keep = |_: usize, s: &Segment| d < lasts(s.tissue);
+        physical(&r.body, &m, keep, |_, _| (0.3 + d).min(1.0), out);
+        return;
+    }
     let (at, shrink, z) = project(r.pos);
     let settle = (r.age / 6.0).min(1.0);
     let place = Place {
@@ -279,16 +402,18 @@ pub fn remains(r: &RemainsView, out: &mut Pose) {
     let d = r.decay;
     // Limbs go slack, then soft tissue rots away before shell and frame.
     let bend = |_: usize, s: &Segment| if s.parent >= 0 { -0.35 * settle * s.angle.signum() } else { 0.0 };
-    let keep = |_: usize, s: &Segment| {
-        let lasts = match s.tissue {
-            Tissue::LightFilm | Tissue::Float => 0.3,
-            Tissue::Gut | Tissue::Brood | Tissue::Glow | Tissue::Sense => 0.45,
-            Tissue::Muscle | Tissue::Store => 0.6,
-            Tissue::Mouth => 0.85,
-            Tissue::Frame | Tissue::Armor | Tissue::Spine => 0.97,
-        };
-        d < lasts
-    };
+    let keep = |_: usize, s: &Segment| d < lasts(s.tissue);
     let damage = |_: usize, _: &Segment| (0.3 + d).min(1.0);
     emit(&r.body, skip, bend, keep, damage, |_| 0.0, &place, out);
+}
+
+/// How far into decay each tissue lasts: soft tissue goes first, then shell and frame.
+fn lasts(t: Tissue) -> f32 {
+    match t {
+        Tissue::LightFilm | Tissue::Float => 0.3,
+        Tissue::Gut | Tissue::Brood | Tissue::Glow | Tissue::Sense => 0.45,
+        Tissue::Muscle | Tissue::Store => 0.6,
+        Tissue::Mouth => 0.85,
+        Tissue::Frame | Tissue::Armor | Tissue::Spine => 0.97,
+    }
 }

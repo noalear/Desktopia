@@ -146,7 +146,11 @@ impl ChronicleApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(6.0);
                 let (dot, text, tip) = if self.demo.is_some() {
-                    (AMBER, "Sample world".to_string(), "A made-up history to show the chronicle before the real world runs".to_string())
+                    (
+                        AMBER,
+                        "Sample world".to_string(),
+                        "A made-up history to show the chronicle before the real world runs".to_string(),
+                    )
                 } else if h.species.is_empty() {
                     (FAINT, "Waiting for the world".to_string(), self.folder_text())
                 } else {
@@ -167,7 +171,8 @@ impl ChronicleApp {
     fn nav(&mut self, ui: &mut Ui) {
         ui.add_space(14.0);
         for (page, name, hint) in Page::MAIN {
-            let selected = self.page == page || (self.back.first() == Some(&page) && matches!(self.page, Page::Detail(_)));
+            let selected =
+                self.page == page || (self.back.first() == Some(&page) && matches!(self.page, Page::Detail(_)));
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
             let p = ui.painter();
             if selected {
@@ -232,9 +237,9 @@ impl eframe::App for ChronicleApp {
 
         let mut nav = Nav::default();
         let page = self.page;
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::same(0)))
-            .show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::same(0))).show(
+            ui,
+            |ui| {
                 let h = &self.reader.history;
                 if h.species.is_empty() {
                     if pages::empty(ui, self.folder.is_some()) {
@@ -270,14 +275,16 @@ impl eframe::App for ChronicleApp {
                         },
                     );
                 });
-            });
+            },
+        );
         if let Some(r) = nav.go {
             self.back.push(self.page);
             self.page = Page::Detail(r);
         }
         let typing = ui.ctx().egui_wants_keyboard_input();
-        if ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Extra1) || (!typing && i.key_pressed(egui::Key::Backspace)))
-            && let Some(prev) = self.back.pop()
+        if ui.input(|i| {
+            i.pointer.button_pressed(egui::PointerButton::Extra1) || (!typing && i.key_pressed(egui::Key::Backspace))
+        }) && let Some(prev) = self.back.pop()
         {
             self.page = prev;
         }

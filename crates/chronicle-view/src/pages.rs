@@ -149,23 +149,31 @@ pub fn now(ui: &mut Ui, nav: &mut Nav, h: &History) {
     }
 
     section(ui, "Living things over time");
-    chart(ui, vec2(ui.available_width().min(1100.0), 150.0), h.now, &[
-        (&h.plants, ACID, "plants"),
-        (&h.population, TEAL, "creatures"),
-    ]);
+    chart(
+        ui,
+        vec2(ui.available_width().min(1100.0), 150.0),
+        h.now,
+        &[(&h.plants, ACID, "plants"), (&h.population, TEAL, "creatures")],
+    );
     ui.add_space(16.0);
 
-    columns2(ui, 0.44, nav, |ui, nav| happening(ui, nav, h), |ui, nav| {
-        section(ui, "Latest in the annals");
-        let mut n = 0;
-        for e in h.entries.iter().rev().filter(|e| e.weight >= 2) {
-            entry(ui, nav, h, e, true);
-            n += 1;
-            if n >= 10 {
-                break;
+    columns2(
+        ui,
+        0.44,
+        nav,
+        |ui, nav| happening(ui, nav, h),
+        |ui, nav| {
+            section(ui, "Latest in the annals");
+            let mut n = 0;
+            for e in h.entries.iter().rev().filter(|e| e.weight >= 2) {
+                entry(ui, nav, h, e, true);
+                n += 1;
+                if n >= 10 {
+                    break;
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 fn happening(ui: &mut Ui, nav: &mut Nav, h: &History) {
@@ -198,20 +206,34 @@ fn happening(ui: &mut Ui, nav: &mut Nav, h: &History) {
         card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(if harmful { "PLAGUE" } else { "PARTNER" }).font(bold(10.5)).color(ACID));
-                link_styled(ui, nav, RichText::new(capital(&s.name)).font(serif_bold(17.0)).color(TEXT), Ref::Strain(s.id));
+                link_styled(
+                    ui,
+                    nav,
+                    RichText::new(capital(&s.name)).font(serif_bold(17.0)).color(TEXT),
+                    Ref::Strain(s.id),
+                );
             });
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("{} infected among the", s.infected)).color(DIM));
                 link(ui, nav, plural(&species_name(h, o.host)), Ref::Species(o.host));
             });
             if harmful {
-                ui.label(RichText::new(format!("{} dead since it began {}.", o.deaths, ago(h.now - o.began))).small().color(DIM));
+                ui.label(
+                    RichText::new(format!("{} dead since it began {}.", o.deaths, ago(h.now - o.began)))
+                        .small()
+                        .color(DIM),
+                );
             }
         });
         ui.add_space(6.0);
     }
-    let recent: Vec<_> =
-        h.entries.iter().rev().take_while(|e| h.now - e.tick < 6.0 * 3600.0).filter(|e| e.kind == Kind::Famine).collect();
+    let recent: Vec<_> = h
+        .entries
+        .iter()
+        .rev()
+        .take_while(|e| h.now - e.tick < 6.0 * 3600.0)
+        .filter(|e| e.kind == Kind::Famine)
+        .collect();
     for e in recent {
         any = true;
         card(ui, |ui| {
@@ -227,7 +249,8 @@ fn happening(ui: &mut Ui, nav: &mut Nav, h: &History) {
 
     ui.add_space(10.0);
     section(ui, "Most numerous");
-    let mut living: Vec<&Species> = h.species.values().filter(|s| s.alive() && s.traits.kingdom == Kingdom::Motile).collect();
+    let mut living: Vec<&Species> =
+        h.species.values().filter(|s| s.alive() && s.traits.kingdom == Kingdom::Motile).collect();
     living.sort_by_key(|s| std::cmp::Reverse(s.count));
     for s in living.iter().take(6) {
         ui.horizontal(|ui| {
@@ -244,7 +267,9 @@ fn happening(ui: &mut Ui, nav: &mut Nav, h: &History) {
         ui.horizontal(|ui| {
             signals(ui, &g.signals);
             link(ui, nav, capital(&g.name), Ref::Group(g.id));
-            ui.label(RichText::new(format!("{} {}", g.members, plural(&species_name(h, g.species)))).small().color(DIM));
+            ui.label(
+                RichText::new(format!("{} {}", g.members, plural(&species_name(h, g.species)))).small().color(DIM),
+            );
         });
     }
 }
@@ -318,13 +343,17 @@ pub fn annals(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState) {
 pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState) {
     heading(ui, "Species", "A field guide to every kind of life Vesper has made.");
     ui.horizontal(|ui| {
-        for (f, label) in [(SpeciesFilter::Living, "Living"), (SpeciesFilter::Extinct, "Extinct"), (SpeciesFilter::All, "All")] {
+        for (f, label) in
+            [(SpeciesFilter::Living, "Living"), (SpeciesFilter::Extinct, "Extinct"), (SpeciesFilter::All, "All")]
+        {
             if pill(ui, st.species_filter == f, label, TEAL) {
                 st.species_filter = f;
             }
         }
         ui.add_space(16.0);
-        for (s, label) in [(SpeciesSort::Numerous, "Most numerous"), (SpeciesSort::Newest, "Newest"), (SpeciesSort::Oldest, "Oldest")] {
+        for (s, label) in
+            [(SpeciesSort::Numerous, "Most numerous"), (SpeciesSort::Newest, "Newest"), (SpeciesSort::Oldest, "Oldest")]
+        {
             if pill(ui, st.species_sort == s, label, AMBER) {
                 st.species_sort = s;
             }
@@ -356,13 +385,21 @@ pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState)
             for s in rows {
                 ui.horizontal(|ui| {
                     swatch(ui, species_color(&s.traits));
-                    link_styled(ui, nav, RichText::new(capital(&s.common)).font(serif_bold(16.0)).color(AMBER), Ref::Species(s.id));
+                    link_styled(
+                        ui,
+                        nav,
+                        RichText::new(capital(&s.common)).font(serif_bold(16.0)).color(AMBER),
+                        Ref::Species(s.id),
+                    );
                 });
                 ui.label(RichText::new(s.latin()).font(italic(14.0)).color(DIM));
                 ui.label(RichText::new(format!("{:?}", s.traits.locomotion).to_lowercase()).small().color(DIM));
                 match s.extinct {
                     None => ui.label(format!("{} alive", thousands(s.count as u64))),
-                    Some(t) => ui.label(RichText::new(format!("extinct after {}", span(t - s.arose))).color(CRIMSON.gamma_multiply(0.8))),
+                    Some(t) => ui.label(
+                        RichText::new(format!("extinct after {}", span(t - s.arose)))
+                            .color(CRIMSON.gamma_multiply(0.8)),
+                    ),
                 };
                 ui.label(RichText::new(format!("since {}", when(s.arose))).small().color(FAINT));
                 ui.end_row();
@@ -398,95 +435,134 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species) {
     ui.label(RichText::new(status).color(if s.alive() { TEAL } else { CRIMSON }));
     ui.add_space(12.0);
 
-    columns2(ui, 0.5, nav, |ui, _| {
-        ui.label(RichText::new(describe(&s.traits)).font(serif(17.0)).color(TEXT));
-        ui.add_space(12.0);
-        section(ui, "Body and habits");
-        let t = &s.traits;
-        let size_word = ["speck", "small", "middling", "large", "huge"][names::size_class(t.size)];
-        bar(ui, "Size", (t.size / 0.2).sqrt(), size_word, color);
-        bar(ui, "Speed", (t.speed / 0.3).sqrt(), "", color);
-        bar(ui, "Diet", t.diet, if t.diet > 0.6 { "meat" } else if t.diet > 0.35 { "both" } else { "plants or light" }, color);
-        bar(ui, "Light-feeding", t.photosynthesis, "", color);
-        bar(ui, "Armor", t.armor, "", color);
-        bar(ui, "Spines", t.spines, "", color);
-        bar(ui, "Poison", t.toxin, "", color);
-        bar(ui, "Glow", t.glow, "", color);
-        if t.kingdom == Kingdom::Motile {
-            bar(ui, "Sociality", t.sociality, "", color);
-            bar(ui, "Brain", (t.neurons as f32 / 400.0).sqrt(), &format!("{} neurons", t.neurons), color);
-        }
-        bar(ui, "Lifespan", (t.lifespan / 86_400.0).sqrt(), &span(t.lifespan as f64), color);
-        bar(ui, "Lives where", t.zone, if t.zone < 0.33 { "day edge" } else if t.zone > 0.66 { "night edge" } else { "twilight" }, color);
-    }, |ui, nav| {
-        section(ui, "Numbers");
-        chart(ui, vec2(ui.available_width(), 130.0), s.extinct.unwrap_or(h.now), &[(&s.population, color, "alive")]);
-        ui.add_space(8.0);
-        section(ui, "Lineage");
-        let line = h.lineage(s.id);
-        if line.is_empty() {
-            ui.label(RichText::new("One of the first life on Vesper.").font(italic(15.0)).color(DIM));
-        } else {
-            ui.horizontal_wrapped(|ui| {
-                for (i, a) in line.iter().enumerate() {
-                    if i > 0 {
-                        ui.label(RichText::new("›").color(FAINT));
-                    }
-                    let alive = h.species.get(a).is_some_and(|a| a.alive());
-                    let text = RichText::new(species_name(h, *a)).color(if alive { AMBER } else { AMBER.gamma_multiply(0.55) });
-                    link_styled(ui, nav, text, Ref::Species(*a));
-                }
-                ui.label(RichText::new("›").color(FAINT));
-                ui.label(RichText::new(&s.common).color(TEXT));
-            });
-        }
-        if !s.children.is_empty() {
-            ui.add_space(4.0);
-            ui.label(RichText::new("Gave rise to").small().color(DIM));
-            // Inline, so the row wraps between names but never inside one.
-            ui.horizontal_wrapped(|ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                for c in &s.children {
-                    let name = species_name(h, *c);
-                    let font = egui::TextStyle::Body.resolve(ui.style());
-                    let width = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), font, AMBER).size().x) + 24.0;
-                    if width > ui.available_width() {
-                        ui.end_row();
-                    }
-                    swatch(ui, h.species.get(c).map_or(DIM, |s| species_color(&s.traits)));
-                    link(ui, nav, name, Ref::Species(*c));
-                    ui.add_space(6.0);
-                }
-            });
-        }
-        let top = |m: &std::collections::BTreeMap<SpeciesId, u32>| {
-            let mut v: Vec<(SpeciesId, u32)> = m.iter().map(|(k, v)| (*k, *v)).collect();
-            v.sort_by_key(|x| std::cmp::Reverse(x.1));
-            v.truncate(5);
-            v
-        };
-        for (title, list) in [("Eats", top(&s.prey)), ("Eaten by", top(&s.predators))] {
-            if list.is_empty() {
-                continue;
+    columns2(
+        ui,
+        0.5,
+        nav,
+        |ui, _| {
+            ui.label(RichText::new(describe(&s.traits)).font(serif(17.0)).color(TEXT));
+            ui.add_space(12.0);
+            section(ui, "Body and habits");
+            let t = &s.traits;
+            let size_word = ["speck", "small", "middling", "large", "huge"][names::size_class(t.size)];
+            bar(ui, "Size", (t.size / 0.2).sqrt(), size_word, color);
+            bar(ui, "Speed", (t.speed / 0.3).sqrt(), "", color);
+            bar(
+                ui,
+                "Diet",
+                t.diet,
+                if t.diet > 0.6 {
+                    "meat"
+                } else if t.diet > 0.35 {
+                    "both"
+                } else {
+                    "plants or light"
+                },
+                color,
+            );
+            bar(ui, "Light-feeding", t.photosynthesis, "", color);
+            bar(ui, "Armor", t.armor, "", color);
+            bar(ui, "Spines", t.spines, "", color);
+            bar(ui, "Poison", t.toxin, "", color);
+            bar(ui, "Glow", t.glow, "", color);
+            if t.kingdom == Kingdom::Motile {
+                bar(ui, "Sociality", t.sociality, "", color);
+                bar(ui, "Brain", (t.neurons as f32 / 400.0).sqrt(), &format!("{} neurons", t.neurons), color);
             }
-            section(ui, title);
-            for (id, n) in list {
-                ui.horizontal(|ui| {
-                    species_link(ui, nav, h, id);
-                    ui.label(RichText::new(format!("{n} kills")).small().color(FAINT));
+            bar(ui, "Lifespan", (t.lifespan / 86_400.0).sqrt(), &span(t.lifespan as f64), color);
+            bar(
+                ui,
+                "Lives where",
+                t.zone,
+                if t.zone < 0.33 {
+                    "day edge"
+                } else if t.zone > 0.66 {
+                    "night edge"
+                } else {
+                    "twilight"
+                },
+                color,
+            );
+        },
+        |ui, nav| {
+            section(ui, "Numbers");
+            chart(
+                ui,
+                vec2(ui.available_width(), 130.0),
+                s.extinct.unwrap_or(h.now),
+                &[(&s.population, color, "alive")],
+            );
+            ui.add_space(8.0);
+            section(ui, "Lineage");
+            let line = h.lineage(s.id);
+            if line.is_empty() {
+                ui.label(RichText::new("One of the first life on Vesper.").font(italic(15.0)).color(DIM));
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    for (i, a) in line.iter().enumerate() {
+                        if i > 0 {
+                            ui.label(RichText::new("›").color(FAINT));
+                        }
+                        let alive = h.species.get(a).is_some_and(|a| a.alive());
+                        let text = RichText::new(species_name(h, *a)).color(if alive {
+                            AMBER
+                        } else {
+                            AMBER.gamma_multiply(0.55)
+                        });
+                        link_styled(ui, nav, text, Ref::Species(*a));
+                    }
+                    ui.label(RichText::new("›").color(FAINT));
+                    ui.label(RichText::new(&s.common).color(TEXT));
                 });
             }
-        }
-        if !s.deaths.is_empty() {
-            section(ui, "How they die");
-            let total: u32 = s.deaths.values().sum();
-            let mut d: Vec<(CauseKind, u32)> = s.deaths.iter().map(|(k, v)| (*k, *v)).collect();
-            d.sort_by_key(|x| std::cmp::Reverse(x.1));
-            for (k, n) in d.into_iter().take(6) {
-                bar(ui, k.label(), n as f32 / total as f32, &n.to_string(), CRIMSON.gamma_multiply(0.8));
+            if !s.children.is_empty() {
+                ui.add_space(4.0);
+                ui.label(RichText::new("Gave rise to").small().color(DIM));
+                // Inline, so the row wraps between names but never inside one.
+                ui.horizontal_wrapped(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    for c in &s.children {
+                        let name = species_name(h, *c);
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let width = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), font, AMBER).size().x) + 24.0;
+                        if width > ui.available_width() {
+                            ui.end_row();
+                        }
+                        swatch(ui, h.species.get(c).map_or(DIM, |s| species_color(&s.traits)));
+                        link(ui, nav, name, Ref::Species(*c));
+                        ui.add_space(6.0);
+                    }
+                });
             }
-        }
-    });
+            let top = |m: &std::collections::BTreeMap<SpeciesId, u32>| {
+                let mut v: Vec<(SpeciesId, u32)> = m.iter().map(|(k, v)| (*k, *v)).collect();
+                v.sort_by_key(|x| std::cmp::Reverse(x.1));
+                v.truncate(5);
+                v
+            };
+            for (title, list) in [("Eats", top(&s.prey)), ("Eaten by", top(&s.predators))] {
+                if list.is_empty() {
+                    continue;
+                }
+                section(ui, title);
+                for (id, n) in list {
+                    ui.horizontal(|ui| {
+                        species_link(ui, nav, h, id);
+                        ui.label(RichText::new(format!("{n} kills")).small().color(FAINT));
+                    });
+                }
+            }
+            if !s.deaths.is_empty() {
+                section(ui, "How they die");
+                let total: u32 = s.deaths.values().sum();
+                let mut d: Vec<(CauseKind, u32)> = s.deaths.iter().map(|(k, v)| (*k, *v)).collect();
+                d.sort_by_key(|x| std::cmp::Reverse(x.1));
+                for (k, n) in d.into_iter().take(6) {
+                    bar(ui, k.label(), n as f32 / total as f32, &n.to_string(), CRIMSON.gamma_multiply(0.8));
+                }
+            }
+        },
+    );
 
     let members: Vec<_> = h.notables.values().filter(|n| n.species == s.id).collect();
     if !members.is_empty() {
@@ -546,7 +622,12 @@ pub fn lives(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState) {
             for (ui, n) in cols.iter_mut().zip(row) {
                 card(ui, |ui| {
                     ui.horizontal(|ui| {
-                        link_styled(ui, nav, RichText::new(&n.name).font(serif_bold(19.0)).color(AMBER), Ref::Creature(n.id));
+                        link_styled(
+                            ui,
+                            nav,
+                            RichText::new(&n.name).font(serif_bold(19.0)).color(AMBER),
+                            Ref::Creature(n.id),
+                        );
                         ui.label(RichText::new(&n.title).font(italic(16.0)).color(DIM));
                     });
                     species_link(ui, nav, h, n.species);
@@ -625,7 +706,8 @@ pub fn peoples(ui: &mut Ui, nav: &mut Nav, h: &History) {
                 ui.label(format!("{} dead", w.deaths));
                 match w.ended {
                     None => ui.label(RichText::new("raging").color(EMBER)),
-                    Some(t) => ui.label(RichText::new(format!("{}, {}", span(t - w.began), when(w.began))).small().color(FAINT)),
+                    Some(t) => ui
+                        .label(RichText::new(format!("{}, {}", span(t - w.began), when(w.began))).small().color(FAINT)),
                 };
                 ui.end_row();
             }
@@ -655,7 +737,12 @@ pub fn peoples(ui: &mut Ui, nav: &mut Nav, h: &History) {
         strains.sort_by_key(|s| std::cmp::Reverse(s.deaths));
         egui::Grid::new("strains").striped(true).spacing(vec2(18.0, 8.0)).show(ui, |ui| {
             for s in strains {
-                link_styled(ui, nav, RichText::new(capital(&s.name)).font(serif_bold(16.0)).color(ACID), Ref::Strain(s.id));
+                link_styled(
+                    ui,
+                    nav,
+                    RichText::new(capital(&s.name)).font(serif_bold(16.0)).color(ACID),
+                    Ref::Strain(s.id),
+                );
                 species_link(ui, nav, h, s.host);
                 ui.label(format!("{} dead, {} sick at most", s.deaths, s.peak));
                 ui.label(RichText::new(if s.gone.is_some() { "gone" } else { "still about" }).small().color(DIM));
@@ -676,7 +763,13 @@ fn group_page(ui: &mut Ui, nav: &mut Nav, h: &History, id: GroupId) {
         link(ui, nav, plural(&species_name(h, g.species)), Ref::Species(g.species));
     });
     let status = match g.gone {
-        None => format!("{} members, {} at most. Formed {}, ranging over {}.", g.members, g.peak, when(g.formed), place((g.x[0] + g.x[1]) / 2.0)),
+        None => format!(
+            "{} members, {} at most. Formed {}, ranging over {}.",
+            g.members,
+            g.peak,
+            when(g.formed),
+            place((g.x[0] + g.x[1]) / 2.0)
+        ),
         Some(t) => format!("Gone since {}, after {}. It numbered {} at most.", when(t), span(t - g.formed), g.peak),
     };
     ui.label(RichText::new(status).color(if g.gone.is_none() { TEAL } else { FAINT }));

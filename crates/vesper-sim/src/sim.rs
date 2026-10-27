@@ -60,6 +60,7 @@ impl Sim {
             egrid: Default::default(),
             canopy: vec![0.0; COLS],
             ground: Default::default(),
+            coarse: false,
         };
         w.env.storm_x = 2.2;
         w.env.next_eruption = w.rng.range(1.0, 4.0) as f64 * 3600.0;
@@ -129,10 +130,10 @@ impl Sim {
             // The founders are not "born" as a fact of history beyond SpeciesArose.
         }
         let founders = [
-            (Founder::Drifter, 70, 0.15),
-            (Founder::Grazer, 60, 0.0),
-            (Founder::Swimmer, 50, 0.08),
-            (Founder::Crawler, 50, 0.0),
+            (Founder::Drifter, 30, 0.15),
+            (Founder::Grazer, 25, 0.0),
+            (Founder::Swimmer, 25, 0.08),
+            (Founder::Crawler, 20, 0.0),
         ];
         for (kind, n, alt) in founders {
             let g = Arc::new(Genome::founder(kind, &mut w.rng));
@@ -192,6 +193,12 @@ impl Sim {
         std::mem::take(&mut self.w.history)
     }
 
+    /// Fast-forwarding moves bodies by their learned gaits instead of
+    /// simulating every limb, which is far cheaper and not worth watching.
+    pub fn set_coarse(&mut self, coarse: bool) {
+        self.w.coarse = coarse;
+    }
+
     /// Runs up to `seconds` of sim time, stopping early if `budget` of real
     /// time runs out. Returns the sim seconds actually run.
     pub fn advance(&mut self, seconds: f64, budget: Duration) -> f64 {
@@ -234,6 +241,7 @@ impl Sim {
         think::think(w, &mut self.percepts);
         probe.at(w, 5);
         act::movement(w, &self.percepts);
+        act::physics(w);
         probe.at(w, 6);
         act::actions(w, &self.percepts);
         probe.at(w, 7);

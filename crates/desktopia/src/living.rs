@@ -1,16 +1,16 @@
 //! The living world: runs the simulation on its own low-priority thread and
-//! turns its snapshots into draw lists, blending between ticks so motion
-//! stays smooth at any frame rate.
+//! turns its snapshots into draw lists, sampling the motion recorded
+//! through each tick so movement stays smooth at any frame rate.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
+use vesper_chronicle::Chronicle;
 use vesper_render::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue, WorldView};
-use vesper_sim::frame::{CreatureView, Frame};
+use vesper_sim::frame::CreatureView;
+use vesper_sim::history::Fact;
 use vesper_sim::history::Locomotion;
 use vesper_sim::pose::{self, Pose};
-use vesper_sim::runner::{Frames, Options, Runner};
+use vesper_sim::runner::{Options, Recorder, Runner};
 use vesper_sim::{Sim, save};
 
 /// How much time the PC was off to make up for on start, at most.
@@ -21,10 +21,6 @@ const PLANTS_EVERY: u64 = 5;
 
 pub struct Living {
     runner: Runner,
-    /// The frame the creatures were last matched against, and each id's
-    /// place in its predecessor.
-    shown: Option<Arc<Frame>>,
-    prev_at: HashMap<u64, usize>,
     plants_tick: Option<u64>,
     pose: Pose,
     segs: Vec<Seg>,
@@ -34,10 +30,16 @@ pub struct Living {
 }
 
 impl Living {
-    /// Loads the saved world, or starts a new one if there is none.
-    pub fn start(save_path: Option<PathBuf>, on_start: Option<Box<dyn FnOnce() + Send>>) -> Self {
+    /// Loads the saved world, or starts a new one if there is none, keeping
+    /// its chronicle in `chronicle_dir`.
+    pub fn start(
+        save_path: Option<PathBuf>,
+        chronicle_dir: Option<PathBuf>,
+        on_start: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
         let now = unix_now();
         let loaded = save_path.as_deref().map(save::load);
+        let mut chronicle = chronicle_dir.map(Chronicle::open);
         let (sim, catch_up) = match loaded {
             Some(Ok(sim)) => {
                 let behind = (now - (sim.epoch() + sim.time())).clamp(0.0, CATCH_UP_MAX);
@@ -47,6 +49,10 @@ impl Living {
                     sim.world().creatures.len(),
                     behind
                 );
+                // History the world lost with an older save is lost here too.
+                if let Some(c) = &mut chronicle {
+                    c.rewind_to(sim.time());
+                }
                 (sim, behind)
             }
             other => {
@@ -54,25 +60,21 @@ impl Living {
                     log::warn!("no saved world ({e}); a new one begins");
                 }
                 let seed = now as u64 ^ 0x5eed_7e57;
-                (Sim::new(seed, now), 0.0)
+                let sim = Sim::new(seed, now);
+                if let Some(c) = &mut chronicle {
+                    c.new_world();
+                }
+                (sim, 0.0)
             }
         };
-        Self::run(sim, Options { save_path, save_every: SAVE_EVERY, catch_up, on_start })
+        let recorder = chronicle.map(|c| Box::new(Chronicler(c)) as Box<dyn Recorder>);
+        Self::run(sim, Options { save_path, save_every: SAVE_EVERY, catch_up, on_start, recorder })
     }
 
     /// Runs a world already in hand, e.g. one the preview tool fast-forwarded.
     pub fn run(sim: Sim, opts: Options) -> Self {
         let runner = Runner::start(sim, opts);
-        Self {
-            runner,
-            shown: None,
-            prev_at: HashMap::new(),
-            plants_tick: None,
-            pose: Pose::default(),
-            segs: Vec::new(),
-            membranes: Vec::new(),
-            cloud: None,
-        }
+        Self { runner, plants_tick: None, pose: Pose::default(), segs: Vec::new(), membranes: Vec::new(), cloud: None }
     }
 
     /// The landscape's weather and river as the simulation has them now.
@@ -139,17 +141,12 @@ impl Living {
     }
 
     /// Fills `batch` with every creature, body and egg, blended to now.
-    pub fn creatures(&mut self, batch: &mut LifeBatch, time: f32) {
+    pub fn creatures(&mut self, batch: &mut LifeBatch) {
         let f = self.runner.frames();
-        self.match_frames(&f);
         let t = f.alpha();
         batch.clear();
-        for c in &f.next.creatures {
-            let v = match self.prev_at.get(&c.id) {
-                Some(&i) => pose::blend(&f.prev.creatures[i], c, t),
-                None => c.clone(),
-            };
-            pose::creature(&v, time, &mut self.pose);
+        for v in &f.next.creatures {
+            pose::creature(v, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
                 segs: &self.segs,
@@ -166,12 +163,12 @@ impl Living {
                     hue: i.hue,
                     symbiont: i.symbiont,
                 }),
-                clip_y: clip(&v),
+                clip_y: clip(v),
                 seed: v.id as u32,
             });
         }
         for r in &f.next.remains {
-            pose::remains(r, &mut self.pose);
+            pose::remains(r, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
                 segs: &self.segs,
@@ -219,21 +216,32 @@ impl Living {
         }
     }
 
-    /// Indexes the previous frame by creature id whenever a new tick lands.
-    fn match_frames(&mut self, f: &Frames) {
-        if self.shown.as_ref().is_some_and(|s| Arc::ptr_eq(s, &f.next)) {
-            return;
-        }
-        self.prev_at.clear();
-        for (i, c) in f.prev.creatures.iter().enumerate() {
-            self.prev_at.insert(c.id, i);
-        }
-        self.shown = Some(f.next.clone());
+    /// Where a creature is drawn now, if it is alive: its floor point on screen
+    /// and its length, in world units.
+    #[allow(dead_code)] // for the preview tool
+    pub fn locate(&self, id: u64) -> Option<([f32; 2], f32)> {
+        let f = self.runner.frames();
+        let c = f.next.creatures.iter().find(|c| c.id == id)?;
+        let (at, shrink, _) = pose::project(c.pos);
+        Some((at, c.scale * c.body.extent * shrink))
     }
 
     /// Saves and stops the simulation.
     pub fn stop(self) {
         self.runner.stop();
+    }
+}
+
+/// Writes the world's history down for the chronicle window, on the sim thread.
+struct Chronicler(Chronicle);
+
+impl Recorder for Chronicler {
+    fn record(&mut self, facts: Vec<(f64, Fact)>) {
+        self.0.record_all(facts);
+    }
+
+    fn saved(&mut self) {
+        self.0.checkpoint();
     }
 }
 

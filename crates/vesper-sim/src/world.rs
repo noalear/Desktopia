@@ -35,9 +35,9 @@ pub const E_PLANT: f32 = 70.0;
 pub const E_MEAT: f32 = 140.0;
 pub const E_DETRITUS: f32 = 35.0;
 /// Upkeep per unit of matter^0.75 per second.
-pub const BASAL: f32 = 0.12;
+pub const BASAL: f32 = 0.06;
 pub const BRAIN_COST: f32 = 0.0006;
-pub const MAX_CREATURES: usize = 1000;
+pub const MAX_CREATURES: usize = 150;
 pub const MAX_PLANTS: usize = 2600;
 /// Ticks between plant updates; plants grow on a one-second step.
 pub const PLANT_EVERY: u64 = 5;
@@ -156,6 +156,11 @@ pub struct Remains {
     pub strain: Option<StrainId>,
     /// A parent's body, given as food to its own young (the parent's id).
     pub offered_to: Option<CreatureId>,
+    /// The body as a physical thing while it falls and settles.
+    #[serde(default)]
+    pub rig: Option<crate::physics::Rig>,
+    #[serde(skip)]
+    pub moments: Vec<crate::frame::Moment>,
 }
 
 impl Remains {
@@ -249,6 +254,10 @@ pub struct World {
     pub canopy: Vec<f32>,
     #[serde(skip)]
     pub ground: crate::ground::Ground,
+    /// Fast-forwarding: bodies move by the gaits they have learned rather
+    /// than being simulated limb by limb.
+    #[serde(skip)]
+    pub coarse: bool,
 }
 
 impl World {
