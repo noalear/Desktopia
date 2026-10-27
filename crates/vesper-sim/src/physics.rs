@@ -136,8 +136,9 @@ pub struct Joint {
     /// its wobble dies away each substep.
     compliance: f32,
     damping: f32,
-    /// How far either side of rest the joint can bend at all, so knees
-    /// can't fold backward and limbs can't swing through the body.
+    /// How far either side of rest the joint can bend at all: well past
+    /// what its muscle swings it through, so a knee can be forced backward,
+    /// but not folded flat through its own limb.
     range: f32,
     #[serde(skip)]
     target: f32,
@@ -187,6 +188,11 @@ pub struct Rig {
     /// under way, so a body heading into the distance doesn't flicker.
     #[serde(default = "one")]
     pub face: f32,
+    /// Pieces that bump into each other rather than pass through: those on
+    /// the same side of the body (or the midline), not jointed close
+    /// together, and apart at rest. Worked out again from the body after a load.
+    #[serde(skip)]
+    pairs: Option<Vec<(u16, u16)>>,
 }
 
 fn one() -> f32 {
@@ -239,12 +245,60 @@ impl Rig {
             work: 0.0,
             still: 0.0,
             face: 1.0,
+            pairs: Some(Vec::new()),
         }
     }
 
     /// Builds the rig for the segments in `mask` at rest, with its lowest
     /// point at altitude `alt`.
     pub fn new(body: &Body, mask: u64, scale: f32, alt: f32) -> Self {
+        let mut rig = Self::build(body, mask, scale, alt);
+        rig.pairs = Some(rig.rest_pairs(body));
+        rig
+    }
+
+    /// Finds which pieces collide, if a load left that unknown.
+    pub fn ensure_pairs(&mut self, body: &Body) {
+        if self.pairs.is_none() {
+            self.pairs = Some(Self::build(body, self.mask, self.scale, 0.0).rest_pairs(body));
+        }
+    }
+
+    /// The colliding pairs, from this rig in its rest pose.
+    fn rest_pairs(&self, body: &Body) -> Vec<(u16, u16)> {
+        let n = self.parts.len();
+        let mut parent = vec![u16::MAX; n];
+        for j in &self.joints {
+            parent[j.child as usize] = j.parent;
+        }
+        let up = |k: u16| if k == u16::MAX { u16::MAX } else { parent[k as usize] };
+        let side = |k: usize| body.segments.get(self.parts[k].seg as usize).map_or(0, |s| s.side);
+        let mut pairs = Vec::new();
+        for a in 0..n {
+            for b in a + 1..n {
+                let (sa, sb) = (side(a), side(b));
+                // The near and far legs of a pair swing past each other.
+                if sa != 0 && sb != 0 && sa != sb {
+                    continue;
+                }
+                // Jointed together or nearly: they share a hinge.
+                let (a16, b16) = (a as u16, b as u16);
+                if up(a16) == b16 || up(b16) == a16 || up(a16) == up(b16) || up(up(a16)) == b16 || up(up(b16)) == a16 {
+                    continue;
+                }
+                let (pa, pb) = (&self.parts[a], &self.parts[b]);
+                let (_, _, d) = closest(pa.base(), pa.tip(), pb.base(), pb.tip());
+                // Grown overlapping, like a gut inside a frame: leave them be.
+                if d < (pa.radius + pb.radius) * 1.05 {
+                    continue;
+                }
+                pairs.push((a16, b16));
+            }
+        }
+        pairs
+    }
+
+    fn build(body: &Body, mask: u64, scale: f32, alt: f32) -> Self {
         let mut index = vec![u16::MAX; body.segments.len()];
         let mut parts = Vec::new();
         for (i, s) in body.segments.iter().enumerate() {
@@ -313,12 +367,22 @@ impl Rig {
                 lift: s.lift,
                 compliance: 1.0 / (inertia * omega * omega).max(1e-18),
                 damping: 1.0 - (-omega * 0.8 * STEP / SUBSTEPS as f32).exp(),
-                range: (s.amp + s.lift.abs() + 0.35).min(2.0),
+                range: (s.amp + s.lift.abs() + 1.0).min(2.5),
                 target: s.angle,
             });
         }
-        let mut rig =
-            Self { parts, joints, clock: 0.0, mask, scale, grounded: false, work: 0.0, still: 0.0, face: 1.0 };
+        let mut rig = Self {
+            parts,
+            joints,
+            clock: 0.0,
+            mask,
+            scale,
+            grounded: false,
+            work: 0.0,
+            still: 0.0,
+            face: 1.0,
+            pairs: None,
+        };
         let low = rig.lowest();
         for p in &mut rig.parts {
             p.pos[1] += alt - low;
@@ -596,6 +660,16 @@ impl Rig {
                     }
                 }
             }
+            // Limbs bump rather than pass through each other. Last, and twice
+            // over, so the muscles and hinges can't force them through.
+            if let Some(pairs) = &self.pairs {
+                for _ in 0..2 {
+                    for &(a, b) in pairs {
+                        let (a, b) = pair_mut(&mut self.parts, a as usize, b as usize);
+                        collide(a, b);
+                    }
+                }
+            }
             for p in &mut self.parts {
                 p.vel = [(p.pos[0] - p.prev[0]) / h, (p.pos[1] - p.prev[1]) / h];
                 p.spin = (p.angle - p.prev[2]) / h;
@@ -684,6 +758,79 @@ fn ground(p: &mut Part, end: f32, ceiling: f32, pressed: &mut f32) -> bool {
     true
 }
 
+/// The closest points of segments `a0`-`a1` and `b0`-`b1`, as fractions
+/// along each, and the distance between them.
+fn closest(a0: [f32; 2], a1: [f32; 2], b0: [f32; 2], b1: [f32; 2]) -> (f32, f32, f32) {
+    let d1 = [a1[0] - a0[0], a1[1] - a0[1]];
+    let d2 = [b1[0] - b0[0], b1[1] - b0[1]];
+    let r = [a0[0] - b0[0], a0[1] - b0[1]];
+    let a = d1[0] * d1[0] + d1[1] * d1[1];
+    let e = d2[0] * d2[0] + d2[1] * d2[1];
+    let f = d2[0] * r[0] + d2[1] * r[1];
+    let c = d1[0] * r[0] + d1[1] * r[1];
+    let b = d1[0] * d2[0] + d1[1] * d2[1];
+    let denom = a * e - b * b;
+    let mut s = if denom > 1e-20 { ((b * f - c * e) / denom).clamp(0.0, 1.0) } else { 0.0 };
+    let mut t = if e > 1e-20 { (b * s + f) / e } else { 0.0 };
+    if t < 0.0 {
+        t = 0.0;
+        s = if a > 1e-20 { (-c / a).clamp(0.0, 1.0) } else { 0.0 };
+    } else if t > 1.0 {
+        t = 1.0;
+        s = if a > 1e-20 { ((b - c) / a).clamp(0.0, 1.0) } else { 0.0 };
+    }
+    let pa = [a0[0] + d1[0] * s, a0[1] + d1[1] * s];
+    let pb = [b0[0] + d2[0] * t, b0[1] + d2[1] * t];
+    (s, t, ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2)).sqrt())
+}
+
+/// Pushes two pieces of one body apart where they overlap.
+fn collide(a: &mut Part, b: &mut Part) {
+    let reach = a.half + b.half + a.radius + b.radius;
+    let gap = [b.pos[0] - a.pos[0], b.pos[1] - a.pos[1]];
+    if gap[0] * gap[0] + gap[1] * gap[1] > reach * reach {
+        return;
+    }
+    let (a0, a1, b0, b1) = (a.base(), a.tip(), b.base(), b.tip());
+    let (s, t, d) = closest(a0, a1, b0, b1);
+    let sum = a.radius + b.radius;
+    if d >= sum {
+        return;
+    }
+    let at = |s: f32, p: [f32; 2], q: [f32; 2]| [p[0] + (q[0] - p[0]) * s, p[1] + (q[1] - p[1]) * s];
+    let (pa, pb, n, pen) = if d > 1e-6 {
+        let (pa, pb) = (at(s, a0, a1), at(t, b0, b1));
+        (pa, pb, [(pb[0] - pa[0]) / d, (pb[1] - pa[1]) / d], sum - d)
+    } else {
+        // Crossed: the shortest way out is to carry one piece's nearer end
+        // back over the other's axis.
+        let out = |p0: [f32; 2], axis: [f32; 2], q0: [f32; 2], q1: [f32; 2]| {
+            let n = [-axis[1], axis[0]];
+            let d0 = (q0[0] - p0[0]) * n[0] + (q0[1] - p0[1]) * n[1];
+            let d1 = (q1[0] - p0[0]) * n[0] + (q1[1] - p0[1]) * n[1];
+            let (end, near, far) = if d0.abs() < d1.abs() { (q0, d0, d1) } else { (q1, d1, d0) };
+            let n = [n[0] * far.signum(), n[1] * far.signum()];
+            let foot = [end[0] - n[0] * near.abs(), end[1] - n[1] * near.abs()];
+            (foot, end, n, near.abs() + sum)
+        };
+        let (fb, eb, nb, pb_) = out(a0, a.axis(), b0, b1);
+        let (fa, ea, na, pa_) = out(b0, b.axis(), a0, a1);
+        if pb_ <= pa_ { (fb, eb, nb, pb_) } else { (ea, fa, [-na[0], -na[1]], pa_) }
+    };
+    let ra = [pa[0] - a.pos[0], pa[1] - a.pos[1]];
+    let rb = [pb[0] - b.pos[0], pb[1] - b.pos[1]];
+    let ca = cross(ra, n);
+    let cb = cross(rb, n);
+    let w = a.inv_mass + a.inv_inertia * ca * ca + b.inv_mass + b.inv_inertia * cb * cb;
+    let l = pen / w;
+    b.pos[0] += n[0] * l * b.inv_mass;
+    b.pos[1] += n[1] * l * b.inv_mass;
+    b.turn(b.inv_inertia * cb * l);
+    a.pos[0] -= n[0] * l * a.inv_mass;
+    a.pos[1] -= n[1] * l * a.inv_mass;
+    a.turn(-a.inv_inertia * ca * l);
+}
+
 fn pair_mut(v: &mut [Part], a: usize, b: usize) -> (&mut Part, &mut Part) {
     assert!(a != b);
     if a < b {
@@ -743,6 +890,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn limbs_on_one_side_keep_out_of_each_other() {
+        let (mut samples, mut crossed, mut deep) = (0u32, 0u32, 0.0f32);
+        for seed in 0..10 {
+            for kind in [Founder::Grazer, Founder::Crawler, Founder::Swimmer] {
+                let (g, mut rig) = rig_of(kind, seed);
+                let pairs = rig.pairs.clone().unwrap();
+                let medium = Medium { density: AIR, flow: [0.0; 2], ceiling: 0.68 };
+                for _ in 0..(6.0 * HZ) as usize {
+                    rig.step(Drive { power: 1.0, rise: 0.0, hz: g.gait_hz, limp: false }, medium);
+                    for &(a, b) in &pairs {
+                        let (pa, pb) = (&rig.parts[a as usize], &rig.parts[b as usize]);
+                        let (_, _, d) = closest(pa.base(), pa.tip(), pb.base(), pb.tip());
+                        let sank = ((pa.radius + pb.radius - d) / (pa.radius + pb.radius)).max(0.0);
+                        samples += 1;
+                        deep += sank;
+                        if sank > 0.9 {
+                            crossed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let rate = crossed as f32 / samples as f32;
+        let mean = deep / samples as f32;
+        assert!(rate < 0.002, "limbs passed through each other in {:.2}% of looks", rate * 100.0);
+        assert!(mean < 0.01, "limbs sank {mean:.3} of their thickness into each other on average");
     }
 
     #[test]
