@@ -20,15 +20,8 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args {
-        scale: 0.25,
-        time: 120.0,
-        frames: 1,
-        step: 1.0,
-        band: None,
-        lightning: None,
-        out: "preview-out".into(),
-    };
+    let mut a =
+        Args { scale: 0.25, time: 120.0, frames: 1, step: 1.0, band: None, lightning: None, out: "preview-out".into() };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         let mut val = || it.next().expect("missing value");
@@ -51,11 +44,10 @@ fn main() {
     std::fs::create_dir_all(&args.out).unwrap();
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-        .expect("no adapter");
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("no adapter");
     eprintln!("adapter: {:?}", adapter.get_info().name);
-    let (device, queue) =
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let renderer = Renderer::new(device, queue);
 
     let w = (MONITOR[0] as f32 * args.scale) as u32;
@@ -156,11 +148,7 @@ fn read_back(r: &Renderer, tex: &wgpu::Texture, w: u32, h: u32, bpp: u32) -> Vec
         },
         wgpu::TexelCopyBufferInfo {
             buffer: &buf,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(h),
-            },
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) },
         },
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
@@ -182,10 +170,7 @@ fn read_rgba8(r: &Renderer, tex: &wgpu::Texture, w: u32, h: u32) -> Vec<u8> {
 }
 
 fn read_rgba16f(r: &Renderer, tex: &wgpu::Texture, w: u32, h: u32) -> Vec<f32> {
-    read_back(r, tex, w, h, 8)
-        .chunks_exact(2)
-        .map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32())
-        .collect()
+    read_back(r, tex, w, h, 8).chunks_exact(2).map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32()).collect()
 }
 
 /// Max and mean luminance in nits, plus the count of NaN or negative values.

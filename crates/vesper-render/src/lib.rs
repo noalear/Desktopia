@@ -142,14 +142,8 @@ impl Renderer {
 
         let bake_pipeline_layout = pipeline_layout(&device, "bake", &bake_layout);
         let frame_pipeline_layout = pipeline_layout(&device, "frame", &frame_layout);
-        let bake_pipeline = fullscreen_pipeline(
-            &device,
-            "bake",
-            &bake_pipeline_layout,
-            &bake_module,
-            "fs_bake",
-            BAKED_FORMAT,
-        );
+        let bake_pipeline =
+            fullscreen_pipeline(&device, "bake", &bake_pipeline_layout, &bake_module, "fs_bake", BAKED_FORMAT);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("baked"),
@@ -160,16 +154,7 @@ impl Renderer {
             ..Default::default()
         });
 
-        Self {
-            device,
-            queue,
-            bake_layout,
-            frame_layout,
-            bake_pipeline,
-            frame_module,
-            frame_pipeline_layout,
-            sampler,
-        }
+        Self { device, queue, bake_layout, frame_layout, bake_pipeline, frame_module, frame_pipeline_layout, sampler }
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -213,14 +198,8 @@ impl Renderer {
             layout: &self.frame_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&baked_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&baked_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
         let frame_pipeline = fullscreen_pipeline(
@@ -269,22 +248,14 @@ impl Renderer {
         };
         self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params));
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vesper") });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vesper") });
 
         let stale = match output.baked_band_shift {
             None => true,
             Some(b) => (b - world.band_shift).abs() > 0.002,
         };
         if stale {
-            draw_fullscreen(
-                &mut encoder,
-                "bake",
-                &output.baked_view,
-                &self.bake_pipeline,
-                &output.bake_group,
-            );
+            draw_fullscreen(&mut encoder, "bake", &output.baked_view, &self.bake_pipeline, &output.bake_group);
             output.baked_band_shift = Some(world.band_shift);
         }
         draw_fullscreen(&mut encoder, "frame", target, &output.frame_pipeline, &output.frame_group);
@@ -300,11 +271,7 @@ fn shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule 
     })
 }
 
-fn pipeline_layout(
-    device: &wgpu::Device,
-    label: &str,
-    group: &wgpu::BindGroupLayout,
-) -> wgpu::PipelineLayout {
+fn pipeline_layout(device: &wgpu::Device, label: &str, group: &wgpu::BindGroupLayout) -> wgpu::PipelineLayout {
     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(group)],
@@ -336,11 +303,7 @@ fn fullscreen_pipeline(
             module,
             entry_point: Some(fragment_entry),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
         }),
         multiview_mask: None,
         cache: None,
@@ -360,10 +323,7 @@ fn draw_fullscreen(
             view: target,
             depth_slice: None,
             resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
+            ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
         })],
         depth_stencil_attachment: None,
         timestamp_writes: None,
