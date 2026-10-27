@@ -749,7 +749,11 @@ impl History {
                 text.push_str(&format!(", {} and {last}.", deeds.join(", ")));
             }
         }
-        let weight = if score > 40.0 { 3 } else { 2 };
+        let weight = match score {
+            s if s >= 50.0 => 3,
+            s if s >= 30.0 => 2,
+            _ => 1,
+        };
         let mut refs = vec![Ref::Creature(who), Ref::Species(species)];
         if let Some(other) = other_party(cause)
             && self.names.contains_key(&other)
@@ -1381,7 +1385,7 @@ impl History {
         };
         let mut refs = vec![Ref::Species(top)];
         refs.extend(current.map(Ref::Species));
-        self.write(Kind::Era, 2, format!("The Age of the {}", names::capital(&name)), text, refs);
+        self.write(Kind::Era, 2, format!("The Age of the {}", names::title_case(&name)), text, refs);
     }
 
     /// Splits entry text into plain runs and named links.

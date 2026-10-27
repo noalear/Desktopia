@@ -227,6 +227,11 @@ pub fn plague_name(seed: u64, t: &StrainTraits) -> String {
     format!("the {} {}", capital(pick(seed, adjs)), capital(pick(seed ^ 0x3c, nouns)))
 }
 
+/// "Orchid Soarers", "Vent-Crust Mats".
+pub fn title_case(s: &str) -> String {
+    s.split(' ').map(|w| w.split('-').map(capital).collect::<Vec<_>>().join("-")).collect::<Vec<_>>().join(" ")
+}
+
 pub fn capital(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {

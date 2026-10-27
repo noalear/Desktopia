@@ -8,3 +8,8 @@ description = "The chronicle window: Vesper's history, species tree and notable 
 
 [dependencies]
 vesper-chronicle = { path = "../vesper-chronicle" }
+eframe = { version = "0.37", default-features = false, features = ["wgpu", "x11", "default_fonts"] }
+log.workspace = true
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu", "snapshot", "eframe"] }

@@ -813,13 +813,13 @@ impl DemoWorld {
             .filter(|s| s.alive)
             .map(|s| StrainCensus { id: s.id, infected: s.infected.round() as u32, traits: s.traits.clone() })
             .collect();
-        let living = creatures * 0.4 + plants * 0.1;
+        let living = creatures * 0.4 + plants * 0.6;
         self.emit(Fact::Census(Census {
             creatures: creatures as u32,
             plants: plants as u32,
             living_matter: living,
             dead_matter: living * 0.3,
-            soil_matter: 1000.0 - living * 1.3,
+            soil_matter: 10_000.0 - living * 1.3,
             species,
             groups,
             strains,
