@@ -1,0 +1,10 @@
+[package]
+name = "chronicle-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The chronicle window: Vesper's history, species tree and notable lives"
+
+[dependencies]
+vesper-chronicle = { path = "../vesper-chronicle" }

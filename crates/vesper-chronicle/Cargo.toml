@@ -1,0 +1,11 @@
+[package]
+name = "vesper-chronicle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vesper's written history: species tree, notable lives, wars, plagues and eras"
+
+[dependencies]
+serde.workspace = true
+serde_json = "1"
+log.workspace = true
