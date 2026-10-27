@@ -8,7 +8,8 @@ description = "Vesper, a living world on the Windows desktop"
 
 [dependencies]
 vesper-render = { path = "../vesper-render" }
-vesper-forms = { path = "../vesper-forms" }
+vesper-sim = { path = "../vesper-sim" }
+vesper-terrain = { path = "../vesper-terrain" }
 wgpu.workspace = true
 pollster.workspace = true
 log.workspace = true

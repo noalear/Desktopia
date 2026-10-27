@@ -10,10 +10,10 @@ use windows::Win32::System::Registry::{
     RegQueryValueExW, RegSetValueExW,
 };
 use windows::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, OpenProcess,
+    BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, GetCurrentThread, OpenProcess,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-    PROCESS_TERMINATE, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, TerminateProcess,
-    WaitForSingleObject,
+    PROCESS_TERMINATE, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, SetThreadPriority,
+    THREAD_PRIORITY_LOWEST, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW};
@@ -57,6 +57,15 @@ pub fn single_instance() -> Option<Instance> {
 
 /// Physical pixels everywhere, low CPU priority, and efficiency mode so the
 /// scheduler favours everything else.
+/// For the simulation thread: it should only ever use time nothing else wants.
+pub fn lower_thread_priority() {
+    unsafe {
+        if let Err(e) = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST) {
+            log::warn!("sim thread priority: {e}");
+        }
+    }
+}
+
 pub fn be_polite() {
     unsafe {
         if let Err(e) = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) {

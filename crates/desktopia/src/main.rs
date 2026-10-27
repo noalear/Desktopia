@@ -12,6 +12,7 @@ mod desktop;
 mod governor;
 #[cfg(windows)]
 mod host;
+mod living;
 #[cfg(windows)]
 mod logger;
 #[cfg(windows)]
@@ -40,10 +41,10 @@ mod app {
     use crate::config::{self, Config};
     use crate::governor::Governor;
     use crate::host::{self, Event, Host, MenuState};
+    use crate::living::Living;
     use crate::wallpaper::{Gpu, Presented, Wallpaper};
     use crate::{logger, system};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-    use vesper_forms::Menagerie;
     use vesper_render::{LifeBatch, WorldView};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::Threading::{
@@ -100,9 +101,11 @@ mod app {
             autostart: system::autostart_enabled(),
             last_tip: String::new(),
             force_frame: false,
-            life: Menagerie::new(SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(7)),
+            life: Some(Living::start(
+                config::dir("LOCALAPPDATA").map(|d| d.join("world.vesper")),
+                Some(Box::new(system::lower_thread_priority)),
+            )),
             life_batch: LifeBatch::new(),
-            life_clock: None,
             plants_uploaded: false,
             hotkey: false,
         };
@@ -112,6 +115,10 @@ mod app {
         app.sync_menu();
         app.run(timer);
 
+        // Save the world before anything else goes.
+        if let Some(life) = app.life.take() {
+            life.stop();
+        }
         drop(app);
         if !timer.is_invalid() {
             unsafe {
@@ -139,10 +146,9 @@ mod app {
         /// Draw every monitor once even if the governor says rest, so a fresh
         /// wallpaper never shows an empty window.
         force_frame: bool,
-        /// Stand-in creatures and plants until the simulation drives them.
-        life: Menagerie,
+        /// The simulation, running on its own thread. Taken on quit to save it.
+        life: Option<Living>,
         life_batch: LifeBatch,
-        life_clock: Option<Instant>,
         plants_uploaded: bool,
         /// The chronicle hotkey is registered.
         hotkey: bool,
@@ -301,20 +307,22 @@ mod app {
             }
 
             let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-            let world = WorldView::at(wallpaper.world_size_px, unix, self.cfg.exposure);
+            let mut world = WorldView::at(wallpaper.world_size_px, unix, self.cfg.exposure);
 
-            // Life moves on wall-clock time while drawn; after a rest it just
-            // picks up where it was.
-            let dt = self.life_clock.map_or(0.0, |t| (now - t).as_secs_f32().min(0.25));
-            self.life_clock = Some(now);
-            self.life.step(dt);
-            if !self.plants_uploaded {
-                self.life.plants_batch(&mut self.life_batch);
-                gpu.renderer.set_plants(&mut self.life_batch);
-                self.plants_uploaded = true;
+            // The world lives on its own thread whether or not it is drawn;
+            // drawing only looks at its latest moments.
+            if let Some(life) = self.life.as_mut() {
+                world = life.world_view(world);
+                if !self.plants_uploaded {
+                    life.replant();
+                }
+                if life.plants(&mut self.life_batch) {
+                    gpu.renderer.set_plants(&mut self.life_batch);
+                    self.plants_uploaded = true;
+                }
+                life.creatures(&mut self.life_batch, world.time);
+                gpu.renderer.set_creatures(&mut self.life_batch);
             }
-            self.life.creatures_batch(&mut self.life_batch);
-            gpu.renderer.set_creatures(&mut self.life_batch);
             let mut lost = false;
             for i in 0..wallpaper.screens.len() {
                 if (force || decision.visible.get(i).copied().unwrap_or(true))

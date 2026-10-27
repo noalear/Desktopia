@@ -694,9 +694,10 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "serde",
- "toml 0.9.12+spec-1.1.0",
- "vesper-forms",
+ "toml",
  "vesper-render",
+ "vesper-sim",
+ "vesper-terrain",
  "wgpu",
  "windows",
 ]
@@ -2383,9 +2384,12 @@ version = "0.1.0"
 dependencies = [
  "half",
  "image",
+ "log",
  "pollster",
  "vesper-forms",
  "vesper-render",
+ "vesper-sim",
+ "vesper-terrain",
  "wgpu",
 ]
 
