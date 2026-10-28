@@ -110,15 +110,17 @@ pub fn physics(w: &mut World) {
         if mask != c.rig.mask || (scale / c.rig.scale - 1.0).abs() > 0.04 {
             c.rig = c.rig.rebuild(&c.body, mask, scale);
         }
+        c.rig.ensure_pairs(&c.body);
         c.moments.clear();
         c.moments.push(Moment::of(&c.rig, c.pos, c.heading));
     }
     for r in remains.iter_mut() {
         r.moments.clear();
-        if let Some(rig) = &r.rig {
+        if let Some(rig) = &mut r.rig {
             if rig.still > 3.0 {
                 continue;
             }
+            rig.ensure_pairs(&r.body);
             r.moments.push(Moment::of(rig, r.pos, r.heading));
         }
     }
