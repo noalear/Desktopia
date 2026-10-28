@@ -131,7 +131,7 @@ fn vs_seg(@builtin(vertex_index) vi: u32, inst: Inst) -> LOut {
     let a = bend(inst.a, inst.sway.x);
     let b = bend(inst.b, inst.sway.y);
     let rmax = max(max(inst.r.x, inst.r.y), px_world() * 0.6);
-    let pad = rmax * (1.0 + inst.look.z) + 2.0 * px_world();
+    let pad = rmax * (1.0 + inst.look.z) * select(1.0, 1.2, i32(inst.mat.x + 0.5) == T_FILM) + 2.0 * px_world();
     let w = seg_quad(vi, a, b, pad);
     var o: LOut;
     o.pos = to_clip(w, inst.zinfo.x);
@@ -175,6 +175,92 @@ fn vs_membrane(@builtin(vertex_index) vi: u32, inst: Inst) -> LOut {
     o.p = w;
     o.bary = bary;
     pass_through(&o, inst, a, b, c);
+    return o;
+}
+
+// ---------------------------------------------------------------- shadows
+
+// Shadows on the ground: a soft dark pool at every body's feet, and on the
+// day side a long cast shadow stretched away from the low sun, fading and
+// blurring with length. Flyers' shadows fall below them, fainter the higher
+// they are. a: the floor point under the body's middle; r: half its width
+// and its height on screen; c.x: its height off the floor.
+
+// How long a cast shadow is, per unit of body height, and how dark.
+fn cast_shadow(x: f32) -> vec2f {
+    let day = daylight(x);
+    let night = nightness(x);
+    let low = smoothstep(0.1, 0.4, night) * smoothstep(0.75, 0.45, night);
+    return vec2f(1.4 + 2.6 * low, 0.32 * day + 0.2 * low);
+}
+
+// Ground seen from the eye is squashed this much at screen height y.
+fn ground_squash(y: f32) -> f32 {
+    return max((HORIZON - y) / FOCAL, 0.012) * 1.6;
+}
+
+// Shadows fall away from the sun on the day edge: sideways, and a little
+// toward the eye. On the ground, before squashing.
+const SHADOW_DIR = vec2f(0.894, -0.447);
+
+@vertex
+fn vs_shadow(@builtin(vertex_index) vi: u32, inst: Inst) -> LOut {
+    let g = inst.a;
+    let hw = inst.r.x;
+    let hgt = inst.r.y;
+    let alt = inst.c.x;
+    let cs = cast_shadow(g.x);
+    let len = hgt * cs.x * step(0.02, cs.y) + alt * 3.0;
+    let sq = ground_squash(g.y);
+    // A box around the pool and the shadow, laid along the shadow.
+    let back = hw * 1.6;
+    let wide = hw * 1.6 + len * 0.25;
+    var corners = array<vec2f, 6>(
+        vec2f(0.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
+        vec2f(0.0, -1.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0),
+    );
+    let k = corners[vi];
+    let side = vec2f(-SHADOW_DIR.y, SHADOW_DIR.x);
+    let gd = SHADOW_DIR * mix(-back, len + back, k.x) + side * wide * k.y;
+    let w = g + vec2f(gd.x, gd.y * sq) + vec2f(0.0, 2.0 * px_world() * k.y);
+    var o: LOut;
+    o.pos = to_clip(w, inst.zinfo.x);
+    o.p = w;
+    o.bary = vec3f(0.0);
+    pass_through(&o, inst, inst.a, inst.b, inst.c);
+    return o;
+}
+
+@fragment
+fn fs_shadow(i: LOut) -> FOut {
+    let g = i.ab.xy;
+    let hw = max(i.cr.z, 1e-5);
+    let hgt = max(i.cr.w, 1e-5);
+    let alt = i.cr.x;
+    let sq = ground_squash(g.y);
+    // Back onto the ground, unsquashed.
+    let d = vec2f(i.p.x - g.x, (i.p.y - g.y) / sq);
+    let lift = exp(-alt / hgt * 1.5);
+    // The pool of shade right under it.
+    let k = d / (hw * 1.1);
+    let contact = exp(-dot(k, k) * 1.8) * 0.45 * lift;
+    // The cast shadow, widening and softening as it goes.
+    let cs = cast_shadow(g.x);
+    let len = hgt * cs.x + alt * 3.0;
+    let side = vec2f(-SHADOW_DIR.y, SHADOW_DIR.x);
+    let along = (dot(d, SHADOW_DIR) - alt * 3.0 + hw * 0.3) / max(len, 1e-5);
+    let f = clamp(along, 0.0, 1.0);
+    let spread = hw * (0.7 + 0.8 * f) + len * 0.06 * f;
+    let across = dot(d, side) / max(spread, 1e-6);
+    let stretch = smoothstep(-0.05, 0.1, along) * smoothstep(1.0, 0.45, along) * exp(-across * across * 1.4)
+        * cs.y * mix(1.0, 0.35, f) * mix(1.0, 0.4, 1.0 - lift);
+    let a = clamp(1.0 - (1.0 - contact) * (1.0 - stretch), 0.0, 0.7) * (1.0 - 0.5 * i.zinfo.x) * i.mat.w;
+    if (a < 0.004) {
+        discard;
+    }
+    var o: FOut;
+    o.color = vec4f(0.0, 0.0, 0.0, a);
+    o.depth = i.zinfo.x;
     return o;
 }
 
@@ -332,13 +418,32 @@ fn fs_body(i: LOut) -> FOut {
     let damage = i.mat.z;
     let alive = i.mat.w;
     let decay = 1.0 - alive;
-    let tb = tube(p, i.ab.xy, i.ab.zw, i.cr.z, i.cr.w);
+    var tb = tube(p, i.ab.xy, i.ab.zw, i.cr.z, i.cr.w);
     let px = px_world();
     let u = mix(i.zinfo.z, i.zinfo.w, tb.h);
     // Anything sized by the local radius counts from this segment's own
     // start: the chain's running coordinate is large, and dividing it by a
     // tapering radius makes it race and shimmer.
     let ul = u - i.zinfo.z;
+    let leaf = tissue == T_FILM;
+    if (leaf) {
+        // A leaf is a blade, not a tube: narrow at the stalk and widest past
+        // the middle. Each plant has its own kind: some drawn out to a point,
+        // most rounded or blunt, a few notched at the tip; some smooth-edged,
+        // some finely toothed.
+        let kind = hash21(vec2f(seed, 3.7));
+        let hh = pow(tb.h, mix(0.55, 0.9, hash21(vec2f(seed, 5.1))));
+        let pointed = pow(sin(3.14159 * hh), 0.7);
+        let rounded = pow(max(1.0 - pow(2.0 * hh - 1.0, 2.0), 0.0), mix(0.3, 0.55, kind));
+        var blade = mix(pointed, rounded, smoothstep(0.15, 0.45, kind));
+        let notch = smoothstep(0.85, 0.9, kind) * smoothstep(0.75, 1.0, tb.h) * smoothstep(0.35, 0.0, abs(tb.v));
+        blade *= 1.0 - notch * 0.9;
+        let toothed = 0.12 * smoothstep(0.5, 0.8, hash21(vec2f(seed, 8.3)));
+        let teeth = 1.0 - toothed * smoothstep(0.4, 1.0, abs(sin(ul / max(tb.r * 0.28, px) + seed * 7.0)));
+        let rr = max(tb.r * max(blade * teeth, 0.06) * 1.15, px * 0.6);
+        tb.v = tb.v * tb.r / rr;
+        tb.r = rr;
+    }
 
     let night = nightness(p.x);
     let day = daylight(p.x);
@@ -361,18 +466,31 @@ fn fs_body(i: LOut) -> FOut {
         discard;
     }
     let v = clamp(tb.v, -1.0, 1.0);
-    let nz = sqrt(max(1.0 - v * v, 0.0));
+    // Leaves are near-flat sheets, folded a little along the midrib.
+    let nz = select(sqrt(max(1.0 - v * v, 0.0)), sqrt(max(1.0 - v * v * 0.3, 0.0)), leaf);
     // Skin grain: wrinkles across the body and fine pores, as normal wobble.
     let gq = vec2f(ul, v * tb.r) / max(tb.r * 0.35, px * 3.0);
     let grain = vec2f(vnoise(gq * vec2f(0.6, 2.2) + seed), vnoise(gq * 1.7 + seed + 9.0)) - 0.5;
-    let n = normalize(vec3f(tb.nrm * v + vec2f(grain.x, grain.y) * 0.22 * nz, nz));
+    var bump = vec2f(grain.x, grain.y) * 0.22 * nz;
+    // Soft folds ringing fleshy bodies, deep on some kinds and all but gone
+    // on others, spaced by the body's own pattern scale.
+    if (tissue == T_MUSCLE || tissue == T_GUT || (tissue == T_FRAME && max(i.cr.z, i.cr.w) > 0.45 * i.sway.z)) {
+        let kind_h = hash21(vec2f(i.look.w, i.extra.x) * 97.0);
+        let ridged = smoothstep(0.35, 0.9, kind_h);
+        let fq = ul / max(tb.r * mix(0.45, 0.9, fract(kind_h * 31.0)), px * 2.5);
+        let fold = cos(fq * 6.283 + vnoise(vec2f(fq * 0.5, v * 2.0) + seed) * 1.5);
+        let along_dir = vec2f(tb.nrm.y, -tb.nrm.x);
+        let deep = smoothstep(0.25, 0.75, vnoise(vec2f(fq * 0.37, seed)));
+        bump += along_dir * fold * 0.22 * deep * ridged * nz * smoothstep(px * 2.0, px * 6.0, tb.r);
+    }
+    let n = normalize(vec3f(tb.nrm * v + bump, nz));
     let L = light_dir(p);
 
     // ---- albedo and pattern
     var albedo = i.color.rgb * (0.85 + 0.3 * vnoise(gq * 0.5 + seed * 2.0));
     let kind = i32(i.accent.w + 0.5);
     let q = vec2f(u, v * tb.r) / max(i.look.x, 1e-4);
-    let patterned = tissue == T_MUSCLE || (tissue == T_FRAME && tb.r > 0.003);
+    let patterned = tissue == T_MUSCLE || (tissue == T_FRAME && max(i.cr.z, i.cr.w) > 0.45 * i.sway.z);
     if (patterned) {
         albedo = mix(albedo, i.accent.rgb, pattern(kind, q, seed) * i.look.w);
         // Dark backs, pale bellies.
@@ -389,9 +507,26 @@ fn fs_body(i: LOut) -> FOut {
     if (tissue == T_SPINE) {
         albedo *= 0.75 + 0.5 * tb.h;
     }
-    if (tissue == T_FILM) {
-        let vein = smoothstep(0.08, 0.0, abs(fract(ul / max(tb.r * 0.8, 1e-4)) - 0.5) - 0.42);
-        albedo = mix(albedo, albedo * 0.35, vein);
+    if (tissue == T_FRAME && !patterned) {
+        // Thin limbs: dark knuckles at the joints, a paler shin between,
+        // banded in the accent colour on some kinds.
+        let knuckle = smoothstep(0.14, 0.0, tb.h) + smoothstep(0.86, 1.0, tb.h);
+        albedo *= mix(1.15, 0.45, knuckle);
+        let band = smoothstep(0.05, 0.0, abs(tb.h - 0.22)) * step(0.5, fract(seed * 13.7));
+        albedo = mix(albedo, i.accent.rgb, band * 0.7);
+    }
+    var veins = 0.0;
+    if (leaf) {
+        // A midrib, and side veins angling out toward the tip.
+        let rib = smoothstep(0.1, 0.03, abs(v));
+        let lat = abs(fract(ul / max(i.cr.z * 0.9, 1e-4) - abs(v) * 0.7 + seed) - 0.5);
+        veins = max(rib, smoothstep(0.42, 0.48, lat) * smoothstep(0.95, 0.5, abs(v)) * 0.8);
+        // Deep at the stalk, lighter toward the tip, the margin edged in
+        // the accent colour; blotched with age.
+        albedo *= mix(0.6, 1.2, smoothstep(0.0, 0.85, tb.h));
+        albedo = mix(albedo, i.accent.rgb, smoothstep(0.75, 0.97, abs(v)) * 0.55 * i.look.w);
+        albedo *= 0.8 + 0.4 * vnoise(vec2f(ul, v * tb.r) / max(tb.r * 0.6, 1e-4) + seed * 3.0);
+        albedo = mix(albedo, albedo * 0.35, veins * 0.75);
     }
 
     // ---- what lives in it
@@ -436,13 +571,18 @@ fn fs_body(i: LOut) -> FOut {
 
     // ---- lighting
     let sun = sun_light(p.x);
-    let diffuse = max(dot(n, L), 0.0);
+    // Flesh lets light creep past the terminator, reddened on the way.
+    let fleshy = select(0.0, 0.45, patterned || tissue == T_GUT || tissue == T_STORE || leaf);
+    let ndl = dot(n, L);
+    let diffuse = max((ndl + fleshy) / (1.0 + fleshy), 0.0);
+    let scatter = fleshy * smoothstep(-0.45, 0.0, ndl) * smoothstep(0.35, 0.0, ndl);
     let amb = mix(bounce_light(p.x), sky_light(p.x), n.y * 0.5 + 0.5);
     // Key from the sun, plus the twilight sky wrapped around the front.
     let fill = sky_light(p.x) * (0.6 + 0.9 * nz) + sun * 0.12;
     // Joints sit in their own shadow.
     let ao = 1.0 - 0.3 * (smoothstep(0.2, 0.0, tb.h) + smoothstep(0.8, 1.0, tb.h)) * nz;
     var col = albedo * (sun * diffuse * (0.45 + 0.55 * day) + amb * 1.3 + fill * 0.8) * ao;
+    col += albedo * sun * scatter * vec3f(1.0, 0.35, 0.25) * 0.5;
 
     // Warm rim on the edge facing the sun, cool rim from the sky on the night side.
     let edge = pow(1.0 - nz, 2.5);
@@ -460,7 +600,7 @@ fn fs_body(i: LOut) -> FOut {
 
     // Light glowing through thin flesh.
     let trans = i.color.a;
-    col += albedo * sun * trans * (1.0 - nz * 0.5) * (0.4 + 0.6 * day) * 0.9;
+    col += albedo * sun * trans * (1.0 - nz * 0.5) * (0.4 + 0.6 * day) * 0.9 * (1.0 - veins * 0.6);
 
     // Oil-film colour shifting across the curve.
     if (i.extra.y > 0.0) {

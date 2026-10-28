@@ -140,12 +140,14 @@ impl Living {
         batch.clear();
         for p in f.next.plants.iter().filter(|p| !p.floating) {
             pose::plant(p, &mut self.pose);
-            self.add_plant(p, batch);
+            let ground = self.pose.at;
+            self.add_plant(p, ground, batch);
         }
         true
     }
 
-    fn add_plant(&mut self, p: &PlantView, batch: &mut LifeBatch) {
+    /// `ground` is the floor point under it, where its shadow falls.
+    fn add_plant(&mut self, p: &PlantView, ground: [f32; 2], batch: &mut LifeBatch) {
         let height = p.scale * p.body.extent * self.pose.shrink;
         convert(&self.pose, |w| 0.1 * height * w * w, &mut self.segs, &mut self.membranes);
         batch.add(&Organism {
@@ -159,6 +161,7 @@ impl Living {
             bleeding: 0.0,
             infection: None,
             clip_y: None,
+            ground: Some(ground),
             seed: p.id as u32,
         });
     }
@@ -180,7 +183,8 @@ impl Living {
             let from = self.mats_before.1.get(&p.id).copied().unwrap_or(to);
             let pos = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
             pose::plant_at(p, pos, &mut self.pose);
-            self.add_plant(p, batch);
+            let (ground, _, _) = pose::project([pos[0], pos[1], 0.0]);
+            self.add_plant(p, ground, batch);
         }
         for v in &f.next.creatures {
             self.anim.creature(v, t, &mut self.pose);
@@ -201,6 +205,7 @@ impl Living {
                     symbiont: i.symbiont,
                 }),
                 clip_y: clip(v),
+                ground: Some(self.pose.at),
                 seed: v.id as u32,
             });
         }
@@ -218,6 +223,7 @@ impl Living {
                 bleeding: 0.0,
                 infection: None,
                 clip_y: None,
+                ground: Some(self.pose.at),
                 seed: r.id as u32,
             });
         }
@@ -248,6 +254,7 @@ impl Living {
                 bleeding: 0.0,
                 infection: None,
                 clip_y: None,
+                ground: None,
                 seed: e.id as u32,
             });
         }

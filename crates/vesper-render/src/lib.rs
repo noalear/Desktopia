@@ -306,9 +306,8 @@ impl Renderer {
             fullscreen_pipeline(&device, "frame", &frame_pipeline_layout, &frame_module, "fs_frame", SCENE_FORMAT);
         let life_pipelines = life_pipelines(&device, &frame_pipeline_layout, &life_module);
         let composite_pipeline_layout = pipeline_layout(&device, "composite", &composite_layout);
-        let bloom_pipeline = |entry| {
-            fullscreen_pipeline(&device, "bloom", &frame_pipeline_layout, &bloom_module, entry, BLOOM_FORMAT)
-        };
+        let bloom_pipeline =
+            |entry| fullscreen_pipeline(&device, "bloom", &frame_pipeline_layout, &bloom_module, entry, BLOOM_FORMAT);
         let bloom = BloomPipelines {
             down: bloom_pipeline("fs_down"),
             down2: bloom_pipeline("fs_down2"),
@@ -480,7 +479,14 @@ impl Renderer {
     fn bake(&self, encoder: &mut wgpu::CommandEncoder, output: &mut Output, band_shift: f32) {
         let Some(shown) = output.baked_band_shift else {
             let front = output.front;
-            bake_strips(encoder, &output.baked_views[front], &self.bake_pipeline, &output.bake_group, 0..BAKE_STRIPS, output.config.size_px);
+            bake_strips(
+                encoder,
+                &output.baked_views[front],
+                &self.bake_pipeline,
+                &output.bake_group,
+                0..BAKE_STRIPS,
+                output.config.size_px,
+            );
             output.baked_band_shift = Some(band_shift);
             return;
         };
@@ -489,7 +495,14 @@ impl Renderer {
         }
         let Some((shift, next)) = output.baking else { return };
         let back = 1 - output.front;
-        bake_strips(encoder, &output.baked_views[back], &self.bake_pipeline, &output.bake_group, next..next + 1, output.config.size_px);
+        bake_strips(
+            encoder,
+            &output.baked_views[back],
+            &self.bake_pipeline,
+            &output.bake_group,
+            next..next + 1,
+            output.config.size_px,
+        );
         if next + 1 < BAKE_STRIPS {
             output.baking = Some((shift, next + 1));
         } else {
@@ -588,7 +601,13 @@ impl Renderer {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vesper") });
 
         self.bake(&mut encoder, output, world.band_shift);
-        draw_fullscreen(&mut encoder, "frame", &output.scene_view, &self.frame_pipeline, &output.frame_groups[output.front]);
+        draw_fullscreen(
+            &mut encoder,
+            "frame",
+            &output.scene_view,
+            &self.frame_pipeline,
+            &output.frame_groups[output.front],
+        );
         self.draw_life(&mut encoder, output);
         self.draw_bloom(&mut encoder, output);
         draw_fullscreen(&mut encoder, "composite", target, &output.composite_pipeline, &output.composite_group);
@@ -706,6 +725,7 @@ fn life_pipelines(
         })
     };
     [
+        make("life shadow", "vs_shadow", "fs_shadow", false),
         make("life body", "vs_seg", "fs_body", true),
         make("life inner", "vs_seg", "fs_inner", false),
         make("life membrane", "vs_membrane", "fs_membrane", false),

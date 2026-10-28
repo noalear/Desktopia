@@ -189,7 +189,8 @@ fn sky_light(x: f32) -> vec3f {
 // Light from the dark half of the sky, on faces turned toward the night:
 // cold indigo, which sets off the warm light from the day side.
 fn night_sky_light(x: f32, n: vec3f) -> vec3f {
-    return vec3f(0.02, 0.05, 0.14) * smoothstep(0.2, 0.6, nightness(x)) * clamp(0.3 + 0.7 * n.x, 0.0, 1.0);
+    // From the glacier's glow to the east and the galaxy and ringed planet overhead.
+    return vec3f(0.02, 0.05, 0.14) * smoothstep(0.2, 0.6, nightness(x)) * (clamp(0.3 + 0.7 * n.x, 0.0, 1.0) + 0.4 * max(n.y, 0.0));
 }
 
 // Soft shadow toward the sun, cast by land within a few kilometres. (The
@@ -399,7 +400,11 @@ fn shade_ice(p: vec2f, pos: vec3f, n_in: vec3f, sun: vec3f, night: f32) -> vec4f
     let r1 = hash21(vec2f(col_id, 5.0));
     let r2 = hash21(vec2f(col_id, 9.0));
     // Columns break across, too, every so often.
-    let tier = floor(pos.y * (0.04 + 0.05 * r2) + r1 * 3.0);
+    // Breaks run slanted and ragged, never straight across.
+    let tq = pos.y * (0.04 + 0.05 * r2) + r1 * 3.0 + (col_f - 0.5) * (r1 - 0.5) * 1.2
+        + 0.5 * fbm(vec2f(pos.x * 0.08, col_id), 2);
+    let tier = floor(tq);
+    let tier_edge = min(fract(tq), 1.0 - fract(tq));
     let slab_id = hash21(vec2f(col_id, tier) + 1.3);
     let lean = (hash22(vec2f(col_id, tier) + 3.0) - 0.5) * vec2f(0.9, 0.6);
     // Faces round off toward the fractures.
@@ -412,7 +417,10 @@ fn shade_ice(p: vec2f, pos: vec3f, n_in: vec3f, sun: vec3f, night: f32) -> vec4f
     let fold = fbm(vec2f(pos.x * 0.012, 1.7), 3) * 6.0 + pos.x * 0.02;
     let layer = fbm(vec2f(pos.x * 0.05, (pos.y + fold) * 0.9), 3);
     let bubbles = fbm(vec2f(pos.x * 0.8, pos.y * 0.3) + slab_id * 7.0, 3);
-    let clarity = slab_id * 0.75 + bubbles * 0.45;
+    // Clearer and cloudier ice drift through each slab, so slabs differ
+    // without looking like tiles.
+    let cloud = fbm(vec2f(pos.x * 0.07, pos.y * 0.05) + 4.0, 3);
+    let clarity = slab_id * 0.4 + cloud * 0.5 + bubbles * 0.4;
     var ice = mix(vec3f(0.02, 0.11, 0.3), vec3f(0.45, 0.62, 0.78), smoothstep(0.45, 0.95, clarity));
     ice = mix(ice, vec3f(0.08, 0.28, 0.46), smoothstep(0.55, 0.6, layer) * 0.35);
     let grit = smoothstep(0.68, 0.72, layer) * 0.35 + smoothstep(6.0, 0.5, pos.y) * 0.7;
@@ -420,6 +428,9 @@ fn shade_ice(p: vec2f, pos: vec3f, n_in: vec3f, sun: vec3f, night: f32) -> vec4f
     // The fractures between columns: deep and nearly black.
     let fissure = smoothstep(0.06, 0.0, slab_edge) * smoothstep(1.5, 4.0, pos.y);
     ice = mix(ice, vec3f(0.004, 0.02, 0.05), fissure * 0.85);
+    // Fine cross-breaks: thin dark lines with a pale shattered lip above.
+    let crack = smoothstep(0.035, 0.0, tier_edge) * step(0.35, hash21(vec2f(col_id, tier) + 7.1)) * smoothstep(2.0, 5.0, pos.y);
+    ice = mix(ice, vec3f(0.01, 0.04, 0.09), crack * 0.6);
     let bevel = 0.0;
     // Wet streaks where meltwater runs down from the brink.
     let wet = smoothstep(0.62, 0.8, fbm(vec2f(pos.x * 0.6, pos.y * 0.02), 3));

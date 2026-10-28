@@ -5,9 +5,9 @@
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use eframe::egui_wgpu::{RenderState, wgpu};
 use std::collections::HashMap;
+use vesper_chronicle::SpeciesId;
 use vesper_chronicle::likeness::{Likeness, Part, Sheet};
 use vesper_chronicle::names::WORLD_W;
-use vesper_chronicle::SpeciesId;
 use vesper_render::{LifeBatch, Look, Membrane, Organism, OutputConfig, OutputMode, Renderer, Seg, Tissue, WorldView};
 
 /// Portraits painted per frame at most; the rest wait for the next.
@@ -95,6 +95,7 @@ fn paint(r: &mut Renderer, l: &Likeness, size: [u32; 2]) -> Option<ColorImage> {
         bleeding: 0.0,
         infection: None,
         clip_y: None,
+        ground: None,
         seed: l.seed,
     });
     r.set_creatures(&mut batch);

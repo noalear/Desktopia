@@ -2,7 +2,7 @@
 //! installing the wallpaper.
 //!
 //! Usage: preview [--scale S] [--time SECONDS] [--frames N] [--step SECONDS]
-//!                [--band SHIFT] [--lightning L] [--storm X STRENGTH] [--volcano V]
+//!                [--band SHIFT] [--band-speed S] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
 //!                [--follow] [--crop X Y W H] [--acts MINUTES] [--world FILE] [--out DIR]
@@ -40,6 +40,8 @@ struct Args {
     frames: u32,
     step: f64,
     band: Option<f32>,
+    /// How far the band slides per second of preview time, to watch re-bakes.
+    band_speed: f32,
     lightning: Option<f32>,
     storm: Option<[f32; 2]>,
     volcano: Option<f32>,
@@ -67,6 +69,7 @@ fn parse_args() -> Args {
         frames: 1,
         step: 1.0,
         band: None,
+        band_speed: 0.0,
         lightning: None,
         storm: None,
         volcano: None,
@@ -93,6 +96,7 @@ fn parse_args() -> Args {
             "--frames" => a.frames = val().parse().unwrap(),
             "--step" => a.step = val().parse().unwrap(),
             "--band" => a.band = Some(val().parse().unwrap()),
+            "--band-speed" => a.band_speed = val().parse().unwrap(),
             "--lightning" => a.lightning = Some(val().parse().unwrap()),
             "--seed" => a.seed = val().parse().unwrap(),
             "--storm" | "--cold" | "--dust" => {
@@ -279,7 +283,9 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
     };
     let mut outs: Vec<_> = origins
         .iter()
-        .map(|&origin_px| renderer.create_output(OutputConfig { origin_px, size_px: [w, h], format: sdr, mode: OutputMode::Sdr }))
+        .map(|&origin_px| {
+            renderer.create_output(OutputConfig { origin_px, size_px: [w, h], format: sdr, mode: OutputMode::Sdr })
+        })
         .collect();
     let texs: Vec<_> = outs.iter().map(|_| target(renderer.device(), w, h, sdr)).collect();
     for f in 0..args.frames {
@@ -324,7 +330,7 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
 /// The world at `t` seconds, with any weather the flags pin down.
 fn view_at(args: &Args, world_size_px: [f32; 2], t: f64) -> WorldView {
     let mut w = WorldView::at(world_size_px, t, 1.0);
-    w.band_shift = args.band.unwrap_or(0.0);
+    w.band_shift = args.band.unwrap_or(0.0) + args.band_speed * (t - args.time) as f32;
     if let Some([x, s]) = args.storm {
         w.storm_x = x;
         w.lightning_x = x;

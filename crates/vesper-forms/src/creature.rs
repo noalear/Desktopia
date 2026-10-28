@@ -412,6 +412,11 @@ impl Creature {
         [self.x, self.floor_y() + self.alt]
     }
 
+    /// The floor point under it, for its shadow.
+    pub fn ground(&self) -> [f32; 2] {
+        [self.x, self.floor_y()]
+    }
+
     pub fn z(&self) -> f32 {
         order(self.depth) - 0.002
     }

@@ -198,11 +198,16 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         let streak = noised(vec2f(w.x * 0.12 + flow * 0.2, w.y * 3.5) + 3.0);
         // Depth of ground one pixel row spans: ripples finer than that would
         // only alias into lines, so they fade out with distance.
+        // Across the view a pixel spans far less ground than along it, so
+        // ripples stay sharp sideways long after they blur away in depth.
         let dz = w.y * w.y / (CAM_H * FOCAL * P.world_size.y);
+        let dx = w.y / (FOCAL * P.world_size.y);
         let fine = smoothstep(0.35, 0.12, dz * 2.6);
         let mid = smoothstep(0.35, 0.12, dz * 0.8);
-        let slope = (swell.yz * vec2f(0.3, 0.8) * 0.05 * mid + chop.yz * vec2f(1.4, 2.6) * 0.012 * fine
-            + streak.yz * vec2f(0.12, 3.5) * 0.006 * fine) * calm * (1.0 + P.river_flood);
+        let side = smoothstep(0.35, 0.12, dx * 2.6);
+        let slope = (swell.yz * vec2f(0.3, 0.8) * 0.05 * vec2f(1.0, mid)
+            + chop.yz * vec2f(1.4, 2.6) * 0.012 * vec2f(side, fine)
+            + streak.yz * vec2f(0.12, 3.5) * 0.006 * vec2f(side, fine)) * calm * (1.0 + P.river_flood);
         let nrm = normalize(vec3f(-slope.x, 1.0, -slope.y));
         let rd = view_ray(p);
         let rr = reflect(rd, nrm);
@@ -212,6 +217,12 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         if (is_mat(refl.a, 1.0)) {
             rc = clouds(mp, rc);
         }
+        // Ripples too fine to see still roughen the mirror: what it shows
+        // smears up and down, as reflections on moving water do.
+        let smear = (1.0 - fine) * calm * (0.025 + 0.04 * P.river_flood);
+        let up = textureSampleLevel(baked, samp, uv_of(mp + vec2f(slope.x * 0.3, smear)), 0.0).rgb;
+        let down = textureSampleLevel(baked, samp, uv_of(mp - vec2f(slope.x * 0.3, smear)), 0.0).rgb;
+        rc = mix(rc, (up + down) * 0.5, 0.6 * smoothstep(0.0, 0.01, smear));
         let fres = 0.02 + 0.98 * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), 5.0);
         // Shore pixels are only partly water (see water_code in the bake).
         let cover = clamp((m - 0.4) / 0.19, 0.0, 1.0);
