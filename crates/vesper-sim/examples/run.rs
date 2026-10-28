@@ -171,7 +171,7 @@ fn genes(w: &vesper_sim::world::World) {
         let (lo, hi) = (xs.iter().copied().fold(9.0, f32::min), xs.iter().copied().fold(-9.0, f32::max));
         let r = w.species.get(vesper_sim::history::SpeciesId(id));
         println!(
-            "          sp {id:>4} <{:>4}> n {:>3} gen {:>4} seg {:>4.1} | het {het:.2} load {:.1}/{:.2} vigor {vigor:.2} clash {clash:.2} | sex {sex:.2} self {selfing:.2} | gap {mean_gap:.1} max {max_gap:.1} | x {lo:.2}..{hi:.2} diet {:.2} len {:.4}",
+            "          sp {id:>4} <{:>4}> n {:>3} gen {:>4} seg {:>4.1} | het {het:.2} load {:.1}/{:.2} vigor {vigor:.2} clash {clash:.2} | sex {sex:.2} self {selfing:.2} | gap {mean_gap:.1} max {max_gap:.1} | x {lo:.2}..{hi:.2} diet {:.2} len {:.4} | palate {:.2} breadth {:.2}",
             r.parent.map(|p| p.0).unwrap_or(0),
             cs.len(),
             cs.iter().map(|c| c.generation).max().unwrap_or(0),
@@ -180,6 +180,8 @@ fn genes(w: &vesper_sim::world::World) {
             l2 as f32 / n,
             cs.iter().map(|c| c.genome.diet).sum::<f32>() / n,
             cs.iter().map(|c| c.length()).sum::<f32>() / n,
+            cs[0].genome.palate,
+            cs.iter().map(|c| c.genome.breadth).sum::<f32>() / n,
         );
     }
     let mut by: std::collections::BTreeMap<u64, Vec<&vesper_sim::plant::Plant>> = Default::default();
@@ -191,7 +193,7 @@ fn genes(w: &vesper_sim::world::World) {
         let mean = |f: &dyn Fn(&vesper_sim::plant::Plant) -> f32| ps.iter().map(|p| f(p)).sum::<f32>() / n;
         let r = w.species.get(vesper_sim::history::SpeciesId(id));
         println!(
-            "          plant {id:>4} <{:>4}> n {:>4} | vigor {:.2} clash {:.2} | self {:.2} nectar {:.2} wind {:.2} | x {:.2} mat {:.2} vent {:.2}",
+            "          plant {id:>4} <{:>4}> n {:>4} | vigor {:.2} clash {:.2} | self {:.2} nectar {:.2} wind {:.2} | x {:.2} mat {:.2} vent {:.2} hue {:.2}",
             r.parent.map(|p| p.0).unwrap_or(0),
             ps.len(),
             mean(&|p| p.genome.vigor),
@@ -202,6 +204,7 @@ fn genes(w: &vesper_sim::world::World) {
             mean(&|p| p.x),
             mean(&|p| p.genome.floats() as u8 as f32),
             mean(&|p| p.genome.vent),
+            ps[0].genome.look[0],
         );
     }
 }

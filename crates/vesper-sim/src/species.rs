@@ -271,6 +271,8 @@ pub fn distance(a: &Genome, b: &Genome) -> f32 {
     d += ((a.live_birth > 0.5) != (b.live_birth > 0.5)) as u8 as f32;
     d += (a.helpers - b.helpers).abs() * 2.0;
     d += (a.toxin - b.toxin).abs() * 1.5;
+    let p = (a.palate - b.palate).rem_euclid(1.0);
+    d += p.min(1.0 - p) * 4.0 * (1.0 - a.breadth.min(b.breadth));
     d += (a.brain.hidden as f32 - b.brain.hidden as f32).abs() * 0.08;
     d += Genome::look_distance(&a.look, &b.look) * 4.0;
     d += (1.0 - Genome::kinship(&a.marker, &b.marker)) * 2.0;
@@ -319,6 +321,7 @@ pub fn creature_traits(g: &Genome) -> Traits {
         } else {
             g.selfing * 0.2
         },
+        picky: 1.0 - g.breadth,
     }
 }
 
@@ -351,5 +354,6 @@ pub fn plant_traits(g: &PlantGenome) -> Traits {
         diversity: g.heterozygosity(),
         inbreeding: 1.0 - g.vigor,
         selfing: g.selfing,
+        picky: 0.0,
     }
 }

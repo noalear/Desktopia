@@ -20,6 +20,15 @@ use vesper_terrain::WORLD_W;
 /// How much a creature of another species crowds a breeder, compared with one of its own.
 const OTHERS_CROWD: f32 = 0.3;
 
+/// Body segments a creature of ordinary size has; one with more takes up
+/// proportionally more room.
+const ROOM_SEGMENTS: f32 = 12.0;
+
+/// The room a creature takes up, in creatures of ordinary size.
+fn room(c: &Creature) -> f32 {
+    (c.body.segments.len() as f32 / ROOM_SEGMENTS).clamp(0.5, 4.0)
+}
+
 /// Seconds of life for a creature of adult scale 0.01 and ageing 1.
 pub const LIFESPAN_K: f32 = 1200.0;
 
@@ -312,15 +321,22 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
     // hardest on a creature's own kind, which shares its food, its enemies
     // and its diseases; other kinds press on it far less. That is what lets
     // several species live side by side instead of the fastest breeder
-    // filling the world.
+    // filling the world. Big bodies take up more room than small ones, so a
+    // kind of giants lives in fewer numbers than a kind of mites.
     let total = w.creatures.len() + w.eggs.len();
     if total >= MAX_CREATURES {
         return;
     }
     let sp = w.creatures[mi].species;
-    let own =
-        w.creatures.iter().filter(|c| c.species == sp).count() + w.eggs.iter().filter(|e| e.species == sp).count();
-    let crowd = (own as f32 + OTHERS_CROWD * (total - own) as f32) / (MAX_CREATURES as f32 * 0.85);
+    let (mut own, mut others) = (0.0, 0.0);
+    for c in &w.creatures {
+        let room = room(c);
+        if c.species == sp { own += room } else { others += room }
+    }
+    for e in &w.eggs {
+        if e.species == sp { own += 1.0 } else { others += 1.0 }
+    }
+    let crowd = (own + OTHERS_CROWD * others) / (MAX_CREATURES as f32 * 0.85);
     if w.rng.chance(crowd.powi(4)) {
         return;
     }

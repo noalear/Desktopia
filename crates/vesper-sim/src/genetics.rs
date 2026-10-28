@@ -25,14 +25,14 @@ use crate::rng::{Rng, hash01};
 use std::sync::Arc;
 
 /// Quantitative loci, in chromosome order (see `loci_mut`).
-pub const LOCI: usize = 49;
+pub const LOCI: usize = 51;
 /// Genes that must work with each other.
 pub const COMPAT: usize = 16;
 pub const CHROMOSOMES: usize = 6;
 /// The first locus on each chromosome; chromosome 5 carries the body's part genes.
-const CHROM_START: [usize; CHROMOSOMES] = [0, 9, 16, 25, 45, LOCI];
+const CHROM_START: [usize; CHROMOSOMES] = [0, 9, 18, 27, 47, LOCI];
 /// Loci that are hues, which blend around the colour wheel.
-const CIRCULAR: [usize; 4] = [25, 26, 31, 32];
+const CIRCULAR: [usize; 5] = [16, 27, 28, 33, 34];
 /// Chromosome that carries genes the locus list doesn't know by name.
 const UNLISTED: usize = 2;
 const BODY: usize = 5;
@@ -77,6 +77,8 @@ pub(crate) fn loci(g: &Genome) -> [f32; LOCI] {
         g.mutation,
         g.canalization,
         g.detox,
+        g.palate,
+        g.breadth,
         g.sexual,
         g.selfing,
         g.choosiness,
@@ -138,6 +140,8 @@ pub(crate) fn loci_mut(g: &mut Genome) -> [&mut f32; LOCI] {
         &mut g.mutation,
         &mut g.canalization,
         &mut g.detox,
+        &mut g.palate,
+        &mut g.breadth,
         &mut g.sexual,
         &mut g.selfing,
         &mut g.choosiness,
@@ -647,9 +651,9 @@ mod tests {
         assert_eq!(CHROM_START[BODY - 1] + 4, LOCI);
         // The hue loci are the hues.
         let mut h = g.clone();
-        (h.look[0], h.mate_pref[0], h.look[3], h.mate_pref[3]) = (0.11, 0.22, 0.33, 0.44);
+        (h.palate, h.look[0], h.mate_pref[0], h.look[3], h.mate_pref[3]) = (0.05, 0.11, 0.22, 0.33, 0.44);
         let l = loci(&h);
-        assert_eq!(CIRCULAR.map(|i| l[i]), [0.11, 0.22, 0.33, 0.44]);
+        assert_eq!(CIRCULAR.map(|i| l[i]), [0.05, 0.11, 0.22, 0.33, 0.44]);
         assert_eq!(loci(&g)[CHROM_START[BODY - 1]], g.immune[0]);
     }
 
@@ -720,10 +724,15 @@ mod tests {
     fn founders_breed_true_but_hybrids_fail() {
         let mut rng = Rng::new(6);
         let a = Genome::founder(Founder::Grazer, &mut rng);
-        let (a1, a2) = (a.wild(&mut rng), a.wild(&mut rng));
+        let a1 = a.wild(&mut rng);
         let n = 300;
-        let within: f32 = (0..n).map(|_| viability(&a1.mate(&a2, &mut rng))).sum::<f32>() / n as f32;
-        // Some unrelated pairs happen to clash less than others, so average over several.
+        // Single pairs vary by the luck of their own mutations, so average over several.
+        let mut within = 0.0;
+        for _ in 0..8 {
+            let a2 = a.wild(&mut rng);
+            within += (0..n).map(|_| viability(&a1.mate(&a2, &mut rng))).sum::<f32>() / n as f32;
+        }
+        within /= 8.0;
         let mut across = 0.0;
         for _ in 0..8 {
             let b = Genome::founder(Founder::Grazer, &mut rng);

@@ -107,6 +107,9 @@ pub struct Traits {
     /// 0..1 how much of its young come from one parent alone, by selfing or budding.
     #[serde(default)]
     pub selfing: f32,
+    /// 0..1 how narrowly its gut is tuned to one kind of plant (creatures).
+    #[serde(default)]
+    pub picky: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

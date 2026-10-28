@@ -804,6 +804,7 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             let spines = pl.spines();
             let toxin = pl.toxin();
             let bin = plant_bin(&pl.genome.look);
+            let chem = pl.genome.look[0];
             let seed = if from_fruit > 0.0 {
                 Some(crate::plant::Seed {
                     genome: pl.genome.clone(),
@@ -817,8 +818,8 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             if m <= 0.0 {
                 return;
             }
-            let eff = 0.15 + 0.85 * (1.0 - diet);
             let c = &mut w.creatures[ci];
+            let eff = (0.15 + 0.85 * (1.0 - diet)) * c.genome.digests(chem);
             let toxin = c.genome.felt(toxin);
             let harm = spines * 0.6 * (from_body / m) + toxin * 1.5;
             let hurt = (spines * from_body * 3.0 + toxin * m * 4.0) / c.matter.max(1e-4);

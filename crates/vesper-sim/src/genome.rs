@@ -306,6 +306,12 @@ pub struct Genome {
     /// Poison it can break down, 0..1, at a cost to keep up. Eaters and the
     /// poisonous things they eat push each other up, round after round.
     pub detox: f32,
+    /// The plant chemistry its gut is tuned to, on the same wheel as plant
+    /// hues (pigments are where plants keep their chemistry).
+    pub palate: f32,
+    /// How broad its gut's tuning is, 0 a specialist that thrives on one kind
+    /// of plant .. 1 a generalist that gets by on any.
+    pub breadth: f32,
 }
 
 fn w(rng: &mut Rng, spread: f32) -> i8 {
@@ -697,6 +703,8 @@ impl Genome {
             selfing: rng.range(0.0, 0.3),
             canalization: rng.range(0.4, 0.8),
             detox: rng.range(0.0, 0.1),
+            palate: rng.f32(),
+            breadth: rng.range(0.8, 1.0),
         };
         for p in g.parts.iter_mut() {
             p.origin = rng.next_u64() as u32;
@@ -816,6 +824,8 @@ impl Genome {
         nudge(&mut self.selfing, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.canalization, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.detox, 0.03, 0.0, 1.0, rng);
+        turn(&mut self.palate, 0.03, rng);
+        nudge(&mut self.breadth, 0.04, 0.0, 1.0, rng);
         for i in 0..4 {
             if i == 0 || i == 3 {
                 turn(&mut self.mate_pref[i], 0.05, rng);
@@ -938,6 +948,27 @@ impl Genome {
     /// that drift freely until a new link wakes them.
     pub fn grows(&self, i: usize) -> bool {
         i == 0 || self.parts.iter().any(|p| p.links.iter().any(|l| l.to as usize % self.parts.len() == i))
+    }
+
+    /// How well its gut gets the good out of a plant of hue `chem`: best for
+    /// what it is tuned to, and the narrower the tuning the better there and
+    /// the worse elsewhere.
+    pub fn digests(&self, chem: f32) -> f32 {
+        let d = (self.palate - chem).rem_euclid(1.0);
+        let d = d.min(1.0 - d);
+        let width = 0.06 + 0.44 * self.breadth;
+        (1.0 + 0.4 * (1.0 - self.breadth)) * (-0.5 * (d / width).powi(2)).exp()
+    }
+
+    /// Tunes a founding lineage's gut, in both its gene sets, to a plant it
+    /// arrives among.
+    pub fn tune(&mut self, palate: f32) {
+        self.palate = palate;
+        if let Some(h) = self.haplotypes.as_mut() {
+            for g in Arc::make_mut(h).iter_mut() {
+                g.palate = palate;
+            }
+        }
     }
 
     /// How much of a dose of poison still harms it.
