@@ -738,7 +738,7 @@ fn act(
     // Guarding: a threat display. It rears, spreads, puffs up and gapes.
     let g = w[GUARD];
     if g > 0.01 {
-        p.turn(0.32 * g * p.fwd, Pivot::Hind);
+        p.turn(0.26 * g * p.fwd, Pivot::Hind);
         p.legs(-0.3 * g, 0.55 * g);
         p.gape(0.45 * g * (0.8 + 0.2 * (t * TAU * 0.7).sin()));
         p.spines(0.65 * g);

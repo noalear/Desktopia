@@ -37,8 +37,9 @@ const COLS: u32 = 5;
 const CELL: [u32; 2] = [256, 192];
 const FPS: f32 = 15.0;
 const TICK: f32 = 0.2;
-/// Where on the band the scenes are staged, and how far back.
-const STAGE_X: f32 = 1.25;
+/// Where on the band to start looking for dry ground to stage the scenes
+/// on, and how far back.
+const STAGE_FROM: f32 = 1.25;
 const STAGE_DEPTH: f32 = 0.08;
 /// Seconds a body is held, thrashing, before it dies.
 const DIES_AT: f32 = 1.2;
@@ -50,6 +51,8 @@ struct Actor {
     len: f32,
     /// Its own corpse, tick by tick, as the simulation let it fall.
     corpse: Vec<RemainsView>,
+    /// Where its scenes are staged.
+    stage: f32,
 }
 
 pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
@@ -61,7 +64,11 @@ pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
             eprintln!("sim {:.0} min: {} creatures", t as f64 * 0.2 / 60.0, sim.world().creatures.len());
         }
     }
-    let mut actors = cast(&sim, 3);
+    let ground = &sim.world().ground;
+    let dry = |x: f32| (-5..=5).all(|i| !ground.in_river(x + i as f32 * 0.02, STAGE_DEPTH));
+    let stage = (0..60).map(|i| STAGE_FROM + i as f32 * 0.03).find(|&x| dry(x)).unwrap_or(STAGE_FROM);
+    eprintln!("staged at x {stage:.2}");
+    let mut actors = cast(&sim, 3, stage);
     eprintln!("{} actors", actors.len());
     die(&mut sim, &mut actors);
 
@@ -212,7 +219,7 @@ fn bounds(p: &Pose, lo: &mut [f32; 2], hi: &mut [f32; 2]) {
 }
 
 /// Picks up to `n` creatures of different species, the most elaborate first.
-fn cast(sim: &vesper_sim::Sim, n: usize) -> Vec<Actor> {
+fn cast(sim: &vesper_sim::Sim, n: usize, stage: f32) -> Vec<Actor> {
     let frame = sim.frame();
     let mut all: Vec<&CreatureView> = frame.creatures.iter().filter(|c| c.maturity > 0.8).collect();
     all.sort_by_key(|c| std::cmp::Reverse(c.body.segments.len() as i64 * 10 - c.lost.count_ones() as i64 * 30));
@@ -259,7 +266,7 @@ fn cast(sim: &vesper_sim::Sim, n: usize) -> Vec<Actor> {
             c.body.segments.len(),
             c.locomotion
         );
-        picked.push(Actor { base, dir, len, corpse: Vec::new() });
+        picked.push(Actor { base, dir, len, corpse: Vec::new(), stage });
     }
     picked
 }
@@ -317,7 +324,7 @@ fn place(a: &Actor, id: u64, x: f32, flip: bool, size: f32) -> CreatureView {
 /// Who is in a cell and what they are doing at tick `k`.
 fn scene(a: &Actor, cell: usize, row: usize, k: u64, time: f32) -> (Vec<CreatureView>, Vec<RemainsView>) {
     let id = 1000 + row as u64 * 100 + cell as u64 * 4;
-    let x = STAGE_X;
+    let x = a.stage;
     let partner_x = x + a.dir * a.len * 0.95;
     let mut me = place(a, id, x, false, 1.0);
     let mut other = None;
