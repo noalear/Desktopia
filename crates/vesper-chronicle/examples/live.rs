@@ -20,12 +20,14 @@ fn main() {
     chronicle.new_world();
     let mut book = Sketchbook::default();
     let mut next_report = 0.0;
+    let mut next_look = 0.0;
     while sim.time() < minutes * 60.0 {
         sim.step();
         chronicle.record_all(sim.drain_history());
-        // Frames are only built when a sketch is due; the wallpaper has them anyway.
-        if sim.time() - book_due(&book) >= 60.0 {
-            for (species, l) in book.sketch(&Frame::of(sim.world())) {
+        // Frames only once a sim minute, when a sketch may be due; the wallpaper has them anyway.
+        if sim.time() >= next_look {
+            next_look = sim.time() + 60.0;
+            for (species, l) in book.sketch(&Frame::of(sim.world()), chronicle.history()) {
                 chronicle.record_likeness(species, l);
             }
         }
@@ -44,6 +46,3 @@ fn main() {
     chronicle.checkpoint();
 }
 
-fn book_due(book: &Sketchbook) -> f64 {
-    book.last_look().unwrap_or(f64::MIN)
-}

@@ -3,6 +3,7 @@
 //! can paint a portrait even after the species is gone.
 
 use crate::facts::SpeciesId;
+use crate::history::History;
 use serde::{Deserialize, Serialize};
 use vesper_sim::Tissue;
 use vesper_sim::frame::{CreatureView, Frame, PlantView};
@@ -128,51 +129,32 @@ pub fn sitters(frame: &Frame, mut wanted: impl FnMut(SpeciesId) -> bool) -> Vec<
     out
 }
 
-/// How often the sketchbook looks at the world, how long a species must have
-/// been about before it is drawn (most branches vanish within a minute), and
-/// how often each is drawn again as it changes, all in sim seconds.
+/// How often the sketchbook looks at the world, how old a species must be
+/// before it is drawn (most branches vanish within a minute), and how often
+/// each is drawn again as it changes, all in sim seconds.
 const LOOK_EVERY: f64 = 60.0;
 const SETTLED: f64 = 300.0;
 const REDRAW: f64 = 1800.0;
 
-/// Decides when to draw each species, on the side that sees the frames.
+/// Decides when to draw each species, from what the chronicle already holds,
+/// so species that were drawn before a restart aren't drawn again at once and
+/// settled ones without a drawing are drawn at the first look.
 #[derive(Default)]
 pub struct Sketchbook {
     last: Option<f64>,
-    /// When each species was first seen, and last drawn.
-    seen: std::collections::HashMap<u64, (f64, Option<f64>)>,
 }
 
 impl Sketchbook {
-    /// Sim time it last looked at a frame.
-    pub fn last_look(&self) -> Option<f64> {
-        self.last
-    }
-
     /// Portraits due from this frame, usually none.
-    pub fn sketch(&mut self, frame: &Frame) -> Vec<(SpeciesId, Likeness)> {
+    pub fn sketch(&mut self, frame: &Frame, history: &History) -> Vec<(SpeciesId, Likeness)> {
         let now = frame.time;
         if self.last.is_some_and(|t| now - t < LOOK_EVERY && now >= t) {
             return Vec::new();
         }
         self.last = Some(now);
-        let present: std::collections::HashSet<u64> =
-            frame.creatures.iter().map(|c| c.species).chain(frame.plants.iter().map(|p| p.species)).collect();
-        self.seen.retain(|s, _| present.contains(s));
-        for s in &present {
-            self.seen.entry(*s).or_insert((now, None));
-        }
-        let seen = &self.seen;
-        let due = |s: SpeciesId| {
-            seen.get(&s.0)
-                .is_some_and(|(first, drawn)| now - first >= SETTLED && drawn.is_none_or(|d| now - d >= REDRAW))
-        };
-        let out = sitters(frame, due);
-        for (s, _) in &out {
-            if let Some(e) = self.seen.get_mut(&s.0) {
-                e.1 = Some(now);
-            }
-        }
-        out
+        sitters(frame, |s| {
+            history.species.get(&s).is_some_and(|sp| now - sp.arose >= SETTLED)
+                && history.likenesses.get(&s).is_none_or(|l| now - l.tick >= REDRAW || l.tick > now)
+        })
     }
 }
