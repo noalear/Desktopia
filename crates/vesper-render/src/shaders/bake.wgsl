@@ -743,7 +743,11 @@ fn soil_albedo(w: vec2f, night: f32, foot: f32) -> vec3f {
     // Pale gypsum flats and dark hematite sands in broad regions.
     day_ground = mix(day_ground, bleached, smoothstep(0.62, 0.75, geo) * 0.55);
     day_ground = mix(day_ground, vec3f(0.2, 0.05, 0.05), smoothstep(0.36, 0.26, geo) * 0.5);
-    var twi_ground = mix(vec3f(0.075, 0.05, 0.065), vec3f(0.17, 0.08, 0.1), smoothstep(0.4, 0.7, soil));
+    var twi_ground = mix(vec3f(0.06, 0.04, 0.055), vec3f(0.19, 0.085, 0.1), smoothstep(0.4, 0.7, soil));
+    // Red cinder fans and pale ash crusts, in patches tens of metres across.
+    let patchy = fbm(w / 55.0 + 17.0, 3);
+    twi_ground = mix(twi_ground, vec3f(0.24, 0.07, 0.05), smoothstep(0.58, 0.7, patchy) * 0.75);
+    twi_ground = mix(twi_ground, vec3f(0.3, 0.24, 0.3), smoothstep(0.36, 0.26, patchy) * 0.6);
     // Olivine sand, glassy green-black, and violet ash.
     twi_ground = mix(twi_ground, vec3f(0.05, 0.085, 0.06), smoothstep(0.6, 0.72, geo) * 0.7);
     twi_ground = mix(twi_ground, vec3f(0.15, 0.07, 0.17), smoothstep(0.34, 0.24, geo) * 0.6);
