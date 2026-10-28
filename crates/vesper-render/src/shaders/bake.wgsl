@@ -568,7 +568,10 @@ fn stone(w: vec2f, size: f32, odds: f32, flat: f32, salt: f32) -> vec3f {
     }
     let s = 1.0 - k * k;
     // Rounded cobbles; bigger rocks with flatter, split tops.
-    let h = rad * mix(0.75, 0.5, flat) * pow(s, mix(0.5, 0.25, flat)) * (1.0 + 0.25 * lump);
+    // Big ones lean and are broken into a few facets, not loaves.
+    let tilt = dot(d / rad, vec2f(cos(o.y * 40.0), sin(o.y * 40.0))) * 0.3 * flat;
+    let facet = (vnoise(d / rad * 1.4 + r * 17.0) - 0.5) * 0.35 * flat;
+    let h = rad * mix(0.75, 0.6, flat) * pow(s, mix(0.5, 0.33, flat)) * (1.0 + 0.25 * lump + tilt + facet);
     return vec3f(h, r.x * 13.0 + r.y, s);
 }
 
@@ -874,8 +877,12 @@ fn ground(p: vec2f, gt: f32) -> vec4f {
     // Wind ripples in the sand, across the ground wind.
     let ripple_zone = smoothstep(1.4, 0.6, p.x) * step(rel.rock, 0.5);
     if (ripple_zone > 0.0) {
-        let rp = w.x * 9.0 + 3.0 * fbm(w * 0.3, 2);
-        g.x += cos(rp) * 0.12 * ripple_zone * smoothstep(0.25, 0.04, foot);
+        // They bend and fork, and only lie on patches of loose sand.
+        let warp = fbm(w * vec2f(0.12, 0.25), 3);
+        let rp = w.x * (7.0 + 4.0 * warp) + 6.0 * fbm(w * vec2f(0.25, 0.5) + 2.0, 2) + w.y * (warp - 0.5) * 2.0;
+        let patch_sand = smoothstep(0.42, 0.62, fbm(w * 0.05 + 11.0, 3));
+        let ridge = cos(rp) + 0.35 * cos(rp * 2.1 + 1.3);
+        g.x += ridge * 0.1 * ripple_zone * patch_sand * smoothstep(0.25, 0.04, foot);
     }
     let n = normalize(vec3f(-g.x, 1.0, -g.y));
 
