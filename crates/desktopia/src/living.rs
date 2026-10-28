@@ -3,7 +3,8 @@
 //! through each tick so movement stays smooth at any frame rate.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vesper_chronicle::Chronicle;
 use vesper_chronicle::likeness::Sketchbook;
@@ -45,8 +46,30 @@ impl Living {
         chronicle_dir: Option<PathBuf>,
         on_start: Option<Box<dyn FnOnce() + Send>>,
     ) -> Self {
+        Self::open(save_path, chronicle_dir, on_start, false)
+    }
+
+    /// Starts a new world from nothing. The old save moves to `world-past`
+    /// beside it, and its chronicle to `chronicle-past`, so nothing is destroyed.
+    pub fn begin_anew(
+        save_path: Option<PathBuf>,
+        chronicle_dir: Option<PathBuf>,
+        on_start: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
+        if let Some(p) = &save_path {
+            archive_save(p);
+        }
+        Self::open(save_path, chronicle_dir, on_start, true)
+    }
+
+    fn open(
+        save_path: Option<PathBuf>,
+        chronicle_dir: Option<PathBuf>,
+        on_start: Option<Box<dyn FnOnce() + Send>>,
+        fresh: bool,
+    ) -> Self {
         let now = unix_now();
-        let loaded = save_path.as_deref().map(save::load);
+        let loaded = save_path.as_deref().filter(|_| !fresh).map(save::load);
         let mut chronicle = chronicle_dir.map(Chronicle::open);
         let (sim, catch_up) = match loaded {
             Some(Ok(sim)) => {
@@ -64,8 +87,9 @@ impl Living {
                 (sim, behind)
             }
             other => {
-                if let Some(Err(e)) = other {
-                    log::warn!("no saved world ({e}); a new one begins");
+                match other {
+                    Some(Err(e)) => log::warn!("no saved world ({e}); a new one begins"),
+                    _ => log::info!("a new world begins"),
                 }
                 let seed = now as u64 ^ 0x5eed_7e57;
                 let sim = Sim::new(seed, now);
@@ -141,12 +165,14 @@ impl Living {
         batch.clear();
         for p in f.next.plants.iter().filter(|p| !p.floating) {
             pose::plant(p, &mut self.pose);
-            self.add_plant(p, batch);
+            let ground = self.pose.at;
+            self.add_plant(p, ground, batch);
         }
         true
     }
 
-    fn add_plant(&mut self, p: &PlantView, batch: &mut LifeBatch) {
+    /// `ground` is the floor point under it, where its shadow falls.
+    fn add_plant(&mut self, p: &PlantView, ground: [f32; 2], batch: &mut LifeBatch) {
         let height = p.scale * p.body.extent * self.pose.shrink;
         convert(&self.pose, |w| 0.1 * height * w * w, &mut self.segs, &mut self.membranes);
         batch.add(&Organism {
@@ -160,6 +186,7 @@ impl Living {
             bleeding: 0.0,
             infection: None,
             clip_y: None,
+            ground: Some(ground),
             seed: p.id as u32,
         });
     }
@@ -181,7 +208,8 @@ impl Living {
             let from = self.mats_before.1.get(&p.id).copied().unwrap_or(to);
             let pos = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
             pose::plant_at(p, pos, &mut self.pose);
-            self.add_plant(p, batch);
+            let (ground, _, _) = pose::project([pos[0], pos[1], 0.0]);
+            self.add_plant(p, ground, batch);
         }
         for v in &f.next.creatures {
             self.anim.creature(v, t, &mut self.pose);
@@ -202,6 +230,7 @@ impl Living {
                     symbiont: i.symbiont,
                 }),
                 clip_y: clip(v),
+                ground: Some(self.pose.at),
                 seed: v.id as u32,
             });
         }
@@ -219,6 +248,7 @@ impl Living {
                 bleeding: 0.0,
                 infection: None,
                 clip_y: None,
+                ground: Some(self.pose.at),
                 seed: r.id as u32,
             });
         }
@@ -249,6 +279,7 @@ impl Living {
                 bleeding: 0.0,
                 infection: None,
                 clip_y: None,
+                ground: None,
                 seed: e.id as u32,
             });
         }
@@ -335,6 +366,26 @@ fn tissue(t: vesper_sim::Tissue) -> Tissue {
         S::Store => Tissue::Store,
         S::Brood => Tissue::Brood,
         S::Mouth => Tissue::Mouth,
+    }
+}
+
+/// Moves a world's save, and the backup that would otherwise be loaded in
+/// its place, out of the way.
+fn archive_save(path: &Path) {
+    let past = path.with_file_name("world-past");
+    if path.exists() {
+        let to = past.join(format!("{}.vesper", unix_now() as u64));
+        let moved = fs::create_dir_all(&past).and_then(|()| fs::rename(path, &to));
+        match moved {
+            Ok(()) => log::info!("old world kept at {}", to.display()),
+            Err(e) => {
+                log::error!("can't keep the old world ({e}); removing it");
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    for ext in ["bak", "tmp"] {
+        let _ = fs::remove_file(path.with_extension(ext));
     }
 }
 

@@ -15,11 +15,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HICON, ICONINFO, MF_CHECKED, MF_SEPARATOR, MF_STRING,
-    PBT_POWERSETTINGCHANGE, PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    SetMenuDefaultItem, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST,
-    WM_RBUTTONUP, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+    DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HICON, ICONINFO, IDYES, MB_DEFBUTTON2, MB_ICONWARNING,
+    MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_SEPARATOR, MF_STRING, MessageBoxW, PBT_POWERSETTINGCHANGE,
+    PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, TPM_NONOTIFY,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_RBUTTONUP,
+    WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -30,6 +31,7 @@ const CMD_PAUSE: u32 = 1;
 const CMD_AUTOSTART: u32 = 2;
 const CMD_QUIT: u32 = 3;
 const CMD_CHRONICLE: u32 = 4;
+const CMD_NEW_WORLD: u32 = 5;
 const HOTKEY_CHRONICLE: i32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -46,6 +48,8 @@ pub enum Event {
     ToggleAutostart,
     /// The tray icon, its menu or the hotkey asked for the chronicle.
     OpenChronicle,
+    /// Asked from the tray to give up this world and start another.
+    NewWorld,
     Quit,
 }
 
@@ -271,6 +275,7 @@ unsafe fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, check(state.paused), CMD_PAUSE as usize, w!("Pause"));
         let _ = AppendMenuW(menu, check(state.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, CMD_NEW_WORLD as usize, w!("New world\u{2026}"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, w!("Quit Desktopia"));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -284,9 +289,20 @@ unsafe fn show_menu(hwnd: HWND) {
             CMD_AUTOSTART => push(Event::ToggleAutostart),
             CMD_QUIT => push(Event::Quit),
             CMD_CHRONICLE => push(Event::OpenChronicle),
+            CMD_NEW_WORLD => push(Event::NewWorld),
             _ => {}
         }
     }
+}
+
+/// Asks before the world is given up; nothing changes unless the answer is yes.
+pub fn confirm_new_world() -> bool {
+    let text =
+        w!("Start a new world?\n\nEvery creature, plant and species alive on Vesper now will be gone, and life \
+         begins again from its first founders. The old world's save and chronicle are kept in the Desktopia folder \
+         (world-past and chronicle-past) but won't be shown again.");
+    let flags = MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST;
+    unsafe { MessageBoxW(None, text, w!("Desktopia"), flags) == IDYES }
 }
 
 /// The tray icon: Vesper's day, twilight and night across a small disc.
