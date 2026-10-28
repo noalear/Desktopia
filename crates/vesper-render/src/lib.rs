@@ -1041,7 +1041,7 @@ pub mod rhythm {
             sky.rows[2 * SKY_COLS + i] = [0.0, 0.0, 2.0 * under, 0.0];
         }
         if w.storm > 0.0 {
-            sky.rows[3 * SKY_COLS] = [w.storm_x, w.storm, 0.06 + 0.07 * w.storm, 0.5];
+            sky.rows[3 * SKY_COLS] = [w.storm_x, w.storm, w.storm, 0.5];
         }
         sky
     }

@@ -33,7 +33,8 @@ pub const SKY_COLS: usize = 64;
 ///   dust in the air.
 /// - `2*SKY_COLS..3*SKY_COLS`: ash lying on the ground, hail, gusts (0 calm
 ///   .. about 3 a gale), cold snap (how far below usual, 0..1.5).
-/// - then [`SKY_CELLS`] storm cells: x, power (0..1.3), radius, age 0..1.
+/// - then [`SKY_CELLS`] storm cells: x, power (0..1.3), the power it can reach, and a seed
+///   for its shape (whole part) plus its age through its life (fraction).
 /// - then one row: the ash veil, the dust front's speed, the cold fall's
 ///   front speed, unused.
 pub const SKY_CELLS: usize = 5;

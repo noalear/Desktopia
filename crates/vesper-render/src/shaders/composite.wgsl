@@ -96,6 +96,153 @@ fn ash_air(p: vec2f) -> vec4f {
 // How strongly the bloom shows.
 const BLOOM = 0.12;
 
+// ---------------------------------------------------------------- near weather
+// What is falling right in front of the viewer, in a few layers from near
+// (big, fast) to far (fine, slow), each moving along its own path so the
+// layers never line up into a pattern.
+
+// The light falling things catch at p: the sky's, and the sun's from behind.
+fn air_light(p: vec2f) -> vec3f {
+    return sky_base(vec2f(p.x, 0.6)) * 0.7 + sun_glow(p) * 0.25 + vec3f(0.012, 0.014, 0.026);
+}
+
+// One layer of streaks, 0..1 at p. Drops move along (s * vy, -vy), so in
+// coordinates (x - s y, y + vy t) each one stands still; cells there are
+// tall and thin, one drop in some of them.
+fn streaks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, width: f32, seed: f32) -> f32 {
+    let u = vec2f(p.x - s * p.y, p.y + vy * P.time);
+    let g = u / vec2f(scale, scale * 9.0);
+    let cell = floor(g);
+    let h = pcg2(cell + seed);
+    if (h.x > density) {
+        return 0.0;
+    }
+    let f = fract(g);
+    let along = smoothstep(0.0, 0.35, f.y) * smoothstep(1.0, 0.75, f.y);
+    let d = abs(f.x - 0.2 - 0.6 * h.y) * scale;
+    return smoothstep(width, width * 0.2, d) * along * (0.5 + 0.5 * fract(h.x * 91.0));
+}
+
+// One layer of drifting specks (snow, ash), each wobbling on its way down.
+fn specks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, size: f32, seed: f32) -> f32 {
+    let u = vec2f(p.x - s * p.y, p.y + vy * P.time);
+    let g = u / scale;
+    let cell = floor(g);
+    let h = pcg2(cell + seed);
+    if (h.x > density) {
+        return 0.0;
+    }
+    let wob = vec2f(sin(P.time * (0.7 + h.y) + h.x * 40.0), cos(P.time * (0.5 + h.x) + h.y * 30.0)) * 0.18;
+    let d = length((fract(g) - 0.25 - 0.5 * pcg2(cell + seed + 9.0) - wob) * scale);
+    let r = size * (0.5 + h.y);
+    return exp(-d * d / (r * r));
+}
+
+fn falling(p: vec2f, base: vec3f) -> vec3f {
+    let air = sky_air(p.x);
+    let more = sky_more(p.x);
+    let ash = sky_ground(p.x).z;
+    let hail = more.y;
+    if (air.y < 0.02 && hail < 0.02 && ash < 0.05) {
+        return base;
+    }
+    let fall = smoothstep(0.0, 0.6, air.y);
+    let snow = air.z;
+    let gust = 1.0 + more.z;
+    // Lean with the ground wind, harder in the gusts.
+    let s = clamp(-P.wind_low * 45.0 * gust, -0.9, 0.9);
+    let light = air_light(p);
+    var col = base;
+    // Thinner against the sky, where there is less behind it to catch light.
+    let rain = fall * (1.0 - snow) * (0.45 + 0.55 * smoothstep(0.7, 0.35, p.y));
+    if (rain > 0.01) {
+        var r = streaks(p, 0.011, 1.7, s, rain * 0.45, 0.0009, 1.0) * 0.8;
+        r += streaks(p, 0.0065, 1.15, s * 0.9, rain * 0.55, 0.0006, 37.0) * 0.6;
+        r += streaks(p, 0.0038, 0.75, s * 0.8, rain * 0.65, 0.0004, 91.0) * 0.4;
+        // A downpour also greys out everything behind it.
+        col = mix(col, light * 0.6, rain * 0.25);
+        col = col * (1.0 - 0.2 * min(r, 1.0)) + light * r * 0.9;
+    }
+    let flakes = fall * snow;
+    if (flakes > 0.01) {
+        let ss = s * 1.8;
+        var f = specks(p, 0.03, 0.09, ss, flakes * 0.5, 0.0018, 3.0);
+        f += specks(p, 0.017, 0.065, ss * 0.9, flakes * 0.6, 0.0012, 17.0) * 0.8;
+        f += specks(p, 0.009, 0.045, ss * 0.8, flakes * 0.7, 0.0007, 59.0) * 0.6;
+        col = mix(col, light * 0.7, flakes * 0.3);
+        col += (light * 1.6 + vec3f(0.02, 0.025, 0.05)) * f;
+    }
+    if (hail > 0.02) {
+        let h = streaks(p, 0.012, 2.4, s * 0.5, hail * 0.4, 0.0016, 211.0);
+        col += (light * 2.0 + vec3f(0.08)) * h;
+    }
+    if (ash > 0.05) {
+        let a = specks(p, 0.022, 0.03, s * 2.5, ash * 0.5, 0.0013, 71.0) + specks(p, 0.012, 0.022, s * 2.0, ash * 0.6, 0.0008, 5.0);
+        col = mix(col, vec3f(0.03, 0.026, 0.025) + light * 0.15, min(a, 1.0) * 0.8);
+    }
+    return col;
+}
+
+// Fog lying on the land: thickening with distance across the plain, and a
+// low bank over the land behind it, drifting with the ground wind and
+// glowing where the sun is behind it.
+fn fog_air(p: vec2f) -> vec4f {
+    let fog = sky_air(p.x).w;
+    if (fog < 0.01) {
+        return vec4f(0.0);
+    }
+    let gt = ground_top(p.x);
+    var depth: f32;
+    if (p.y < gt) {
+        depth = 1.0 - exp(-plain_z(p.y) / 700.0);
+    } else {
+        depth = smoothstep(gt + 0.03 + 0.12 * fog, gt - 0.01, p.y);
+    }
+    let wisp = fbm(vec2f(p.x * 5.0 + P.time * P.wind_low * 2.0, p.y * 28.0 - P.time * 0.002), 4);
+    let dens = fog * depth * (0.45 + 0.8 * wisp);
+    let col = sky_base(vec2f(p.x, 0.42)) * 0.85 + sun_glow(p) * 0.4 + vec3f(0.01, 0.012, 0.022);
+    return vec4f(col, clamp(dens * 1.2, 0.0, 0.92));
+}
+
+// Dust raised by the wind across the land: a churning haze, thick near the
+// ground and thinning upward, lit hot by the sun.
+fn dust_haze(p: vec2f) -> vec4f {
+    let dust = sky_ground(p.x).w;
+    if (dust < 0.02) {
+        return vec4f(0.0);
+    }
+    let gust = sky_more(p.x).z;
+    let low = smoothstep(0.7, 0.15, p.y);
+    let churn = fbm(vec2f(p.x * 7.0 + P.time * P.wind_low * (3.0 + 2.0 * gust), p.y * 16.0 - P.time * 0.01), 4);
+    let day = daylight(p.x);
+    let col = mix(vec3f(0.12, 0.05, 0.02), vec3f(1.3, 0.6, 0.22), day) * (0.6 + 0.6 * churn) + sun_glow(p) * 0.3;
+    return vec4f(col, clamp(dust * low * (0.35 + 0.7 * churn) * 0.8, 0.0, 0.85));
+}
+
+// Fine ash hanging everywhere downwind after an eruption, and the veil it
+// leaves high up dimming and browning the whole sky.
+fn ash_haze(p: vec2f) -> vec4f {
+    let ash = sky_ground(p.x).z;
+    let veil = sky_misc().x;
+    let a = ash * 0.6 + veil * 0.35;
+    if (a < 0.01) {
+        return vec4f(0.0);
+    }
+    let n = fbm(vec2f(p.x * 3.0 - P.cloud_drift, p.y * 8.0), 3);
+    let col = vec3f(0.06, 0.045, 0.04) * (0.7 + 0.6 * n) + sun_glow(p) * vec3f(0.5, 0.25, 0.1) * 0.4;
+    return vec4f(col, clamp(a * (0.6 + 0.5 * n), 0.0, 0.8));
+}
+
+// The whole scene flickers blue-white with each flash.
+fn flash(p: vec2f, col: vec3f) -> vec3f {
+    if (P.lightning < 0.01) {
+        return col;
+    }
+    let near = exp(-abs(p.x - P.lightning_x) * 2.2);
+    let f = P.lightning * (0.06 + 0.3 * near);
+    return col * (1.0 + f) + vec3f(0.07, 0.07, 0.12) * f;
+}
+
 fn over(col: vec3f, layer: vec4f) -> vec3f {
     return mix(col, layer.rgb, layer.a);
 }
@@ -104,9 +251,14 @@ fn over(col: vec3f, layer: vec4f) -> vec3f {
 fn fs_composite(in: VOut) -> @location(0) vec4f {
     let p = world_pos(in.uv);
     var col = textureLoad(scene, vec2i(in.pos.xy), 0).rgb;
+    col = over(col, fog_air(p));
+    col = over(col, ash_haze(p));
     col = over(col, ash_air(p));
     col = over(col, cold_air(p));
+    col = over(col, dust_haze(p));
     col = over(col, dust_air(p));
+    col = falling(p, col);
+    col = flash(p, col);
     col += motes(p, 0.03, 0.0008, 0.0022, 0.0) * 0.6;
     // Bright light spilling into the air around it. (Bloom was gathered
     // after exposure, so take that back out before finish applies it.)

@@ -73,6 +73,9 @@ pub struct Cell {
     pub radius: f32,
     /// Already reported to the chronicle.
     pub reported: bool,
+    /// Picks the shape of its tower, 0..1000.
+    #[serde(default)]
+    pub seed: f32,
 }
 
 impl Cell {
@@ -227,8 +230,20 @@ impl Atmos {
             rows[2 * N + i] =
                 [self.ashfall[i], self.hail[i], (self.gust[i] - 1.0).clamp(0.0, 3.0), (-self.anom[i]).clamp(0.0, 1.5)];
         }
+        // Softened across a few columns so nothing ends in a hard line.
+        for _ in 0..3 {
+            for band in 0..3 {
+                let prev: Vec<[f32; 4]> = rows[band * N..(band + 1) * N].to_vec();
+                for i in 0..N {
+                    let (l, r) = (prev[i.saturating_sub(1)], prev[(i + 1).min(N - 1)]);
+                    for c in 0..4 {
+                        rows[band * N + i][c] = 0.25 * l[c] + 0.5 * prev[i][c] + 0.25 * r[c];
+                    }
+                }
+            }
+        }
         for (k, c) in self.cells.iter().take(SKY_CELLS).enumerate() {
-            rows[3 * N + k] = [c.x, c.power, c.radius, c.life01()];
+            rows[3 * N + k] = [c.x, c.power, c.peak, c.seed + c.life01().min(0.999)];
         }
         rows[3 * N + SKY_CELLS] = [self.veil, dust_v, cold_v, 0.0];
         rows
@@ -464,8 +479,8 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
         // leans toward the moister air on its flanks, where new towers rise.
         let l = a.vapour[((c.x - 0.15) / DX).clamp(0.0, (N - 1) as f32) as usize];
         let r = a.vapour[((c.x + 0.15) / DX).clamp(0.0, (N - 1) as f32) as usize];
-        c.v += rng.normal() * 0.00004 * dt + (r - l).clamp(-0.1, 0.1) * 0.00002 * dt;
-        c.v = c.v.clamp(-0.0012, 0.0016);
+        c.v += -c.v * (dt / 1200.0).min(1.0) + rng.normal() * 6e-6 * dt.sqrt() + (r - l).clamp(-0.1, 0.1) * 2e-6 * dt;
+        c.v = c.v.clamp(-0.0005, 0.0005);
         let steer = (g.wind_low + g.wind_high) * 0.15;
         c.x = (c.x + (c.v + steer) * dt).clamp(0.2, WORLD_W - 0.1);
     }
@@ -520,7 +535,7 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
             let peak = (0.3 + cape * 2.5 + rng.range(-0.15, 0.3)).clamp(0.3, 1.3);
             a.cells.push(Cell {
                 x,
-                v: rng.normal() * 0.0003,
+                v: rng.normal() * 0.00015,
                 power: 0.02,
                 peak,
                 age: 0.0,
@@ -529,6 +544,7 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
                 fade: rng.range(500.0, 900.0),
                 radius: 0.06,
                 reported: false,
+                seed: rng.range(0.0, 1000.0).floor(),
             });
             if a.cells.len() >= MAX_CELLS {
                 break;

@@ -31,7 +31,8 @@ fn sky_more(x: f32) -> vec4f {
     return sky_row(2 * SKY_COLS, x);
 }
 
-// A storm cell: x, power (0..1.3), radius, age through its life (0..1).
+// A storm cell: x, power (0..1.3), the power it can reach, and seed + age through its life
+// (0..1): the whole part picks its shape, the fraction is its age.
 fn sky_cell(k: i32) -> vec4f {
     return SKY.rows[3 * SKY_COLS + k];
 }
