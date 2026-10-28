@@ -4,10 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: write
+
+# A new push to a PR cancels its stale build; runs on main queue so the
+# "latest" release is always rebuilt from the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
@@ -25,7 +33,7 @@ jobs:
           name: desktopia
           path: target/release/desktopia.exe
       - name: Publish as the "latest" release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,3 +43,25 @@ jobs:
             --target "$GITHUB_SHA" --prerelease \
             --title "Latest build" \
             --notes "Built from ${GITHUB_SHA::7}. Download desktopia.exe and run it."
+
+  # Merge the PR as soon as its build is green. Drafts and PRs labeled "hold"
+  # are left for a manual merge, as are PRs from forks.
+  automerge:
+    needs: build
+    if: >-
+      github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'hold')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge and republish "latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh pr merge "$PR" -R "$GITHUB_REPOSITORY" --merge --match-head-commit "$HEAD_SHA"
+          # A merge made with the workflow token doesn't fire the push
+          # trigger, so start the main build that publishes the release.
+          gh workflow run windows.yml -R "$GITHUB_REPOSITORY" --ref main
