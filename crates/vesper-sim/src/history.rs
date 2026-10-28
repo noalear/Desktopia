@@ -190,6 +190,38 @@ pub enum Behavior {
     Trapping,
     War,
     Overthrow,
+    /// Young mock-fighting with no harm done.
+    Play,
+    /// A young one eating what its parent showed it to eat.
+    Teaching,
+    /// Staying by the body of one it knew.
+    Mourning,
+    /// Prey ganging up on a hunter.
+    Mobbing,
+    /// Hunters taking prey together.
+    PackHunting,
+    /// Former foes grooming each other after a fight.
+    Reconciliation,
+    /// Rivals settling a contest by display instead of blood.
+    Ritual,
+    /// Prey facing a hunter down with a display.
+    Deterrence,
+    /// Resting huddled together.
+    Sleep,
+    /// Pressing together against the cold.
+    Huddling,
+    /// A separate alarm for danger from above.
+    AlarmCalls,
+    /// A call that brings others.
+    Recruitment,
+    /// Learning to fear a kind of creature or plant by seeing what it did.
+    LearnedFear,
+    /// Plants warning their neighbours of grazers.
+    PlantWarning,
+    /// Plants of a kind all fruiting at once.
+    Masting,
+    /// Plants shutting down to wait out bad times.
+    Dormancy,
 }
 
 /// Running record of one creature's life.
@@ -215,6 +247,28 @@ pub struct Life {
     pub kindness: u32,
     /// Limbs or segments lost to attacks and survived.
     pub scars: u32,
+    /// Its temperament and what it carried in its head.
+    #[serde(default)]
+    pub mind: Option<MindSketch>,
+}
+
+/// A sketch of a creature's mind for its biography.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct MindSketch {
+    /// Temperament, 0..1 each.
+    pub curiosity: f32,
+    pub boldness: f32,
+    pub sociality: f32,
+    /// Others it knew, and how many of them it counted friends or foes.
+    pub known: u32,
+    pub friends: u32,
+    pub foes: u32,
+    /// Places it remembered.
+    pub places: u32,
+    /// Kinds of creature or plant it had learned to fear.
+    pub fears: u32,
+    /// How far experience had rewired it from instinct, 0..1.
+    pub learned: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

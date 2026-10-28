@@ -55,6 +55,18 @@ pub struct PlantGenome {
     pub mutation: f32,
     pub look: [f32; LOOK_GENES],
     pub marker: [u8; 8],
+    /// How strongly being eaten raises its spines and poison for a while.
+    pub induce: f32,
+    /// How much it gives off a warning scent when eaten.
+    pub warn: f32,
+    /// How readily it takes up a neighbour's warning and arms itself in turn.
+    pub listen: f32,
+    /// How readily it shuts down to wait out heat, cold, drought or darkness.
+    pub dormancy: f32,
+    /// How far it can harden itself to the heat or cold it keeps meeting.
+    pub hardening: f32,
+    /// How much it holds its seed back to release all at once after rain.
+    pub mast: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -108,6 +120,12 @@ impl PlantGenome {
             mutation: 1.0,
             look,
             marker,
+            induce: rng.range(0.0, 0.4),
+            warn: rng.range(0.0, 0.3),
+            listen: rng.range(0.0, 0.4),
+            dormancy: rng.range(0.1, 0.5),
+            hardening: rng.range(0.1, 0.5),
+            mast: rng.range(0.0, 0.3),
         };
         match kind {
             Seedling::Fan => {
@@ -185,6 +203,12 @@ impl PlantGenome {
         nudge(&mut self.lifespan, 150.0, 300.0, 20000.0, rng);
         nudge(&mut self.growth, 0.05, 0.3, 2.0, rng);
         nudge(&mut self.mutation, 0.05, 0.3, 2.5, rng);
+        nudge(&mut self.induce, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.warn, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.listen, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.dormancy, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.hardening, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.mast, 0.04, 0.0, 1.0, rng);
         for v in self.look.iter_mut() {
             nudge(v, 0.04, 0.0, 1.0, rng);
         }
@@ -321,6 +345,8 @@ impl PlantGenome {
             (self.floating, o.floating),
             (self.glow, o.glow),
             (self.leaf / 2.0, o.leaf / 2.0),
+            (self.induce * 0.5, o.induce * 0.5),
+            (self.mast * 0.5, o.mast * 0.5),
         ] {
             d += (a - b).abs() * 2.0;
         }
@@ -365,6 +391,17 @@ pub struct Plant {
     pub vigor: f32,
     pub born: f64,
     pub generation: u32,
+    /// Defences raised against grazing, 0..1, fading over minutes.
+    pub alarm: f32,
+    /// Memory of having been attacked, 0..1, fading over an hour: a primed
+    /// plant arms itself faster.
+    pub primed: f32,
+    /// How deeply it has shut down, 0 awake .. 1 dormant.
+    pub dormant: f32,
+    /// How bad things have been lately, smoothed, for deciding to shut down.
+    pub hardship: f32,
+    /// Tolerance it has hardened itself to: + more heat, - more cold.
+    pub acclim: f32,
 }
 
 impl Plant {
@@ -379,6 +416,16 @@ impl Plant {
 
     pub fn height(&self) -> f32 {
         self.body.extent * self.scale()
+    }
+
+    /// Spines with any raised against grazing.
+    pub fn spines(&self) -> f32 {
+        (self.genome.spines + self.alarm * self.genome.induce * 0.6).min(1.0)
+    }
+
+    /// Poison with any raised against grazing.
+    pub fn toxin(&self) -> f32 {
+        (self.genome.toxin + self.alarm * self.genome.induce * 0.8).min(1.0)
     }
 
     pub fn leaf_area(&self) -> f32 {
