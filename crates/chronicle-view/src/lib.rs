@@ -5,6 +5,7 @@
 
 mod app;
 mod pages;
+mod portrait;
 mod theme;
 mod tree;
 mod widgets;
@@ -24,7 +25,7 @@ pub fn run(source: Source) -> eframe::Result {
             .with_icon(icon()),
         ..Default::default()
     };
-    eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(ChronicleApp::new(&cc.egui_ctx, source)))))
+    eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(ChronicleApp::new(cc, source)))))
 }
 
 /// A small twilight disc: amber sun edge fading to violet night.

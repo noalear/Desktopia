@@ -3,6 +3,7 @@
 //! window can rebuild it from the files the wallpaper writes.
 
 use crate::facts::*;
+use crate::likeness::Likeness;
 use crate::names::{self, mix};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -427,6 +428,9 @@ pub struct History {
     /// When each kind of weather was last written about.
     #[serde(default)]
     weather: Vec<(NatureKind, f64)>,
+    /// What each species looks like, from the last time one was drawn.
+    #[serde(default)]
+    pub likenesses: BTreeMap<SpeciesId, Likeness>,
 }
 
 /// A run of entry text: plain words, or a link to something.
@@ -620,6 +624,7 @@ impl History {
         }
         let (parent, genus) = (s.parent, s.genus.clone());
         self.species.remove(&id);
+        self.likenesses.remove(&id);
         if !self.species.values().any(|o| o.genus == genus) {
             self.genera.remove(&genus);
         }
@@ -761,6 +766,18 @@ impl History {
     /// them as a [`Tally`] instead of a line each.
     pub fn is_routine(&self, who: CreatureId, life: &Life) -> bool {
         !self.notables.contains_key(&who) && notability(life) < NOTABLE + 4.0
+    }
+
+    /// Keeps a new portrait of a species the chronicle knows.
+    pub fn apply_likeness(&mut self, tick: f64, wall: f64, species: SpeciesId, likeness: &Likeness) {
+        if self.began_wall == 0.0 {
+            self.began_wall = wall;
+        }
+        self.now = self.now.max(tick);
+        self.wall = self.wall.max(wall);
+        if self.species.contains_key(&species) {
+            self.likenesses.insert(species, Likeness { wall, ..likeness.clone() });
+        }
     }
 
     /// Applies a batch of routine deaths, exactly as applying each would.
