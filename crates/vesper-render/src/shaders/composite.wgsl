@@ -2,6 +2,10 @@
 // everything, tone mapped for the display.
 
 @group(0) @binding(1) var scene: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+// Bloom at a quarter and a sixteenth of the screen (see bloom.wgsl).
+@group(0) @binding(3) var bloom_near: texture_2d<f32>;
+@group(0) @binding(4) var bloom_wide: texture_2d<f32>;
 
 // Drifting spores and motes. Bioluminescent on the night side.
 fn motes(p: vec2f, scale: f32, size: f32, speed: f32, seed: f32) -> vec3f {
@@ -89,6 +93,9 @@ fn ash_air(p: vec2f) -> vec4f {
     return vec4f(col, clamp(dens * 1.1, 0.0, 0.9));
 }
 
+// How strongly the bloom shows.
+const BLOOM = 0.12;
+
 fn over(col: vec3f, layer: vec4f) -> vec3f {
     return mix(col, layer.rgb, layer.a);
 }
@@ -101,5 +108,9 @@ fn fs_composite(in: VOut) -> @location(0) vec4f {
     col = over(col, cold_air(p));
     col = over(col, dust_air(p));
     col += motes(p, 0.03, 0.0008, 0.0022, 0.0) * 0.6;
+    // Bright light spilling into the air around it. (Bloom was gathered
+    // after exposure, so take that back out before finish applies it.)
+    let glow = textureSampleLevel(bloom_near, samp, in.uv, 0.0).rgb * 0.5 + textureSampleLevel(bloom_wide, samp, in.uv, 0.0).rgb * 0.5;
+    col += glow * BLOOM / max(P.exposure, 1e-4);
     return finish(col, in.pos.xy);
 }

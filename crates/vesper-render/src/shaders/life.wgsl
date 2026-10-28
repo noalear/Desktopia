@@ -235,10 +235,6 @@ fn haze(p: vec2f, col: vec3f, z: f32) -> vec3f {
     return mix(col, hz * 0.7, clamp(z * z * 0.55, 0.0, 0.6));
 }
 
-fn luma(c: vec3f) -> f32 {
-    return dot(c, vec3f(0.2126, 0.7152, 0.0722));
-}
-
 // How much of the accent colour shows at pattern coordinate q (scaled units).
 fn pattern(kind: i32, q: vec2f, seed: f32) -> f32 {
     switch kind {

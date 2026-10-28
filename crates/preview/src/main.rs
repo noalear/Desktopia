@@ -5,7 +5,7 @@
 //!                [--band SHIFT] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
-//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--out DIR]
+//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--world FILE] [--out DIR]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
 //! its size, in monitor heights) at full 4K density times `--scale`, for
@@ -14,6 +14,10 @@
 //! `--sim` grows a real simulated world for that many sim minutes and draws
 //! it exactly as the wallpaper does, in place of the stand-in menagerie;
 //! `--follow` then frames the walker with the most limbs, close up.
+//!
+//! `--world FILE` keeps the grown world: the first run saves it there and
+//! later runs load it instead of growing it again. With `--sim`, `--crop`
+//! renders only that window of the world, as without it.
 //!
 //! `--acts` grows a world for that many sim minutes, then has a few of its
 //! creatures act out every behaviour the animator knows, `--frames` frames
@@ -51,6 +55,8 @@ struct Args {
     crop: Option<[f32; 4]>,
     /// With --sim: frame one walking creature instead of the whole world.
     follow: bool,
+    /// With --sim: where to keep the grown world between runs.
+    world: Option<std::path::PathBuf>,
     out: std::path::PathBuf,
 }
 
@@ -75,6 +81,7 @@ fn parse_args() -> Args {
         acts: None,
         crop: None,
         follow: false,
+        world: None,
         out: "preview-out".into(),
     };
     let mut it = std::env::args().skip(1);
@@ -112,6 +119,7 @@ fn parse_args() -> Args {
                 }
                 a.crop = Some(c);
             }
+            "--world" => a.world = Some(val().into()),
             "--out" => a.out = val().into(),
             other => panic!("unknown flag {other}"),
         }
@@ -216,8 +224,10 @@ fn main() {
 /// Grows a simulated world and renders it the way the wallpaper does.
 fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
     let epoch = 1_800_000_000.0;
-    let mut sim = vesper_sim::Sim::new(args.seed, epoch);
-    let ticks = (minutes * 60.0 / 0.2) as u64;
+    let saved = args.world.as_ref().and_then(|p| vesper_sim::save::load(p).ok());
+    let grow = saved.is_none();
+    let mut sim = saved.unwrap_or_else(|| vesper_sim::Sim::new(args.seed, epoch));
+    let ticks = if grow { (minutes * 60.0 / 0.2) as u64 } else { 0 };
     for t in 0..ticks {
         sim.step();
         if t % 3000 == 0 {
@@ -228,6 +238,9 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
                 sim.world().plants.len()
             );
         }
+    }
+    if let (true, Some(p)) = (grow, &args.world) {
+        vesper_sim::save::save(&sim, p).unwrap();
     }
     // With --follow, frame the walker with the most limbs, nearer ones first.
     let follow = args.follow.then(|| {
@@ -249,21 +262,26 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
         renderer.set_plants(&mut batch);
     }
 
-    let w = (MONITOR[0] as f32 * args.scale) as u32;
-    let h = (MONITOR[1] as f32 * args.scale) as u32;
-    let world_size = [w as f32 * 2.0, h as f32];
+    // Either both monitors side by side, or one window of the world (--crop).
     let sdr = wgpu::TextureFormat::Rgba8Unorm;
-    let mut outs: Vec<_> = (0..2)
-        .map(|i| {
-            renderer.create_output(OutputConfig {
-                origin_px: [w as f32 * i as f32, 0.0],
-                size_px: [w, h],
-                format: sdr,
-                mode: OutputMode::Sdr,
-            })
-        })
+    let (w, h, world_size, origins) = match args.crop {
+        Some([x0, y0, cw, ch]) => {
+            let ppu = MONITOR[1] as f32 * args.scale;
+            let world_w = MONITOR[0] as f32 * 2.0 / MONITOR[1] as f32;
+            let (w, h) = ((cw * ppu) as u32, (ch * ppu) as u32);
+            (w, h, [world_w * ppu, ppu], vec![[x0 * ppu, (1.0 - y0 - ch) * ppu]])
+        }
+        None => {
+            let w = (MONITOR[0] as f32 * args.scale) as u32;
+            let h = (MONITOR[1] as f32 * args.scale) as u32;
+            (w, h, [w as f32 * 2.0, h as f32], vec![[0.0, 0.0], [w as f32, 0.0]])
+        }
+    };
+    let mut outs: Vec<_> = origins
+        .iter()
+        .map(|&origin_px| renderer.create_output(OutputConfig { origin_px, size_px: [w, h], format: sdr, mode: OutputMode::Sdr }))
         .collect();
-    let texs: Vec<_> = (0..2).map(|_| target(renderer.device(), w, h, sdr)).collect();
+    let texs: Vec<_> = outs.iter().map(|_| target(renderer.device(), w, h, sdr)).collect();
     for f in 0..args.frames {
         if f > 0 {
             std::thread::sleep(std::time::Duration::from_secs_f64(args.step));
@@ -274,8 +292,8 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
         let world = life.world_view(view_at(args, world_size, args.time + f as f64 * args.step));
         life.creatures(&mut batch);
         renderer.set_creatures(&mut batch);
-        let mut img = image::RgbaImage::new(w * 2, h);
-        for i in 0..2 {
+        let mut img = image::RgbaImage::new(w * outs.len() as u32, h);
+        for i in 0..outs.len() {
             renderer.render(&mut outs[i], &world, &view(&texs[i]));
             let px = read_rgba8(renderer, &texs[i], w, h);
             for y in 0..h {
