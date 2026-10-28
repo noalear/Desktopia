@@ -102,7 +102,7 @@ mod app {
             last_tip: String::new(),
             force_frame: false,
             life: Some(Living::start(
-                config::dir("LOCALAPPDATA").map(|d| d.join("world.vesper")),
+                save_path(),
                 crate::chronicle::dir(),
                 Some(Box::new(system::lower_thread_priority)),
             )),
@@ -217,9 +217,30 @@ mod app {
                     self.sync_menu();
                 }
                 Event::OpenChronicle => crate::chronicle::show(),
+                Event::NewWorld => self.new_world(),
                 Event::Quit => return false,
             }
             true
+        }
+
+        /// Gives up the running world, once confirmed, and starts another.
+        fn new_world(&mut self) {
+            if !host::confirm_new_world() {
+                return;
+            }
+            log::info!("a new world was asked for");
+            // The old world saves as it stops, so it is whole in the archive.
+            if let Some(life) = self.life.take() {
+                life.stop();
+            }
+            self.life = Some(Living::begin_anew(
+                save_path(),
+                crate::chronicle::dir(),
+                Some(Box::new(system::lower_thread_priority)),
+            ));
+            self.plants_uploaded = false;
+            self.force_frame = true;
+            self.governor.poke();
         }
 
         fn schedule_rebuild(&mut self) {
@@ -336,6 +357,11 @@ mod app {
             }
             decision.fps
         }
+    }
+
+    /// Where the world is saved.
+    fn save_path() -> Option<std::path::PathBuf> {
+        config::dir("LOCALAPPDATA").map(|d| d.join("world.vesper"))
     }
 
     /// Handles every waiting message. Returns false on WM_QUIT.

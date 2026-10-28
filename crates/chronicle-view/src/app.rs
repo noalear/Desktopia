@@ -118,6 +118,13 @@ impl ChronicleApp {
         if now.duration_since(self.last_poll) >= POLL {
             self.last_poll = now;
             if self.reader.poll() {
+                if self.reader.take_renewed() {
+                    // A new world: nothing on the old pages exists any more.
+                    self.page = Page::Now;
+                    self.back.clear();
+                    self.state = PageState::default();
+                    self.tree = TreeState::default();
+                }
                 self.last_change = now;
                 ctx.request_repaint();
             }
