@@ -75,7 +75,7 @@ impl Registry {
     }
 
     pub fn found_plant(&mut self, g: &Arc<PlantGenome>, now: f64, facts: &mut Vec<(f64, Fact)>) -> SpeciesId {
-        self.add(None, Rep::Plant(g.clone()), now, facts)
+        self.add(None, Rep::Plant(Arc::new(g.clone_shallow())), now, facts)
     }
 
     /// Members that now count as a new species.
@@ -141,9 +141,12 @@ pub(crate) fn speciate(w: &mut World) {
     }
     for (s, members) in by {
         let plants = &w.plants;
-        let gap = |a: usize, b: usize| plants[a].genome.distance(&plants[b].genome);
+        let gap = |a: usize, b: usize| {
+            let (x, y) = (&plants[a].genome, &plants[b].genome);
+            x.distance(y) + x.compat_divergence(y) * COMPAT_GAP * 0.7
+        };
         let Some((leave, medoids)) = split(&members, gap, PLANT_SPLIT, &mut w.rng) else { continue };
-        let rep = w.plants[medoids[1]].genome.clone();
+        let rep = Arc::new(w.plants[medoids[1]].genome.clone_shallow());
         let new = w.species.add(Some(s), Rep::Plant(rep), now, &mut w.history);
         for &i in &leave {
             w.plants[i].species = new;

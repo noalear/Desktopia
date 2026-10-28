@@ -94,8 +94,7 @@ impl Sim {
             let g = Arc::new(PlantGenome::founder(kind, &mut w.rng));
             let species = w.species.found_plant(&g, 0.0, &mut w.history);
             for _ in 0..n {
-                let mut child = (*g).clone();
-                child.mutate(&mut w.rng);
+                let child = g.wild(&mut w.rng);
                 let x = match kind {
                     Seedling::VentCrust => {
                         let v = terrain::VENTS[w.rng.below(terrain::VENTS.len())];
@@ -403,7 +402,7 @@ fn renew(w: &mut World) {
         for _ in 0..20 {
             let x = w.rng.range(0.6, 3.0);
             let d = w.rng.range(0.0, DEPTH);
-            let seed = Seed { genome: g.clone(), species, generation: 0 };
+            let seed = Seed { genome: Arc::new(g.wild(&mut w.rng)), species, generation: 0 };
             ecology::sow(w, &seed, x, d, 0.2, 0.0);
         }
     }

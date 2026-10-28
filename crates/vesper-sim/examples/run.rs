@@ -160,4 +160,26 @@ fn genes(w: &vesper_sim::world::World) {
             cs.iter().map(|c| c.length()).sum::<f32>() / n,
         );
     }
+    let mut by: std::collections::BTreeMap<u64, Vec<&vesper_sim::plant::Plant>> = Default::default();
+    for p in &w.plants {
+        by.entry(p.species.0).or_default().push(p);
+    }
+    for (id, ps) in by {
+        let n = ps.len() as f32;
+        let mean = |f: &dyn Fn(&vesper_sim::plant::Plant) -> f32| ps.iter().map(|p| f(p)).sum::<f32>() / n;
+        let r = w.species.get(vesper_sim::history::SpeciesId(id));
+        println!(
+            "          plant {id:>4} <{:>4}> n {:>4} | vigor {:.2} clash {:.2} | self {:.2} nectar {:.2} wind {:.2} | x {:.2} mat {:.2} vent {:.2}",
+            r.parent.map(|p| p.0).unwrap_or(0),
+            ps.len(),
+            mean(&|p| p.genome.vigor),
+            mean(&|p| p.genome.clashes() as f32),
+            mean(&|p| p.genome.selfing),
+            mean(&|p| p.genome.nectar),
+            mean(&|p| p.genome.wind),
+            mean(&|p| p.x),
+            mean(&|p| p.genome.floats() as u8 as f32),
+            mean(&|p| p.genome.vent),
+        );
+    }
 }

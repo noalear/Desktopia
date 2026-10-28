@@ -194,20 +194,20 @@ fn bare(b: &mut BrainGenes) {
 }
 
 /// Weight an allele gets in expression from its dominance.
-fn weight(d: Option<&u8>) -> f32 {
+pub(crate) fn weight(d: Option<&u8>) -> f32 {
     ((*d.unwrap_or(&128) as f32 - 128.0) / 24.0).exp2()
 }
 
 /// One round of crossing over: which of the two strands each stretch of
 /// each chromosome comes from. Every chromosome crosses over at least once.
-struct Meiosis {
+pub(crate) struct Meiosis {
     start: [u8; CHROMOSOMES],
     cuts: [[f32; 3]; CHROMOSOMES],
     n: [u8; CHROMOSOMES],
 }
 
 impl Meiosis {
-    fn new(rng: &mut Rng) -> Self {
+    pub(crate) fn new(rng: &mut Rng) -> Self {
         let mut m = Self { start: [0; CHROMOSOMES], cuts: [[0.0; 3]; CHROMOSOMES], n: [0; CHROMOSOMES] };
         for c in 0..CHROMOSOMES {
             m.start[c] = rng.chance(0.5) as u8;
@@ -220,7 +220,7 @@ impl Meiosis {
         m
     }
 
-    fn strand(&self, c: usize, pos: f32) -> usize {
+    pub(crate) fn strand(&self, c: usize, pos: f32) -> usize {
         let k = self.cuts[c][..self.n[c] as usize].iter().filter(|&&x| x < pos).count() as u8;
         ((self.start[c] + k) & 1) as usize
     }
@@ -324,15 +324,7 @@ pub(crate) fn found(plan: Genome, rng: &mut Rng) -> Genome {
         *d = (128.0 + rng.normal() * 20.0).clamp(1.0, 255.0) as u8;
     }
     a.load = 0;
-    for k in 0..COMPAT {
-        // Draw until it gets on with the alleles already chosen.
-        for _ in 0..64 {
-            a.compat[k] = rng.below(256) as u8;
-            if (0..k).all(|j| !clash(j, a.compat[j], k, a.compat[k])) {
-                break;
-            }
-        }
-    }
+    a.compat = compatible_set(rng);
     let mut b = a.clone();
     b.mutate_genes(rng, 1.0);
     for d in b.dominance.iter_mut() {
@@ -346,16 +338,44 @@ pub(crate) fn found(plan: Genome, rng: &mut Rng) -> Genome {
     express([a, b], brain, marker, rng)
 }
 
+/// Alleles at the interacting genes that all work together, as a founding
+/// lineage has after long selection.
+pub(crate) fn compatible_set(rng: &mut Rng) -> [u8; COMPAT] {
+    let mut c = [0u8; COMPAT];
+    for k in 0..COMPAT {
+        // Draw until it gets on with the alleles already chosen.
+        for _ in 0..64 {
+            c[k] = rng.below(256) as u8;
+            if (0..k).all(|j| !clash(j, c[j], k, c[k])) {
+                break;
+            }
+        }
+    }
+    c
+}
+
 /// Copying errors as a gamete is made: in the genes themselves, in how
 /// strongly they are expressed, harmful breakages, and new alleles at the
 /// interacting genes.
 pub(crate) fn mutate_haplotype(h: &mut Genome, rng: &mut Rng, rate: f32) {
-    let r = rate.clamp(0.2, 3.0);
     h.mutate_genes(rng, rate);
-    if h.dominance.len() != LOCI {
-        h.dominance.resize(LOCI, 128);
+    mutate_shared(&mut h.dominance, LOCI, &mut h.load, &mut h.compat, rng, rate);
+}
+
+/// The copying errors every kind of haplotype suffers alike.
+pub(crate) fn mutate_shared(
+    dominance: &mut Vec<u8>,
+    loci: usize,
+    load: &mut u64,
+    compat: &mut [u8; COMPAT],
+    rng: &mut Rng,
+    rate: f32,
+) {
+    let r = rate.clamp(0.2, 3.0);
+    if dominance.len() != loci {
+        dominance.resize(loci, 128);
     }
-    for d in h.dominance.iter_mut() {
+    for d in dominance.iter_mut() {
         if rng.chance(0.015 * r) {
             *d = (*d as f32 + rng.normal() * 24.0).clamp(1.0, 255.0) as u8;
         }
@@ -363,17 +383,17 @@ pub(crate) fn mutate_haplotype(h: &mut Genome, rng: &mut Rng, rate: f32) {
     let mut harms = HARM_RATE * r;
     while harms > 0.0 {
         if rng.chance(harms.min(1.0)) {
-            h.load |= 1 << rng.below(64);
+            *load |= 1 << rng.below(64);
         }
         harms -= 1.0;
     }
     // Rarely a broken gene is mended by a second mutation.
-    if h.load != 0 && rng.chance(0.002 * r) {
-        h.load &= !(1 << rng.below(64));
+    if *load != 0 && rng.chance(0.002 * r) {
+        *load &= !(1 << rng.below(64));
     }
-    for k in 0..COMPAT {
+    for c in compat.iter_mut() {
         if rng.chance(COMPAT_RATE * r) {
-            h.compat[k] = rng.below(256) as u8;
+            *c = rng.below(256) as u8;
         }
     }
 }
@@ -413,9 +433,7 @@ pub(crate) fn express(h: [Genome; 2], brain: BrainGenes, marker: [u8; 8], rng: &
     g.dominance = Vec::new();
     // What it carries broken in both copies.
     g.load = h[0].load & h[1].load;
-    let hom = (h[0].load & h[1].load).count_ones() as i32;
-    let het = (h[0].load ^ h[1].load).count_ones() as i32;
-    g.vigor = (1.0 - HARM).powi(hom) * (1.0 - HARM * HARM_DOMINANCE).powi(het);
+    g.vigor = vigor_of(h[0].load, h[1].load);
     // A worse-built body ages faster, grows slower and breeds smaller clutches.
     let v = g.vigor.max(0.05);
     g.aging /= v.sqrt();
@@ -424,6 +442,13 @@ pub(crate) fn express(h: [Genome; 2], brain: BrainGenes, marker: [u8; 8], rng: &
     develop_noise(&mut g, rng);
     g.haplotypes = Some(Arc::new(h));
     g
+}
+
+/// How fit two haplotypes' broken genes leave a body.
+pub(crate) fn vigor_of(a: u64, b: u64) -> f32 {
+    let hom = (a & b).count_ones() as i32;
+    let het = (a ^ b).count_ones() as i32;
+    (1.0 - HARM).powi(hom) * (1.0 - HARM * HARM_DOMINANCE).powi(het)
 }
 
 /// No body grows exactly as its genes say: each part comes out a little
@@ -496,7 +521,11 @@ fn clash(i: usize, x: u8, j: usize, y: u8) -> bool {
 /// Clashing pairs of alleles a creature carries.
 pub fn clashes(g: &Genome) -> u32 {
     let Some(h) = &g.haplotypes else { return 0 };
-    let (a, b) = (&h[0].compat, &h[1].compat);
+    clash_count(&h[0].compat, &h[1].compat)
+}
+
+/// Clashing pairs of alleles carried between two haplotypes.
+pub(crate) fn clash_count(a: &[u8; COMPAT], b: &[u8; COMPAT]) -> u32 {
     let mut n = 0;
     for i in 0..COMPAT {
         for j in i + 1..COMPAT {
@@ -519,17 +548,23 @@ pub fn clashes(g: &Genome) -> u32 {
 
 /// Chance an embryo with these genes develops at all.
 pub fn viability(g: &Genome) -> f32 {
-    if let Some(h) = &g.haplotypes
-        && h[0].load & h[1].load & ESSENTIAL != 0
-    {
-        return 0.0;
+    match &g.haplotypes {
+        Some(h) => viability_of(h[0].load, h[1].load, clashes(g)),
+        None => 1.0,
     }
-    CLASH_VIABILITY.powi(clashes(g) as i32)
 }
 
 /// Chance it can breed once grown.
 pub fn fertility(g: &Genome) -> f32 {
-    CLASH_FERTILITY.powi(clashes(g) as i32)
+    fertility_of(clashes(g))
+}
+
+pub(crate) fn viability_of(a: u64, b: u64, clashes: u32) -> f32 {
+    if a & b & ESSENTIAL != 0 { 0.0 } else { CLASH_VIABILITY.powi(clashes as i32) }
+}
+
+pub(crate) fn fertility_of(clashes: u32) -> f32 {
+    CLASH_FERTILITY.powi(clashes as i32)
 }
 
 /// How alike two creatures' immune genes are, 0 nothing shared .. 1 the same.
