@@ -568,7 +568,10 @@ fn stone(w: vec2f, size: f32, odds: f32, flat: f32, salt: f32) -> vec3f {
     }
     let s = 1.0 - k * k;
     // Rounded cobbles; bigger rocks with flatter, split tops.
-    let h = rad * mix(0.75, 0.5, flat) * pow(s, mix(0.5, 0.25, flat)) * (1.0 + 0.25 * lump);
+    // Big ones lean and are broken into a few facets, not loaves.
+    let tilt = dot(d / rad, vec2f(cos(o.y * 40.0), sin(o.y * 40.0))) * 0.3 * flat;
+    let facet = (vnoise(d / rad * 1.4 + r * 17.0) - 0.5) * 0.35 * flat;
+    let h = rad * mix(0.75, 0.6, flat) * pow(s, mix(0.5, 0.33, flat)) * (1.0 + 0.25 * lump + tilt + facet);
     return vec3f(h, r.x * 13.0 + r.y, s);
 }
 
@@ -740,7 +743,11 @@ fn soil_albedo(w: vec2f, night: f32, foot: f32) -> vec3f {
     // Pale gypsum flats and dark hematite sands in broad regions.
     day_ground = mix(day_ground, bleached, smoothstep(0.62, 0.75, geo) * 0.55);
     day_ground = mix(day_ground, vec3f(0.2, 0.05, 0.05), smoothstep(0.36, 0.26, geo) * 0.5);
-    var twi_ground = mix(vec3f(0.075, 0.05, 0.065), vec3f(0.17, 0.08, 0.1), smoothstep(0.4, 0.7, soil));
+    var twi_ground = mix(vec3f(0.06, 0.04, 0.055), vec3f(0.19, 0.085, 0.1), smoothstep(0.4, 0.7, soil));
+    // Red cinder fans and pale ash crusts, in patches tens of metres across.
+    let patchy = fbm(w / 55.0 + 17.0, 3);
+    twi_ground = mix(twi_ground, vec3f(0.24, 0.07, 0.05), smoothstep(0.58, 0.7, patchy) * 0.75);
+    twi_ground = mix(twi_ground, vec3f(0.3, 0.24, 0.3), smoothstep(0.36, 0.26, patchy) * 0.6);
     // Olivine sand, glassy green-black, and violet ash.
     twi_ground = mix(twi_ground, vec3f(0.05, 0.085, 0.06), smoothstep(0.6, 0.72, geo) * 0.7);
     twi_ground = mix(twi_ground, vec3f(0.15, 0.07, 0.17), smoothstep(0.34, 0.24, geo) * 0.6);
@@ -874,8 +881,12 @@ fn ground(p: vec2f, gt: f32) -> vec4f {
     // Wind ripples in the sand, across the ground wind.
     let ripple_zone = smoothstep(1.4, 0.6, p.x) * step(rel.rock, 0.5);
     if (ripple_zone > 0.0) {
-        let rp = w.x * 9.0 + 3.0 * fbm(w * 0.3, 2);
-        g.x += cos(rp) * 0.12 * ripple_zone * smoothstep(0.25, 0.04, foot);
+        // They bend and fork, and only lie on patches of loose sand.
+        let warp = fbm(w * vec2f(0.12, 0.25), 3);
+        let rp = w.x * (7.0 + 4.0 * warp) + 6.0 * fbm(w * vec2f(0.25, 0.5) + 2.0, 2) + w.y * (warp - 0.5) * 2.0;
+        let patch_sand = smoothstep(0.42, 0.62, fbm(w * 0.05 + 11.0, 3));
+        let ridge = cos(rp) + 0.35 * cos(rp * 2.1 + 1.3);
+        g.x += ridge * 0.1 * ripple_zone * patch_sand * smoothstep(0.25, 0.04, foot);
     }
     let n = normalize(vec3f(-g.x, 1.0, -g.y));
 

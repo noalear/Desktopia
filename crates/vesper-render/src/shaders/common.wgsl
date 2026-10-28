@@ -332,10 +332,10 @@ const RING_OPEN = 0.17;
 // How much of the sky at p the giant or its rings hide (for the stars).
 fn planet_cover(p: vec2f) -> f32 {
     let q = (p - PLANET) / PLANET_R;
-    if (dot(q, q) > 6.0) {
+    if (dot(q, q) > 9.0) {
         return 0.0;
     }
-    let body = smoothstep(1.02, 0.98, length(q));
+    let body = max(smoothstep(1.02, 0.98, length(q)), smoothstep(0.18, 0.15, length(q - vec2f(-0.13, -0.06) / PLANET_R)));
     let rq = rot_by(q, -RING_TILT);
     let rr = length(vec2f(rq.x, rq.y / RING_OPEN));
     let ring = smoothstep(1.3, 1.36, rr) * smoothstep(2.35, 2.25, rr) * 0.8;
@@ -350,7 +350,7 @@ fn rot_by(v: vec2f, a: f32) -> vec2f {
 
 fn planet(p: vec2f, sky: vec3f) -> vec3f {
     let q = (p - PLANET) / PLANET_R;
-    if (dot(q, q) > 6.0) {
+    if (dot(q, q) > 9.0) {
         return sky;
     }
     let night = smoothstep(0.4, 0.8, nightness(p.x));
@@ -364,7 +364,8 @@ fn planet(p: vec2f, sky: vec3f) -> vec3f {
     let ring_tex = 0.55 + 0.45 * fbm(vec2f(rr * 22.0, 0.5), 3);
     let gap = smoothstep(0.02, 0.0, abs(rr - 1.78)) + smoothstep(0.012, 0.0, abs(rr - 2.05)) * 0.7;
     let ring_a = ring_band * ring_tex * (1.0 - gap) * 0.85;
-    let ring_col = vec3f(0.55, 0.45, 0.38) * 0.22 * night;
+    // Pale cyan ice inside, rose dust toward the rim.
+    let ring_col = mix(vec3f(0.42, 0.62, 0.7), vec3f(0.7, 0.4, 0.5), smoothstep(1.5, 2.3, rr)) * 0.24 * night;
     // The far half of the ring lies behind the disc.
     let front = rq.y < 0.0;
     if (!front) {
@@ -377,11 +378,14 @@ fn planet(p: vec2f, sky: vec3f) -> vec3f {
         let lat = dot(n, vec3f(-sin(RING_TILT), cos(RING_TILT), 0.0));
         let swirl = fbm(vec2f(lat * 9.0, q.x * 2.0 + lat * 3.0), 4);
         let bands = fbm(vec2f(lat * 7.0 + swirl * 0.6, 1.3), 3);
-        var surf = mix(vec3f(0.42, 0.3, 0.2), vec3f(0.16, 0.36, 0.42), smoothstep(0.35, 0.65, bands));
-        surf = mix(surf, vec3f(0.55, 0.5, 0.42), smoothstep(0.66, 0.78, swirl) * 0.6);
-        // A great storm, dark and red.
-        let storm = smoothstep(0.24, 0.12, length(vec2f(q.x + 0.3, lat + 0.25) * vec2f(1.0, 2.2)));
-        surf = mix(surf, vec3f(0.35, 0.1, 0.06), storm * 0.8);
+        // Deep teal and violet cloud belts, pale jade zones between.
+        var surf = mix(vec3f(0.3, 0.16, 0.42), vec3f(0.06, 0.38, 0.42), smoothstep(0.35, 0.65, bands));
+        surf = mix(surf, vec3f(0.5, 0.66, 0.55), smoothstep(0.66, 0.78, swirl) * 0.6);
+        // A great storm, a bruise of magenta with a bright eye.
+        let sd = length(vec2f(q.x + 0.3, lat + 0.25) * vec2f(1.0, 2.2));
+        let storm = smoothstep(0.24, 0.12, sd);
+        surf = mix(surf, vec3f(0.5, 0.08, 0.3), storm * 0.8);
+        surf = mix(surf, vec3f(0.85, 0.55, 0.7), smoothstep(0.05, 0.0, sd) * 0.7);
         let lit = smoothstep(-0.05, 0.25, dot(n, sun_dir));
         // The shadow of the rings falls across the disc in a thin band.
         let shade_rq = rot_by(q - sun_dir.xy * 0.25, -RING_TILT);
@@ -389,13 +393,28 @@ fn planet(p: vec2f, sky: vec3f) -> vec3f {
         let ring_shadow = smoothstep(1.3, 1.36, shade_rr) * smoothstep(2.35, 2.25, shade_rr) * 0.6;
         // Its thick air glows at the limb and scatters into the night half.
         let limb = pow(1.0 - z, 3.0);
-        let face = surf * (lit * (1.0 - ring_shadow) * 0.32 + 0.012) + vec3f(0.12, 0.2, 0.3) * limb * (0.2 + 0.8 * lit) * 0.35;
+        var face = surf * (lit * (1.0 - ring_shadow) * 0.32 + 0.012) + vec3f(0.12, 0.2, 0.3) * limb * (0.2 + 0.8 * lit) * 0.35;
+        // Aurorae ring both poles of the dark side, green fading to violet.
+        let pole = abs(lat);
+        let aur = smoothstep(0.75, 0.86, pole) * smoothstep(0.98, 0.88, pole) * (1.0 - lit)
+            * (0.6 + 0.4 * fbm(vec2f(q.x * 6.0, lat * 4.0) + 3.0, 2));
+        face += mix(vec3f(0.05, 0.5, 0.25), vec3f(0.3, 0.1, 0.5), smoothstep(0.8, 0.95, pole)) * aur * 0.25;
         col = mix(col, face * night + sky * (1.0 - night), smoothstep(1.02, 0.98, r));
     }
     // A faint haze of light around the disc.
     col += vec3f(0.03, 0.05, 0.08) * exp(-max(r - 1.0, 0.0) * 9.0) * step(1.0, r) * night * 0.4;
     if (front) {
         col = mix(col, ring_col, ring_a);
+    }
+    // A small cratered moon trailing it, lit from the day side.
+    let mq = (p - PLANET - vec2f(-0.13, -0.06)) / (PLANET_R * 0.16);
+    let mr = length(mq);
+    if (mr < 1.05) {
+        let mz = sqrt(max(1.0 - mr * mr, 0.0));
+        let mn = vec3f(mq, mz);
+        let crater = fbm(mq * 3.0 + 9.0, 3);
+        let mcol = vec3f(0.5, 0.46, 0.44) * (0.7 + 0.5 * crater) * (smoothstep(-0.1, 0.3, dot(mn, sun_dir)) * 0.4 + 0.01);
+        col = mix(col, mcol * night + sky * (1.0 - night), smoothstep(1.05, 0.95, mr));
     }
     return col;
 }
