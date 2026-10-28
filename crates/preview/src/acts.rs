@@ -59,8 +59,10 @@ struct Actor {
 }
 
 pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
-    let mut sim = vesper_sim::Sim::new(args.seed, 1_800_000_000.0);
-    let ticks = (minutes * 60.0 / TICK as f64) as u64;
+    let saved = args.world.as_ref().and_then(|p| vesper_sim::save::load(p).ok());
+    let grown = saved.is_some();
+    let mut sim = saved.unwrap_or_else(|| vesper_sim::Sim::new(args.seed, 1_800_000_000.0));
+    let ticks = if grown { 0 } else { (minutes * 60.0 / TICK as f64) as u64 };
     for t in 0..ticks {
         sim.step();
         if t % 3000 == 0 {
@@ -137,7 +139,7 @@ pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
                 for c in &cs {
                     anim.creature(c, 0.0, &mut pose);
                     living::convert(&pose, |_| 0.0, &mut segs, &mut membranes);
-                    add(&mut batch, &segs, &membranes, c.look, pose.z, 1.0, anim.signal(c), c, c.id);
+                    add(&mut batch, &segs, &membranes, c.look, pose.z, 1.0, anim.signal(c), c, c.id, Some(pose.at));
                 }
                 for r in &rs {
                     anim.remains(r, 0.0, &mut pose);
@@ -153,6 +155,7 @@ pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
                         bleeding: 0.0,
                         infection: None,
                         clip_y: None,
+                        ground: Some(pose.at),
                         seed: r.id as u32,
                     });
                 }
@@ -189,6 +192,7 @@ fn add(
     signal: f32,
     c: &CreatureView,
     id: u64,
+    ground: Option<[f32; 2]>,
 ) {
     batch.add(&Organism {
         segs,
@@ -206,6 +210,7 @@ fn add(
             symbiont: i.symbiont,
         }),
         clip_y: None,
+        ground,
         seed: id as u32,
     });
 }

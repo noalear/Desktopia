@@ -1,7 +1,7 @@
 //! The pages other than the tree.
 
-use crate::theme::*;
 use crate::portrait::{Portrait, Portraits};
+use crate::theme::*;
 use crate::widgets::*;
 use eframe::egui::{self, Color32, RichText, Ui, vec2};
 use std::collections::BTreeSet;
