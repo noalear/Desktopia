@@ -113,6 +113,8 @@ pub struct CreatureView {
     pub effort: f32,
     pub action: Action,
     pub target: Option<u64>,
+    /// What it is eating, if it is: x, depth 0..1, altitude.
+    pub focus: Option<[f32; 3]>,
     /// Light signal shown now, 0..1, and which of 16 flash patterns.
     pub flash: f32,
     pub symbol: u8,
@@ -254,6 +256,7 @@ impl Frame {
                 effort: c.effort,
                 action: c.action,
                 target: c.target.map(|t| t.0),
+                focus: c.focus.map(|f| [f[0], f[1] / DEPTH, f[2]]),
                 flash: c.flash,
                 symbol: c.symbol,
                 health: c.health.clamp(0.0, 1.0),

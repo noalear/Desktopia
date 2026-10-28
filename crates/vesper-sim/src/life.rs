@@ -92,6 +92,7 @@ pub fn new_creature(
         reward: 0.0,
         intake: 0.0,
         target: None,
+        focus: None,
         doom: None,
         rig: Rig::empty(),
         drive: [0.0; 2],

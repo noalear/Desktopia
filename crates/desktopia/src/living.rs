@@ -5,9 +5,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use vesper_chronicle::likeness::Sketchbook;
 use vesper_chronicle::Chronicle;
+use vesper_chronicle::likeness::Sketchbook;
 use vesper_render::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue, WorldView};
+use vesper_sim::animate::Animator;
 use vesper_sim::frame::{CreatureView, Frame, PlantView};
 use vesper_sim::history::Fact;
 use vesper_sim::history::Locomotion;
@@ -25,6 +26,9 @@ pub struct Living {
     runner: Runner,
     plants_tick: Option<u64>,
     pose: Pose,
+    /// What everyone is doing, eased over time, and the clock it runs on.
+    anim: Animator,
+    born: Instant,
     segs: Vec<Seg>,
     membranes: Vec<Membrane>,
     /// How far the high wind has carried the clouds, and when it was last moved.
@@ -82,6 +86,8 @@ impl Living {
             runner,
             plants_tick: None,
             pose: Pose::default(),
+            anim: Animator::new(),
+            born: Instant::now(),
             segs: Vec::new(),
             membranes: Vec::new(),
             cloud: None,
@@ -162,6 +168,7 @@ impl Living {
         let f = self.runner.frames();
         let t = f.alpha();
         batch.clear();
+        self.anim.update(&f.next, self.born.elapsed().as_secs_f64());
         if self.mats_before.0 != f.prev.tick {
             let (tick, before) = &mut self.mats_before;
             *tick = f.prev.tick;
@@ -176,7 +183,7 @@ impl Living {
             self.add_plant(p, batch);
         }
         for v in &f.next.creatures {
-            pose::creature(v, t, &mut self.pose);
+            self.anim.creature(v, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
                 segs: &self.segs,
@@ -184,7 +191,7 @@ impl Living {
                 look: &Look { genes: v.look },
                 z: self.pose.z,
                 alive: 1.0,
-                signal: v.flash,
+                signal: self.anim.signal(v),
                 symbol: v.symbol,
                 bleeding: v.bleeding,
                 infection: v.infection.as_ref().map(|i| Infection {
@@ -198,7 +205,7 @@ impl Living {
             });
         }
         for r in &f.next.remains {
-            pose::remains(r, t, &mut self.pose);
+            self.anim.remains(r, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
                 segs: &self.segs,
@@ -290,7 +297,7 @@ fn clip(c: &CreatureView) -> Option<f32> {
 
 /// Copies a pose into the renderer's types. `sway` turns the sim's 0..1 wind
 /// weight into how far the tip bends, in world units.
-fn convert(pose: &Pose, sway: impl Fn(f32) -> f32, segs: &mut Vec<Seg>, membranes: &mut Vec<Membrane>) {
+pub(crate) fn convert(pose: &Pose, sway: impl Fn(f32) -> f32, segs: &mut Vec<Seg>, membranes: &mut Vec<Membrane>) {
     segs.clear();
     membranes.clear();
     segs.extend(pose.segs.iter().map(|s| Seg {

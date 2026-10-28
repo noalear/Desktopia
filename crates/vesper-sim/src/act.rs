@@ -94,6 +94,7 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
             Action::Idle
         };
         c.target = None;
+        c.focus = None;
     }
 }
 
@@ -262,6 +263,9 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
             let close = food == Food::Air || dist3(c.pos, p.food_pos) < r;
             if close {
                 eat(w, ci, food, out[o::EAT]);
+                if food != Food::Air && w.creatures[ci].action == Action::Eating {
+                    w.creatures[ci].focus = Some(p.food_pos);
+                }
             }
         }
 
