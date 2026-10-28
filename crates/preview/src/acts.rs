@@ -16,7 +16,7 @@ use vesper_sim::history::DeathCause;
 use vesper_sim::pose::{self, Pose};
 use vesper_sim::world::DEPTH;
 
-pub const CELLS: [&str; 15] = [
+pub const CELLS: [&str; 18] = [
     "idle",
     "eating",
     "fighting",
@@ -32,6 +32,9 @@ pub const CELLS: [&str; 15] = [
     "old",
     "caught",
     "dying",
+    "resting",
+    "playing",
+    "mourning",
 ];
 const COLS: u32 = 5;
 const CELL: [u32; 2] = [256, 192];
@@ -346,7 +349,33 @@ fn scene(a: &Actor, cell: usize, row: usize, k: u64, time: f32) -> (Vec<Creature
             o.bleeding = (kf * toll * 1.5).min(0.8);
             other = Some(o);
         }
-        "threat display" => me.action = Action::Guarding,
+        "threat display" => me.action = Action::Displaying,
+        "resting" => me.action = Action::Resting,
+        "playing" => {
+            me = place(a, id, x, false, 0.6);
+            let mut o = place(a, id + 1, x + a.dir * a.len * 0.6, true, 0.55);
+            me.action = Action::Playing;
+            me.target = Some(o.id);
+            o.action = Action::Playing;
+            o.target = Some(me.id);
+            other = Some(o);
+        }
+        "mourning" => {
+            if let Some(last) = a.corpse.last() {
+                let mut r = last.clone();
+                r.id = id + 2;
+                r.age = 60.0;
+                let at = x + a.dir * a.len * 1.0;
+                let dx = at - a.corpse[0].pos[0];
+                r.pos = [r.pos[0] + dx, STAGE_DEPTH, r.pos[2]];
+                for m in &mut r.motion {
+                    m.pos = [m.pos[0] + dx, STAGE_DEPTH * DEPTH];
+                }
+                me.focus = Some([at, STAGE_DEPTH, 0.0]);
+                remains.push(r);
+            }
+            me.action = Action::Mourning;
+        }
         "fleeing" => me.action = Action::Fleeing,
         "sharing food" | "grooming" => {
             let young = CELLS[cell] == "sharing food";

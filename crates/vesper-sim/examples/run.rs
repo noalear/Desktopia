@@ -94,6 +94,29 @@ fn main() {
                 "        births {} deaths {} (kills {} starved {} aged {} disease {} exposure {}) plants +{} -{}",
                 c.births, c.deaths, c.kills, c.starved, c.aged, c.disease, c.exposure, c.plant_births, c.plant_deaths
             );
+            let mut acts: std::collections::BTreeMap<String, u32> = Default::default();
+            for c in &w.creatures {
+                *acts.entry(format!("{:?}", c.action)).or_default() += 1;
+            }
+            let mean = |f: &dyn Fn(&vesper_sim::creature::Creature) -> f32| {
+                w.creatures.iter().map(|c| f(c)).sum::<f32>() / n
+            };
+            println!(
+                "        minds: learned {:.1} surprise {:.3} value {:.2} places {:.1} known {:.1} wary {:.2} | fear {:.2} curious {:.2} lonely {:.2} tired {:.2} shelter {:.2}",
+                mean(&|c| c.brain.learned()),
+                mean(&|c| c.brain.surprise),
+                mean(&|c| c.brain.value),
+                mean(&|c| c.mind.places.len() as f32),
+                mean(&|c| c.mind.known.len() as f32),
+                mean(&|c| c.mind.wary.iter().map(|&v| v.max(0) as f32 / 127.0).sum::<f32>()),
+                mean(&|c| c.mind.mood.fear),
+                mean(&|c| c.mind.mood.curious),
+                mean(&|c| c.mind.mood.lonely),
+                mean(&|c| c.mind.mood.tired),
+                mean(&|c| c.shelter),
+            );
+            let acts: Vec<String> = acts.iter().map(|(k, v)| format!("{k} {v}")).collect();
+            println!("        acts: {}", acts.join(", "));
             if let Some(p) = sim.take_profile() {
                 let total: f64 = p.iter().sum();
                 let parts: Vec<String> = p

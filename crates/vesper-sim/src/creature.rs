@@ -4,7 +4,7 @@ use crate::body::{Body, Phenotype};
 use crate::brain::{Brain, NO};
 use crate::frame::Moment;
 use crate::genome::{Genome, Tissue};
-use crate::history::{CreatureId, DeathCause, GroupId, Life, Locomotion, SpeciesId};
+use crate::history::{CreatureId, DeathCause, GroupId, Life, Locomotion, MindSketch, SpeciesId};
 use crate::mind::Mind;
 use crate::physics::Rig;
 use crate::plant::Seed;
@@ -29,6 +29,14 @@ pub enum Action {
     Laying,
     /// Caught in a trap plant, or being eaten alive.
     Held,
+    /// Settled down: living cheaply, and letting what it learned sink in.
+    Resting,
+    /// A threat display: rearing up, gaping and bristling at a rival.
+    Displaying,
+    /// A young one's mock fight with another, which does no harm.
+    Playing,
+    /// Staying by the body of one it knew.
+    Mourning,
 }
 
 /// What a body can do right now, in world units.
@@ -133,6 +141,9 @@ pub struct Creature {
     pub seed_timer: f32,
     /// Reward gathered since the brain last learned.
     pub reward: f32,
+    /// How covered it is from the weather, 0 exposed .. 1 fully: under
+    /// plants, or huddled with others.
+    pub shelter: f32,
     /// Energy gained recently, smoothed, for remembering good feeding grounds.
     pub intake: f32,
     /// Who or what it's interacting with, for the renderer.
@@ -220,6 +231,17 @@ impl Creature {
             x: self.pos[0],
             kindness: self.tally.kindness,
             scars: self.tally.scars,
+            mind: Some(MindSketch {
+                curiosity: self.genome.curiosity,
+                boldness: self.genome.boldness,
+                sociality: self.genome.sociality,
+                known: self.mind.known.len() as u32,
+                friends: self.mind.known.iter().filter(|a| a.bond > 0.3).count() as u32,
+                foes: self.mind.known.iter().filter(|a| a.bond < -0.3).count() as u32,
+                places: self.mind.places.len() as u32,
+                fears: (0..crate::mind::TASTE_BINS).filter(|&b| self.mind.wary(b) > 0.3).count() as u32,
+                learned: (self.brain.learned() / 200.0).min(1.0),
+            }),
         }
     }
 

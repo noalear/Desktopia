@@ -4,7 +4,9 @@
 //! wind up and lunge, the threatened rear up, gape and bristle, the bitten
 //! flinch, givers heave food up for beggars, partners press and rock
 //! together, layers squat and strain, the sick shiver and retch, the trapped
-//! thrash, and the dead spasm before they go slack.
+//! thrash, resting bodies settle low and breathe slow, the young romp in
+//! mock fights, mourners stand bowed over the dead, and the dead spasm
+//! before they go slack.
 //!
 //! It runs on the host at render rate and never feeds back into the
 //! simulation. Acts flicker on and off from one sim tick to the next, so each
@@ -39,7 +41,10 @@ const GROOMED: usize = 8;
 const HELD: usize = 9;
 const SICK: usize = 10;
 const WEAK: usize = 11;
-const ACTS: usize = 12;
+const REST: usize = 12;
+const PLAY: usize = 13;
+const MOURN: usize = 14;
+const ACTS: usize = 15;
 
 /// How fast each act eases in and out, per second.
 const RISE: f32 = 7.0;
@@ -70,7 +75,7 @@ impl Acting {
     fn advance(&mut self, dt: f32) {
         for k in 0..ACTS {
             let (g, w) = (self.goal[k], self.w[k]);
-            let rate = if k == SICK || k == WEAK {
+            let rate = if k == SICK || k == WEAK || k == REST || k == MOURN {
                 SLOW
             } else if g > w {
                 RISE
@@ -123,7 +128,10 @@ impl Animator {
             match c.action {
                 Action::Eating => g[EAT] = 1.0,
                 Action::Attacking => g[STRIKE] = 1.0,
-                Action::Guarding => g[GUARD] = 1.0,
+                Action::Guarding | Action::Displaying => g[GUARD] = 1.0,
+                Action::Resting => g[REST] = 1.0,
+                Action::Playing => g[PLAY] = 1.0,
+                Action::Mourning => g[MOURN] = 1.0,
                 Action::Fleeing => g[FLEE] = 1.0,
                 Action::Sharing => g[GIVE] = 1.0,
                 Action::Grooming => g[GROOM] = 1.0,
@@ -167,6 +175,10 @@ impl Animator {
                     o.focus = Some(me);
                 }
                 Action::Grooming => o.goal[GROOMED] = 1.0,
+                Action::Playing => {
+                    o.goal[PLAY] = o.goal[PLAY].max(0.6);
+                    o.focus = o.focus.or(Some(me));
+                }
                 Action::Mating if o.mate.is_none() => {
                     o.mate = Some(0.0);
                     o.partner = Some(me);
@@ -658,7 +670,7 @@ fn act(
     let len = p.len;
     let mate = a.mate.map_or(0.0, |m| clip_env(m, MATE_SECS));
     let lay = a.lay.map_or(0.0, |l| clip_env(l, LAY_SECS));
-    let busy = (w[..SICK].iter().sum::<f32>() + mate + lay + a.hurt).min(1.0);
+    let busy = (w[..SICK].iter().sum::<f32>() + w[REST..].iter().sum::<f32>() + mate + lay + a.hurt).min(1.0);
     let toward = |q: Option<[f32; 2]>, fwd: f32| q.map_or(fwd, |q| if q[0] < 0.0 { -1.0 } else { 1.0 });
     let mut grow = |t: Tissue, k: f32| swell[t.index()] *= k;
 
@@ -844,6 +856,55 @@ fn act(
         p.tail(-0.2 * wk);
         p.legs(0.15 * wk, 0.15 * wk);
         p.shake(0.025 * wk, 6.0, t, salt);
+    }
+
+    // Resting: settled low, legs folded under, fins drawn in, breathing slow and deep.
+    let rs = w[REST];
+    if rs > 0.01 {
+        p.nod(-0.25 * rs);
+        p.legs(0.45 * rs, 0.45 * rs);
+        p.fans(-0.3 * rs);
+        p.spines(-0.2 * rs);
+        p.tail(-0.15 * rs);
+        let slow = (t * TAU * 0.12).sin();
+        grow(Tissue::Gut, 1.0 + 0.08 * rs * slow);
+        grow(Tissue::Store, 1.0 + 0.05 * rs * slow);
+    }
+
+    // Playing: bouncing mock lunges and little hops, mouth half open, tail going.
+    let pl = w[PLAY];
+    if pl > 0.01 {
+        let ph = (t * 1.3).fract();
+        let l = strike(ph);
+        if let Some(f) = focus {
+            p.aim(f, 0.4 * pl);
+        }
+        p.lunge(0.15 * len * l * pl * toward(focus, p.fwd) * p.fwd);
+        p.hop += 0.12 * len * pl * (t * TAU * 1.3).sin().max(0.0).powi(2);
+        p.gape(0.25 * pl * bump(ph, 0.3, 0.6));
+        p.nod(0.15 * pl * (t * TAU * 1.3).sin());
+        for i in 0..p.roles.tail.len() {
+            let s = p.roles.tail[i];
+            p.bend[s] += 0.4 * pl * (t * TAU * 2.5 + i as f32).sin();
+        }
+    }
+
+    // Mourning: still and bowed over the body, fins hanging; now and then
+    // it nudges it, as if to wake it.
+    let mn = w[MOURN];
+    if mn > 0.01 {
+        match focus {
+            Some(f) => p.aim(f, 0.7 * mn),
+            None => p.nod(-0.3 * mn),
+        }
+        p.nod(-0.15 * mn);
+        for i in 0..p.roles.fans.len() {
+            let s = p.roles.fans[i];
+            p.droop(s, 0.3 * mn);
+        }
+        p.tail(-0.25 * mn);
+        let nudge = pulse(t * 0.2);
+        p.lunge(0.04 * len * nudge * mn * toward(focus, p.fwd) * p.fwd);
     }
 
     // Mating: the pair press together and rock, fins quivering, brood swelling.
