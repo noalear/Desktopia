@@ -4,6 +4,7 @@
 use crate::brain::o;
 use crate::creature::{Action, Creature};
 use crate::frame::Moment;
+use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::ground::Ground;
 use crate::history::{Behavior, DeathCause};
@@ -15,6 +16,9 @@ use crate::world::{
     ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, Env, TICK, World, col_of, dist3, pair_mut, wrap_angle,
 };
 use vesper_terrain::WORLD_W;
+
+/// Above this a creature will mate when it can, even if it also breeds alone.
+const FACULTATIVE: f32 = 0.25;
 
 fn unit(from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -299,17 +303,23 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
             continue;
         }
 
-        // Mating.
+        // Mating. Obligate breeders (sexual above 0.5) must mate; between
+        // 0.25 and 0.5 a creature buds alone but mates when it meets a willing
+        // partner, as aphids and water fleas do.
         if out[o::MATE] > 0.3
             && let Some(j) = other
-            && w.creatures[ci].genome.sexual > 0.5
+            && w.creatures[ci].genome.sexual > FACULTATIVE
             && w.creatures[j].brain.out[o::MATE] > 0.3
         {
             let (a, b) = (&w.creatures[ci], &w.creatures[j]);
+            // Each judges the other by looks, and by scent for immune genes
+            // unlike (or like) its own. Nothing but taste keeps species apart.
             let accept = |x: &Creature, y: &Creature| {
-                Genome::look_distance(&x.genome.mate_pref, &y.genome.look) < 1.0 - x.genome.choosiness * 0.85
+                let looks = Genome::look_distance(&x.genome.mate_pref, &y.genome.look);
+                let scent = (genetics::immune_likeness(&x.genome, &y.genome) - 0.5) * x.genome.mhc_pref * 0.3;
+                looks + scent < 1.0 - x.genome.choosiness * 0.85
             };
-            if a.ready() && b.ready() && a.species == b.species && accept(a, b) && accept(b, a) {
+            if a.ready() && b.ready() && b.genome.sexual > FACULTATIVE && accept(a, b) && accept(b, a) {
                 let (mother, father) = if a.energy >= b.energy { (ci, j) } else { (j, ci) };
                 life::breed(w, mother, Some(father));
                 w.creatures[ci].action = Action::Mating;
@@ -317,10 +327,17 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
             }
         }
 
-        // Breeding alone.
-        if out[o::LAY] > 0.3 && w.creatures[ci].genome.sexual <= 0.5 && w.creatures[ci].ready() {
-            life::breed(w, ci, None);
-            w.creatures[ci].action = Action::Laying;
+        // Breeding alone, or for a mating kind with no mate about, now and
+        // then fertilising its own eggs.
+        if out[o::LAY] > 0.3 && w.creatures[ci].ready() {
+            let g = &w.creatures[ci].genome;
+            if g.sexual <= 0.5 {
+                life::breed(w, ci, None);
+                w.creatures[ci].action = Action::Laying;
+            } else if w.rng.chance(g.selfing * 0.01) {
+                life::breed(w, ci, Some(ci));
+                w.creatures[ci].action = Action::Laying;
+            }
         }
         if w.creatures[ci].doom.is_some() {
             continue;

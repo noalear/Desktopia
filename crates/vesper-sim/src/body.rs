@@ -39,6 +39,8 @@ pub struct Segment {
     pub amp: f32,
     pub phase: f32,
     pub lift: f32,
+    /// Tip thickness over base thickness.
+    pub taper: f32,
 }
 
 impl Segment {
@@ -124,6 +126,7 @@ fn grow(
         amp: motor.amp,
         phase: (parent_phase + motor.phase + if split { motor.pair } else { 0.0 }).rem_euclid(1.0),
         lift: motor.lift,
+        taper: p.taper,
     });
     counts[part] += 1;
     let last = counts[part] > p.recursion;

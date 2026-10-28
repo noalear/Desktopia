@@ -182,6 +182,10 @@ pub enum Behavior {
     /// Sterile helpers raising a single breeder's young.
     Eusociality,
     SexualReproduction,
+    /// A hermaphrodite fertilising its own eggs.
+    Selfing,
+    /// Young born to parents of two different species.
+    Hybridization,
     /// A seasonal route shared by a group and learned by its young.
     Migration,
     /// A habit learned from elders that outlived the one who found it.

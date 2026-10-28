@@ -94,6 +94,10 @@ fn main() {
                 "        births {} deaths {} (kills {} starved {} aged {} disease {} exposure {}) plants +{} -{}",
                 c.births, c.deaths, c.kills, c.starved, c.aged, c.disease, c.exposure, c.plant_births, c.plant_deaths
             );
+            println!("        miscarried {} hybrids {}", c.miscarried, c.hybrids);
+            if std::env::var_os("GENES").is_some() {
+                genes(w);
+            }
             if let Some(p) = sim.take_profile() {
                 let total: f64 = p.iter().sum();
                 let parts: Vec<String> = p
@@ -113,4 +117,47 @@ fn main() {
     }
     let _ = Kingdom::Rooted;
     println!("wall time {:.1}s", start.elapsed().as_secs_f64());
+}
+
+/// Per-species genetics: how varied, how loaded, how far apart.
+fn genes(w: &vesper_sim::world::World) {
+    use vesper_sim::genetics;
+    let mut by: std::collections::BTreeMap<u64, Vec<&vesper_sim::creature::Creature>> = Default::default();
+    for c in &w.creatures {
+        by.entry(c.species.0).or_default().push(c);
+    }
+    for (id, cs) in by {
+        let n = cs.len() as f32;
+        let het = cs.iter().map(|c| genetics::heterozygosity(&c.genome)).sum::<f32>() / n;
+        let (l1, l2) = cs.iter().fold((0, 0), |a, c| {
+            let (x, y) = genetics::load(&c.genome);
+            (a.0 + x, a.1 + y)
+        });
+        let vigor = cs.iter().map(|c| c.genome.vigor).sum::<f32>() / n;
+        let clash = cs.iter().map(|c| genetics::clashes(&c.genome)).sum::<u32>() as f32 / n;
+        let sex = cs.iter().filter(|c| c.genome.sexual > 0.5).count() as f32 / n;
+        let selfing = cs.iter().map(|c| c.genome.selfing).sum::<f32>() / n;
+        let mut gaps = Vec::new();
+        for i in 0..cs.len().min(20) {
+            for j in i + 1..cs.len().min(20) {
+                gaps.push(vesper_sim::species::creature_gap(&cs[i].genome, &cs[j].genome));
+            }
+        }
+        let mean_gap = gaps.iter().sum::<f32>() / gaps.len().max(1) as f32;
+        let max_gap = gaps.iter().copied().fold(0.0, f32::max);
+        let xs: Vec<f32> = cs.iter().map(|c| c.pos[0]).collect();
+        let (lo, hi) = (xs.iter().copied().fold(9.0, f32::min), xs.iter().copied().fold(-9.0, f32::max));
+        let r = w.species.get(vesper_sim::history::SpeciesId(id));
+        println!(
+            "          sp {id:>4} <{:>4}> n {:>3} gen {:>4} seg {:>4.1} | het {het:.2} load {:.1}/{:.2} vigor {vigor:.2} clash {clash:.2} | sex {sex:.2} self {selfing:.2} | gap {mean_gap:.1} max {max_gap:.1} | x {lo:.2}..{hi:.2} diet {:.2} len {:.4}",
+            r.parent.map(|p| p.0).unwrap_or(0),
+            cs.len(),
+            cs.iter().map(|c| c.generation).max().unwrap_or(0),
+            cs.iter().map(|c| c.body.segments.len()).sum::<usize>() as f32 / n,
+            l1 as f32 / n,
+            l2 as f32 / n,
+            cs.iter().map(|c| c.genome.diet).sum::<f32>() / n,
+            cs.iter().map(|c| c.length()).sum::<f32>() / n,
+        );
+    }
 }

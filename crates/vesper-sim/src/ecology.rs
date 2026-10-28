@@ -36,7 +36,7 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
             return false;
         }
     }
-    let species = w.species.classify_plant(g, seed.species, w.time, &mut w.history);
+    let species = seed.species;
     w.species.born(species);
     let id = PlantId(w.id());
     w.plants.push(Plant {

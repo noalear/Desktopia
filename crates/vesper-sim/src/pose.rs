@@ -172,12 +172,7 @@ pub(crate) fn draw(
             continue;
         }
         let r = s.width * 0.5 * scale;
-        let taper = match s.tissue {
-            Tissue::Spine | Tissue::Mouth => 0.25,
-            Tissue::Muscle => 0.7,
-            Tissue::Float => 0.85,
-            _ => 0.8,
-        };
+        let taper = s.taper;
         let sw = sway(s);
         out.segs.push(Seg {
             a: base[i],

@@ -1223,6 +1223,12 @@ impl History {
             Behavior::SexualReproduction => {
                 format!("{} began to court and mate, mixing two lives into each child.", sps(species))
             }
+            Behavior::Selfing => {
+                format!("Finding no mate, {actor} fertilised its own eggs. Its young carry only its own flaws.")
+            }
+            Behavior::Hybridization => {
+                format!("{actor} bred with another species. Few such young live, fewer still can breed.")
+            }
             Behavior::Migration => {
                 format!(
                     "{} moved together across the band to new ground, and their young learned the way.",
@@ -1827,6 +1833,8 @@ fn behavior_word(b: Behavior) -> &'static str {
         Behavior::Matriphagy => "parent eaten by its young",
         Behavior::Eusociality => "colony",
         Behavior::SexualReproduction => "mating",
+        Behavior::Selfing => "self-fertilisation",
+        Behavior::Hybridization => "hybrid",
         Behavior::Migration => "migration",
         Behavior::Tradition => "tradition",
         Behavior::Trapping => "hunting plant",

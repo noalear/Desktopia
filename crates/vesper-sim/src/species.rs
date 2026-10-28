@@ -1,17 +1,30 @@
-//! Species: lineages that have drifted far enough from their ancestors to
-//! count as new, and the record of every one that ever lived.
+//! Species, and the record of every one that ever lived.
+//!
+//! Nothing stops two species from mating; what keeps them apart is what
+//! keeps real species apart: they rarely meet, rarely fancy each other, and
+//! when they do, their hybrids fail. So a species here is not a label handed
+//! out at birth. It is a cluster of genomes that stays a cluster, and the
+//! world checks every minute whether any species has come apart into two.
 
 use crate::body::{Body, Phenotype};
 use crate::creature::abilities;
 use crate::genome::{Genome, Tissue};
 use crate::history::{Fact, Kingdom, Locomotion, Reproduction, SpeciesId, Traits};
 use crate::plant::PlantGenome;
+use crate::genetics;
+use crate::rng::Rng;
+use crate::world::World;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// Genetic distance at which a lineage becomes a new species.
+/// Genetic gap between two clusters of one species at which they count as two.
 pub const SPLIT: f32 = 7.0;
 pub const PLANT_SPLIT: f32 = 5.0;
+/// Members each side of a split needs.
+const MIN_SPLIT: usize = 6;
+/// Weight of the interacting genes' divergence in the gap between two creatures.
+const COMPAT_GAP: f32 = 6.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Rep {
@@ -58,66 +71,20 @@ impl Registry {
     }
 
     pub fn found_creature(&mut self, g: &Arc<Genome>, now: f64, facts: &mut Vec<(f64, Fact)>) -> SpeciesId {
-        self.add(None, Rep::Creature(g.clone()), now, facts)
+        self.add(None, Rep::Creature(Arc::new(g.clone_shallow())), now, facts)
     }
 
     pub fn found_plant(&mut self, g: &Arc<PlantGenome>, now: f64, facts: &mut Vec<(f64, Fact)>) -> SpeciesId {
         self.add(None, Rep::Plant(g.clone()), now, facts)
     }
 
-    /// The species a newborn belongs to: its parent's, a sister species it
-    /// matches, or a brand new one.
-    pub fn classify_creature(
-        &mut self,
-        g: &Arc<Genome>,
-        parent: SpeciesId,
-        now: f64,
-        facts: &mut Vec<(f64, Fact)>,
-    ) -> SpeciesId {
-        let d = match &self.get(parent).rep {
-            Rep::Creature(r) => distance(g, r),
-            Rep::Plant(_) => f32::MAX,
-        };
-        if d < SPLIT {
-            return parent;
-        }
-        // Siblings that split off the same parent recently join the same new species.
-        for r in self.list.iter().rev().take(64) {
-            if r.parent == Some(parent)
-                && r.extinct.is_none()
-                && let Rep::Creature(rg) = &r.rep
-                && distance(g, rg) < SPLIT * 0.6
-            {
-                return r.id;
-            }
-        }
-        self.add(Some(parent), Rep::Creature(g.clone()), now, facts)
-    }
-
-    pub fn classify_plant(
-        &mut self,
-        g: &Arc<PlantGenome>,
-        parent: SpeciesId,
-        now: f64,
-        facts: &mut Vec<(f64, Fact)>,
-    ) -> SpeciesId {
-        let d = match &self.get(parent).rep {
-            Rep::Plant(r) => g.distance(r),
-            Rep::Creature(_) => f32::MAX,
-        };
-        if d < PLANT_SPLIT {
-            return parent;
-        }
-        for r in self.list.iter().rev().take(64) {
-            if r.parent == Some(parent)
-                && r.extinct.is_none()
-                && let Rep::Plant(rg) = &r.rep
-                && g.distance(rg) < PLANT_SPLIT * 0.6
-            {
-                return r.id;
-            }
-        }
-        self.add(Some(parent), Rep::Plant(g.clone()), now, facts)
+    /// Members that now count as a new species.
+    fn moved(&mut self, from: SpeciesId, to: SpeciesId, n: u32) {
+        let f = self.get_mut(from);
+        f.alive = f.alive.saturating_sub(n);
+        let t = self.get_mut(to);
+        t.alive += n;
+        t.ever += n;
     }
 
     pub fn born(&mut self, id: SpeciesId) {
@@ -137,6 +104,120 @@ impl Registry {
         }
         false
     }
+}
+
+/// Looks for species that have come apart into two clusters, and names the
+/// smaller one as a new species. Lineages separated by distance or by habit
+/// drift apart; once they no longer interbreed, nothing pulls them back.
+pub(crate) fn speciate(w: &mut World) {
+    let now = w.time;
+    let mut by: BTreeMap<SpeciesId, Vec<usize>> = BTreeMap::new();
+    for (i, c) in w.creatures.iter().enumerate() {
+        by.entry(c.species).or_default().push(i);
+    }
+    for (s, members) in by {
+        let creatures = &w.creatures;
+        let gap = |a: usize, b: usize| creature_gap(&creatures[a].genome, &creatures[b].genome);
+        let Some((leave, medoids)) = split(&members, gap, SPLIT, &mut w.rng) else { continue };
+        let rep = w.creatures[medoids[1]].genome.clone_shallow();
+        let new = w.species.add(Some(s), Rep::Creature(Arc::new(rep)), now, &mut w.history);
+        for &i in &leave {
+            w.creatures[i].species = new;
+        }
+        let mut moved = leave.len() as u32;
+        // Eggs go with whichever side they take after.
+        let (a, b) = (w.creatures[medoids[0]].genome.clone(), w.creatures[medoids[1]].genome.clone());
+        for e in w.eggs.iter_mut().filter(|e| e.species == s) {
+            if creature_gap(&e.genome, &b) < creature_gap(&e.genome, &a) {
+                e.species = new;
+                moved += 1;
+            }
+        }
+        w.species.moved(s, new, moved);
+    }
+    let mut by: BTreeMap<SpeciesId, Vec<usize>> = BTreeMap::new();
+    for (i, p) in w.plants.iter().enumerate() {
+        by.entry(p.species).or_default().push(i);
+    }
+    for (s, members) in by {
+        let plants = &w.plants;
+        let gap = |a: usize, b: usize| plants[a].genome.distance(&plants[b].genome);
+        let Some((leave, medoids)) = split(&members, gap, PLANT_SPLIT, &mut w.rng) else { continue };
+        let rep = w.plants[medoids[1]].genome.clone();
+        let new = w.species.add(Some(s), Rep::Plant(rep), now, &mut w.history);
+        for &i in &leave {
+            w.plants[i].species = new;
+        }
+        w.species.moved(s, new, leave.len() as u32);
+    }
+}
+
+/// Splits a species' members in two if they fall into two clusters further
+/// apart than `threshold` and well apart compared with their own spread.
+/// Returns the members of the smaller cluster, and the medoid of the one
+/// that stays and of the one that leaves.
+fn split(
+    members: &[usize],
+    gap: impl Fn(usize, usize) -> f32,
+    threshold: f32,
+    rng: &mut Rng,
+) -> Option<(Vec<usize>, [usize; 2])> {
+    if members.len() < MIN_SPLIT * 2 {
+        return None;
+    }
+    let farthest = |from: usize| {
+        members.iter().copied().map(|m| (gap(from, m), m)).max_by(|x, y| x.0.total_cmp(&y.0)).map(|x| x.1).unwrap()
+    };
+    let start = members[rng.below(members.len())];
+    let a = farthest(start);
+    let b = farthest(a);
+    if gap(a, b) < threshold {
+        return None;
+    }
+    let mut medoids = [a, b];
+    let mut sides: [Vec<usize>; 2] = Default::default();
+    for _ in 0..3 {
+        sides = Default::default();
+        for &m in members {
+            let near_b = gap(m, medoids[1]) < gap(m, medoids[0]);
+            sides[near_b as usize].push(m);
+        }
+        if sides.iter().any(|s| s.len() < MIN_SPLIT) {
+            return None;
+        }
+        // The member closest to a sample of its own side.
+        for (k, side) in sides.iter().enumerate() {
+            let sample: Vec<usize> = (0..12).map(|_| side[rng.below(side.len())]).collect();
+            medoids[k] = *side
+                .iter()
+                .take(24)
+                .chain(std::iter::once(&medoids[k]))
+                .min_by(|x, y| {
+                    let sx: f32 = sample.iter().map(|&o| gap(**x, o)).sum();
+                    let sy: f32 = sample.iter().map(|&o| gap(**y, o)).sum();
+                    sx.total_cmp(&sy)
+                })
+                .unwrap();
+        }
+    }
+    let between = gap(medoids[0], medoids[1]);
+    let spread = |k: usize| sides[k].iter().map(|&m| gap(m, medoids[k])).sum::<f32>() / sides[k].len() as f32;
+    let within = spread(0).max(spread(1));
+    if between < threshold || between < within * 2.0 {
+        return None;
+    }
+    // The bigger side keeps the name.
+    if sides[0].len() < sides[1].len() {
+        sides.swap(0, 1);
+        medoids.swap(0, 1);
+    }
+    Some((std::mem::take(&mut sides[1]), medoids))
+}
+
+/// How far apart two creatures are as kinds: in body, life and looks, and
+/// in the interacting genes that decide whether their young would live.
+pub fn creature_gap(a: &Genome, b: &Genome) -> f32 {
+    distance(a, b) + genetics::compat_divergence(a, b) * COMPAT_GAP
 }
 
 /// How far apart two creature genomes are.

@@ -9,7 +9,7 @@ use crate::mind::Mind;
 use crate::plant::{PlantGenome, Seed, Seedling};
 use crate::rng::Rng;
 use crate::society;
-use crate::species::Registry;
+use crate::species::{self, Registry};
 use crate::think::{self, Percept};
 use crate::world::{self, COLS, DEPTH, Env, PLANT_EVERY, ROWS, TICK, World};
 use std::sync::Arc;
@@ -140,7 +140,7 @@ impl Sim {
             let species = w.species.found_creature(&g, 0.0, &mut w.history);
             let voice = [w.rng.below(16) as u8, w.rng.below(16) as u8, w.rng.below(16) as u8, w.rng.below(16) as u8];
             for _ in 0..n {
-                let child = Arc::new(g.bud(&mut w.rng));
+                let child = Arc::new(g.wild(&mut w.rng));
                 let x = w.rng.range(0.9, 2.5);
                 let depth = w.rng.range(0.02, DEPTH - 0.02);
                 let pos = [x, depth, if alt > 0.0 { alt + w.rng.range(0.0, 0.2) } else { 0.0 }];
@@ -260,6 +260,7 @@ impl Sim {
             society::regroup(w);
         }
         if w.tick % 300 == 0 {
+            species::speciate(w);
             let census = society::census(w);
             w.record(Fact::Census(census));
             sweep_strains(w);
@@ -382,7 +383,7 @@ fn renew(w: &mut World) {
         let voice = [0, 1, 2, 3];
         let home = livable(w, &g);
         for _ in 0..20 {
-            let child = Arc::new(g.bud(&mut w.rng));
+            let child = Arc::new(g.wild(&mut w.rng));
             let x = (home + w.rng.normal() * 0.05).clamp(0.05, WORLD_W - 0.05);
             let pos = [x, w.rng.range(0.02, DEPTH - 0.02), 0.0];
             let body = crate::body::Body::develop(&child);

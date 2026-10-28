@@ -239,6 +239,7 @@ impl PlantGenome {
                     amp: 0.0,
                     phase: 0.0,
                     lift: 0.0,
+                    taper: tissue.taper(),
                 });
                 (segs.len() - 1) as i16
             };

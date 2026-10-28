@@ -13,6 +13,7 @@ pub mod body;
 pub mod brain;
 pub mod creature;
 mod ecology;
+pub mod genetics;
 pub mod frame;
 pub mod genome;
 mod grid;
