@@ -498,6 +498,16 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species, portraits:
             bar(ui, "Spines", t.spines, "", color);
             bar(ui, "Poison", t.toxin, "", color);
             bar(ui, "Glow", t.glow, "", color);
+            if t.kingdom == Kingdom::Motile && t.diet < 0.6 {
+                let words = if t.picky > 0.6 {
+                    "one kind of plant"
+                } else if t.picky > 0.3 {
+                    "a few kinds"
+                } else {
+                    "any plant"
+                };
+                bar(ui, "Fussiness", t.picky, words, color);
+            }
             if t.kingdom == Kingdom::Motile {
                 bar(ui, "Sociality", t.sociality, "", color);
                 bar(ui, "Brain", (t.neurons as f32 / 400.0).sqrt(), &format!("{} neurons", t.neurons), color);

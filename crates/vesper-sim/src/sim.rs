@@ -136,7 +136,7 @@ impl Sim {
             (Founder::Crawler, 20, 0.0),
         ];
         for (kind, n, alt) in founders {
-            let g = Arc::new(Genome::founder(kind, &mut w.rng));
+            let g = Arc::new(founder(w, kind));
             let species = w.species.found_creature(&g, 0.0, &mut w.history);
             let voice: [u8; MEANINGS] = std::array::from_fn(|_| w.rng.below(SYMBOLS) as u8);
             for _ in 0..n {
@@ -337,6 +337,17 @@ thread_local! {
 
 /// Somewhere along the band, out of the lava, whose warmth sits well inside
 /// what a genome can stand.
+/// A founding lineage, its gut tuned to one of the plants about.
+fn founder(w: &mut World, kind: Founder) -> Genome {
+    let mut g = Genome::founder(kind, &mut w.rng);
+    if !w.plants.is_empty() {
+        let j = w.rng.below(w.plants.len());
+        let chem = w.plants[j].genome.look[0];
+        g.tune(chem);
+    }
+    g
+}
+
 fn livable(w: &mut World, g: &Genome) -> f32 {
     let mut best = (f32::MIN, WORLD_W * 0.5);
     for _ in 0..40 {
@@ -388,7 +399,7 @@ fn renew(w: &mut World) {
     if w.creatures.len() + w.eggs.len() < 30 && w.rng.chance(0.2) {
         let kinds = [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler];
         let kind = *w.rng.pick(&kinds);
-        let g = Arc::new(Genome::founder(kind, &mut w.rng));
+        let g = Arc::new(founder(w, kind));
         let species = w.species.found_creature(&g, w.time, &mut w.history);
         let voice: [u8; MEANINGS] = std::array::from_fn(|m| m as u8);
         let home = livable(w, &g);
