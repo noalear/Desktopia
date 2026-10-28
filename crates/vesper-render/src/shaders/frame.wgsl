@@ -7,20 +7,40 @@ fn is_mat(m: f32, code: f32) -> bool {
     return abs(m - code) < 0.1;
 }
 
+// Cloud density in the high deck at screen point p, 0..1.
+fn cloud_density(p: vec2f, octaves: i32) -> f32 {
+    let q = vec2f((p.x - P.cloud_drift) * 1.4, p.y * 5.5);
+    let n = fbm(q, octaves) + 0.12 * (fbm(q * 3.3 + 7.0, 3) - 0.5);
+    let band = smoothstep(0.5, 0.62, p.y) * smoothstep(0.98, 0.78, p.y);
+    return smoothstep(0.52, 0.8, n) * band;
+}
+
+// The high cloud deck, lit by the sun from the side: light soaks through
+// the thin edges and dies inside the thick cores, the sunward side of each
+// billow glows and the far side falls into shade.
 fn clouds(p: vec2f, base: vec3f) -> vec3f {
+    let dens = cloud_density(p, 5);
+    if (dens < 0.003) {
+        return base;
+    }
     let t = nightness(p.x);
     let day = daylight(p.x);
-    // High wind carries the cloud deck night-ward.
-    let q = vec2f((p.x - P.cloud_drift) * 1.4, p.y * 5.5);
-    let n = fbm(q, 5);
-    let band = smoothstep(0.5, 0.62, p.y) * smoothstep(0.98, 0.78, p.y);
-    let dens = smoothstep(0.52, 0.78, n) * band;
-    let under = smoothstep(0.9, 0.5, p.y);
-    let lit = vec3f(1.6, 0.55, 0.18) * day * under + vec3f(0.12, 0.05, 0.22) * (1.0 - t) * 0.5;
-    let shadow = band3(vec3f(0.12, 0.03, 0.03), vec3f(0.05, 0.02, 0.08), vec3f(0.004, 0.005, 0.012), t);
+    let to_sun = normalize(sun_pos() - p);
+    let d1 = cloud_density(p + to_sun * 0.012, 3);
+    let d2 = cloud_density(p + to_sun * 0.035, 3);
+    let through = exp(-(d1 * 1.5 + d2 * 1.5 + dens * 0.8));
+    // Forward scattering: edges near the sun's line of sight blaze.
+    let near_sun = exp(-distance(p, sun_pos()) * 2.2);
+    let sun = vec3f(2.4, 0.95, 0.3) * day * (through * (0.8 + 1.3 * near_sun * (1.0 - dens)));
+    // Sky light from above, and the warm glow of the land from below.
+    let ambient = sky_base(vec2f(p.x, 0.95)) * 0.9 + sky_base(vec2f(p.x, 0.35)) * 0.25 * (1.0 - dens);
+    let night_lit = vec3f(0.06, 0.03, 0.12) * (1.0 - t) * 0.5;
+    var cc = sun + ambient + night_lit;
+    cc *= 0.55 + 0.45 * (1.0 - dens);
     // Ash from an eruption dulls the deck and thickens it.
-    let cc = mix(mix(shadow, lit, smoothstep(0.55, 0.85, n)), shadow * 0.6, P.ash * 0.5);
-    return mix(base, cc, min(dens * (0.85 + 0.3 * P.ash), 0.95));
+    cc = mix(cc, vec3f(0.04, 0.03, 0.03), P.ash * 0.5);
+    let alpha = clamp((1.0 - exp(-dens * 3.5)) * (0.9 + 0.3 * P.ash), 0.0, 0.97);
+    return mix(base, cc, alpha);
 }
 
 fn storm(p: vec2f, base: vec3f) -> vec3f {
@@ -157,40 +177,49 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         col = smoke(p, col);
         col = storm(p, col);
         // Snow blowing off the ice wall on the night wind.
-        let above_ice = p.y - near_top(p.x);
-        if (p.x > 3.0 && above_ice < 0.05) {
-            let drift = fbm(vec2f(p.x * 50.0 - P.time * 0.25, p.y * 140.0), 4);
-            col += vec3f(0.25, 0.35, 0.6) * smoothstep(0.55, 0.8, drift) * exp(-above_ice * 70.0)
-                * smoothstep(3.0, 3.2, p.x) * 0.5;
+        if (p.x > 2.95) {
+            let below = textureSampleLevel(baked, samp, uv_of(p - vec2f(0.0, 0.03)), 0.0).a;
+            if (is_mat(below, 0.75)) {
+                let drift = fbm(vec2f(p.x * 50.0 - P.time * 0.25, p.y * 140.0), 4);
+                col += vec3f(0.25, 0.35, 0.6) * smoothstep(0.55, 0.8, drift) * smoothstep(3.0, 3.2, p.x) * 0.25;
+            }
         }
     } else if (is_mat(m, 0.5)) {
-        // Flowing water: ripples travel day-ward, glinting with sun or glow.
-        let flow = vec2f(p.x * 70.0 + P.time * 0.35, (p.y - rv.x) * 400.0);
-        let rip = fbm(flow, 3);
-        let glint = smoothstep(0.62, 0.8, rip);
-        let tint = mix(vec3f(3.0, 1.2, 0.3) * day, vec3f(0.2, 1.2, 1.8), t);
-        col += tint * glint * 0.35 + col * (rip - 0.5) * 0.4;
+        // A rippled mirror. The ripples lie on the water in perspective and
+        // drift day-ward with the current; each pixel reflects whatever of
+        // the land and sky its tilted surface faces, sun glitter included.
+        let w = plain_point(p);
+        let q = vec2f(w.x * 0.8 + P.time * 0.5, w.y * 2.2);
+        let e = 0.08;
+        let h0 = fbm(q, 4);
+        let hx = fbm(q + vec2f(e, 0.0), 4);
+        let hz = fbm(q + vec2f(0.0, e), 4);
+        let calm = 1.0 - 0.6 * smoothstep(0.6, 0.3, p.x); // shallow, slow water in the pan
+        let slope = vec2f(hx - h0, hz - h0) / e * 0.012 * calm;
+        let nrm = normalize(vec3f(-slope.x, 1.0, -slope.y));
+        let rd = view_ray(p);
+        let rr = reflect(rd, nrm);
+        let mp = vec2f(CAM_X + rr.x / rr.z * FOCAL, HORIZON + rr.y / max(rr.z, 0.05) * FOCAL);
+        let refl = textureSampleLevel(baked, samp, uv_of(mp), 0.0);
+        var rc = refl.rgb;
+        if (is_mat(refl.a, 1.0)) {
+            rc = clouds(mp, rc);
+        }
+        let fres = 0.02 + 0.98 * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), 5.0);
+        col = mix(col, rc * 0.85, fres);
+        // Meltwater from the glacier carries a faint living glow at night.
+        col += vec3f(0.05, 0.5, 0.75) * smoothstep(0.6, 0.85, h0) * t * t * 0.12;
     } else if (is_mat(m, 0.25)) {
         // Flows glow as far as the lava has run, brightest at the front,
         // cooling as the eruption dies and crusting over when it is quiet.
-        let below = volcano(p.x) - p.y;
-        let run = max(abs(p.x - VOLCANO_X), below * 0.8);
+        let run = (m - 0.19) / 0.12 * 0.45;
         let reach = smoothstep(P.lava + 0.01, P.lava - 0.025, run) * smoothstep(0.0, 0.03, P.lava);
         let front = exp(-pow((run - P.lava) / 0.012, 2.0)) * reach;
-        let heat = mix(0.03, 1.0, reach * (0.45 + 0.55 * smoothstep(0.0, 0.4, P.volcano))) + front * 0.8;
-        col *= heat * (0.75 + 0.35 * sin(P.time * 0.6 + p.y * 90.0 - p.x * 30.0));
+        let heat = reach * (0.45 + 0.55 * smoothstep(0.0, 0.4, P.volcano)) + front * 0.8;
+        col += vec3f(9.0, 2.2, 0.3) * heat * (0.75 + 0.35 * sin(P.time * 0.6 + p.y * 90.0 - p.x * 30.0));
     } else if (is_mat(m, 0.75)) {
         let n = fbm(vec2f(p.x * 14.0, p.y * 20.0 + P.time * 0.02), 3);
         col *= 0.85 + 0.3 * n;
-        // A few meltwater threads falling from the lowest ledges.
-        let fx = p.x * 90.0;
-        let col_id = floor(fx);
-        let foot = p.y - ground_top(p.x);
-        let fall = step(0.93, hash21(vec2f(col_id, 1.0)))
-            * smoothstep(0.2, 0.0, abs(fract(fx) - 0.5))
-            * smoothstep(0.06, 0.0, foot)
-            * (0.5 + 0.5 * smoothstep(0.3, 1.0, fract(p.y * 60.0 + P.time * 0.8 + hash21(vec2f(col_id, 2.0)))));
-        col += vec3f(0.2, 0.7, 1.1) * fall * 0.35;
     } else if (t > 0.5 && frost(p) < 0.05) {
         // Glow speckles on night-side ground, slowly breathing.
         let gq = p * 160.0;
