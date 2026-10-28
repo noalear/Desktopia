@@ -93,6 +93,21 @@ impl Registry {
         r.ever += 1;
     }
 
+    /// The species a long-buried plant seed sprouts as: its own, or, if that
+    /// died out meanwhile, a new one descended from it.
+    pub(crate) fn sprouting(
+        &mut self,
+        id: SpeciesId,
+        g: &PlantGenome,
+        now: f64,
+        facts: &mut Vec<(f64, Fact)>,
+    ) -> SpeciesId {
+        if self.get(id).extinct.is_none() {
+            return id;
+        }
+        self.add(Some(id), Rep::Plant(Arc::new(g.clone_shallow())), now, facts)
+    }
+
     /// A member died (or an egg failed). Returns true when that was the last.
     pub fn died(&mut self, id: SpeciesId, now: f64, facts: &mut Vec<(f64, Fact)>) -> bool {
         let r = self.get_mut(id);

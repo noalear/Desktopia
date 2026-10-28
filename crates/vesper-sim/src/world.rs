@@ -2,6 +2,7 @@
 //! it, and the order things happen in each tick.
 
 use crate::body::Body;
+use crate::climate::{self, Atmos, Happening};
 use crate::creature::Creature;
 use crate::genome::{Genome, LOOK_GENES};
 use crate::grid::Grid;
@@ -69,11 +70,10 @@ pub fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Env {
     pub band_shift: f32,
+    /// The strongest storm cell now, for anything that wants just one.
     pub storm_x: f32,
-    pub storm_v: f32,
     /// 0..1.
     pub storm: f32,
-    pub storm_goal: f32,
     pub lightning: f32,
     pub lightning_x: f32,
     /// 0..1 how hard the volcano is erupting.
@@ -81,53 +81,139 @@ pub struct Env {
     pub next_eruption: f64,
     /// How far lava has run from the volcano, world units.
     pub lava: f32,
+    /// 0..1 ash over the sky as a whole, for the renderer.
     pub ash: f32,
     pub river: RiverState,
     pub river_v: f32,
     pub river_reported: f32,
+    /// A cold fall spilling off the glacier: its strength and its front.
     pub cold: f32,
     pub cold_x: f32,
+    /// A dust front: its strength, centre and speed (positive night-ward).
     pub dust: f32,
     pub dust_x: f32,
+    pub dust_v: f32,
+    /// The air itself, column by column.
+    pub atmos: Atmos,
 }
 
 impl Env {
+    /// What is falling from the sky here now, rain or snow, 0..1 (a downpour).
     pub fn rain(&self, x: f32) -> f32 {
-        self.storm * (-((x - self.storm_x) / 0.35).powi(2)).exp()
+        climate::sample(&self.atmos.precip, x, 0.0).clamp(0.0, 1.0)
+    }
+
+    /// Snow falling here now, 0..1.
+    pub fn snow_at(&self, x: f32) -> f32 {
+        self.rain(x) * climate::sample(&self.atmos.snowy, x, 0.0)
+    }
+
+    /// Hail falling here now, 0..1.
+    pub fn hail_at(&self, x: f32) -> f32 {
+        climate::sample(&self.atmos.hail, x, 0.0)
+    }
+
+    /// Snow lying on the ground here, 0 bare .. 1 deep.
+    pub fn snow_cover(&self, x: f32) -> f32 {
+        (climate::sample(&self.atmos.snow, x, 0.0) / 0.3).clamp(0.0, 1.0)
+    }
+
+    /// Water in the ground away from the river, 0 parched .. 1 sodden.
+    pub fn moisture(&self, x: f32) -> f32 {
+        climate::sample(&self.atmos.moisture, x, 0.5)
+    }
+
+    /// How close the air near the ground is to saturated, 0..1; fog above 1.
+    pub fn humidity(&self, x: f32) -> f32 {
+        let t = self.air_temperature(x);
+        (climate::sample(&self.atmos.vapour, x, climate::saturation(t) * 0.5) / climate::saturation(t)).clamp(0.0, 1.0)
+            + climate::sample(&self.atmos.fog, x, 0.0).min(0.2) * 5.0
+    }
+
+    /// Fog lying near the ground, 0..1.
+    pub fn fog_at(&self, x: f32) -> f32 {
+        (climate::sample(&self.atmos.fog, x, 0.0) * 12.0).min(1.0)
     }
 
     pub fn dust_at(&self, x: f32) -> f32 {
-        self.dust * (-((x - self.dust_x) / 0.4).powi(2)).exp()
+        let front = self.dust * (-((x - self.dust_x) / 0.4).powi(2)).exp();
+        front.max(climate::sample(&self.atmos.dust, x, 0.0)).min(1.0)
     }
 
+    /// Ash in the air here, 0..1.
+    pub fn ash_at(&self, x: f32) -> f32 {
+        (climate::sample(&self.atmos.ash, x, 0.0) + self.atmos.veil * 0.25).min(1.0)
+    }
+
+    /// Ash falling here now, 0..1.
+    pub fn ashfall_at(&self, x: f32) -> f32 {
+        climate::sample(&self.atmos.ash_rate, x, 0.0).min(1.0)
+    }
+
+    /// How much colder than usual it is here, 0 .. about 1.5: a cold snap.
     pub fn cold_at(&self, x: f32) -> f32 {
-        self.cold * (-((x - self.cold_x) / 0.45).powi(2)).exp()
+        (-climate::sample(&self.atmos.anom, x, 0.0)).max(0.0)
+    }
+
+    /// How hard the wind gusts here: 1 calm, up to about 4 in a gale.
+    pub fn gust(&self, x: f32) -> f32 {
+        climate::sample(&self.atmos.gust, x, 1.0)
+    }
+
+    /// Cloud overhead, 0 clear .. 1 overcast.
+    pub fn cloud_at(&self, x: f32) -> f32 {
+        self.atmos.cover(x)
     }
 
     /// Sunlight at a point, 0..1.
     pub fn light(&self, x: f32, alt: f32) -> f32 {
         let sun = terrain::daylight(x, self.band_shift);
-        let haze = (1.0 - 0.5 * self.rain(x)) * (1.0 - 0.6 * self.ash) * (1.0 - 0.6 * self.dust_at(x));
+        let haze = (1.0 - 0.55 * self.cloud_at(x))
+            * (1.0 - 0.6 * self.ash_at(x))
+            * (1.0 - 0.6 * self.dust_at(x))
+            * (1.0 - 0.3 * self.atmos.veil)
+            * (1.0 - 0.3 * self.fog_at(x) * (1.0 - (alt / 0.1).min(1.0)));
         (sun * haze * (0.85 + 0.15 * (alt / ALT_MAX).min(1.0))).max(0.0)
     }
 
+    /// The air near the ground, before vents, lava and height.
+    fn air_temperature(&self, x: f32) -> f32 {
+        climate::base(x, self.band_shift)
+            + climate::offset(self.atmos.era, self.atmos.veil)
+            + climate::sample(&self.atmos.anom, x, 0.0)
+    }
+
     /// Heat at a point: positive is hot, negative cold; about +1.3 at the day
-    /// edge and -1.3 at the night edge.
+    /// edge and -1.3 at the night edge in usual weather.
     pub fn temperature(&self, x: f32, alt: f32) -> f32 {
-        let base = 1.3 - 2.6 * terrain::nightness(x, self.band_shift);
         let vents = terrain::vent_heat(x) * 0.9 * (1.0 - (alt / 0.15).min(1.0));
         let lava = if self.lava > 0.0 && (x - terrain::VOLCANO_X).abs() < self.lava {
             2.0 * (1.0 - alt * 4.0).max(0.0)
         } else {
             0.0
         };
-        base + vents + lava - self.cold_at(x) - 0.25 * self.rain(x) - alt * 0.5
+        self.air_temperature(x) + vents + lava - alt * 0.5
     }
 
     /// Wind along x at an altitude: day-ward near the ground, night-ward up high.
     pub fn wind(&self, alt: f32) -> f32 {
         let t = (alt / 0.35).clamp(0.0, 1.0);
         (-0.004 + 0.009 * t) * (1.0 + self.storm)
+    }
+
+    /// Wind along x at a point: the steady flow plus gusts thrown out from
+    /// storms, the push of a cold fall and of a dust front.
+    pub fn wind_at(&self, x: f32, alt: f32) -> f32 {
+        let mut u = self.wind(alt);
+        let low = 1.0 - (alt / 0.3).min(1.0);
+        for c in &self.atmos.cells {
+            let d = x - c.x;
+            let s = (-(d / (c.radius * 1.8)).powi(2)).exp();
+            u += d.signum() * 0.007 * c.power * s * (0.4 + 0.6 * low);
+        }
+        u -= 0.006 * self.cold * (-((x - self.cold_x) / 0.12).powi(2)).exp() * low;
+        u += self.dust_v.signum() * 0.005 * self.dust * (-((x - self.dust_x) / 0.35).powi(2)).exp() * low;
+        u
     }
 
     pub fn lava_at(&self, x: f32) -> bool {
@@ -192,6 +278,16 @@ pub struct Egg {
     pub spore: bool,
 }
 
+/// A seed that fell on ground too dry to sprout, and waits for rain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Dormant {
+    pub seed: crate::plant::Seed,
+    pub x: f32,
+    pub depth: f32,
+    pub matter: f32,
+    pub since: f64,
+}
+
 /// A cloud of a strain's spores, left when a parasite bursts out.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Spores {
@@ -237,6 +333,9 @@ pub struct World {
     pub remains: Vec<Remains>,
     pub eggs: Vec<Egg>,
     pub spores: Vec<Spores>,
+    /// Seeds lying dormant in dry ground, waiting for rain.
+    #[serde(default)]
+    pub seedbank: Vec<Dormant>,
     pub strains: Vec<Strain>,
     pub species: Registry,
     pub society: Society,
@@ -365,6 +464,7 @@ impl World {
         m += self.plants.iter().map(|p| (p.matter + p.fruit + p.seeds) as f64).sum::<f64>();
         m += self.remains.iter().map(|r| r.matter as f64).sum::<f64>();
         m += self.eggs.iter().map(|e| e.matter as f64).sum::<f64>();
+        m += self.seedbank.iter().map(|d| d.matter as f64).sum::<f64>();
         m
     }
 
@@ -431,34 +531,51 @@ pub fn wrap_angle(a: f32) -> f32 {
 
 /// Weather, the volcano, the river and the season, stepped once per second.
 pub fn weather(w: &mut World, dt: f32) {
+    w.env.band_shift = terrain::band_shift(w.epoch + w.time);
+    // Open water under each column of air, which feeds it vapour.
+    let water: Vec<f32> = (0..climate::N)
+        .map(|i| {
+            let x = climate::col_x(i);
+            (0..24)
+                .map(|k| {
+                    let d = (k as f32 + 0.5) / 24.0;
+                    if w.ground.in_river(x, d) { 1.0 } else { w.ground.wetness(x, d) * 0.25 }
+                })
+                .sum::<f32>()
+                / 24.0
+        })
+        .collect();
+    let mut happened = Vec::new();
     let rng = &mut w.rng;
     let e = &mut w.env;
-    e.band_shift = terrain::band_shift(w.epoch + w.time);
-
-    // Storms wander the twilight and build and fade over tens of minutes.
-    if rng.chance(dt / 900.0) {
-        e.storm_goal = if rng.chance(0.4) { rng.range(0.5, 1.0) } else { rng.range(0.0, 0.3) };
+    let ground = climate::Ground {
+        water: &water,
+        band_shift: e.band_shift,
+        wind_low: e.wind(0.0),
+        wind_high: e.wind(0.5),
+        eruption: e.eruption,
+        cold: e.cold,
+        cold_x: e.cold_x,
+        dust: e.dust,
+        dust_x: e.dust_x,
+        time: w.time,
+    };
+    climate::step(&mut e.atmos, rng, &ground, dt, &mut happened);
+    let a = &e.atmos;
+    match a.cells.iter().max_by(|p, q| p.power.total_cmp(&q.power)) {
+        Some(c) => {
+            e.storm = c.power.min(1.0);
+            e.storm_x = c.x;
+        }
+        None => e.storm *= (-dt / 60.0).exp(),
     }
-    let was = e.storm;
-    e.storm += (e.storm_goal - e.storm) * (dt / 300.0).min(1.0);
-    e.storm_v += rng.normal() * 0.00005 * dt;
-    e.storm_v = e.storm_v.clamp(-0.003, 0.003);
-    e.storm_x += e.storm_v * dt;
-    if e.storm_x < 0.9 || e.storm_x > 3.1 {
-        e.storm_v = -e.storm_v;
-        e.storm_x = e.storm_x.clamp(0.9, 3.1);
-    }
-    let storm_report = was < 0.7 && e.storm >= 0.7;
     e.lightning *= (-dt * 3.0).exp();
-    let strike = e.storm > 0.55 && rng.chance(dt * 0.03 * e.storm);
-    if strike {
-        e.lightning = 1.0;
-        e.lightning_x = e.storm_x + rng.normal() * 0.2;
-    }
 
-    // Floods follow heavy rain on the night side, where the river is fed.
-    let upstream = e.rain(2.8);
-    e.river.flood += (upstream * 0.8 - e.river.flood) * (dt / 1200.0).min(1.0);
+    // Floods: rain and meltwater running off the twilight and night side
+    // swell the river over the next half hour or so.
+    let swell = (a.runoff * 4.0).min(1.3);
+    let k = if swell > e.river.flood { dt / 900.0 } else { dt / 2400.0 };
+    e.river.flood += (swell - e.river.flood) * k.min(1.0);
     let flood_report = e.river.flood > 0.5 && rng.chance(dt / 3600.0);
     // The river slowly wanders its plain over days.
     e.river_v += rng.normal() * 2e-8 * dt;
@@ -469,32 +586,51 @@ pub fn weather(w: &mut World, dt: f32) {
         e.river_reported = e.river.phase;
     }
 
-    // Cold falls off the glacier and creeps day-ward.
-    if e.cold <= 0.01 && rng.chance(dt / 5400.0) {
+    // Cold falls off the glacier: dense air pooled over the ice under clear
+    // skies spills down and creeps day-ward along the ground. Snow on the
+    // ice and a cold spell make them likelier.
+    let night_x = WORLD_W - 0.2;
+    let chill = (e.cold_at(night_x) + e.snow_cover(night_x) * 0.5) * (1.0 - e.cloud_at(night_x));
+    if e.cold <= 0.01 && rng.chance(dt / 14400.0 * (0.5 + 2.0 * chill)) {
         e.cold = rng.range(0.4, 1.0);
         e.cold_x = 3.3;
         w.history.push((w.time, Fact::Nature { kind: NatureKind::ColdFall, x: 3.3, strength: e.cold }));
     }
     if e.cold > 0.0 {
-        e.cold_x -= 0.0012 * dt;
+        // A gravity current slows as it spreads and warms.
+        e.cold_x -= 0.0012 * dt * (0.5 + 0.5 * e.cold);
         if e.cold_x < 1.2 {
             e.cold *= (-dt / 120.0).exp();
+        } else {
+            e.cold *= (-dt / 5400.0).exp();
         }
         if e.cold < 0.01 {
             e.cold = 0.0;
         }
     }
-    // Dust blows off the scorched day side.
-    if e.dust <= 0.01 && rng.chance(dt / 7200.0) {
-        e.dust = rng.range(0.4, 1.0);
-        e.dust_x = 0.2;
-        w.history.push((w.time, Fact::Nature { kind: NatureKind::DustStorm, x: 0.2, strength: e.dust }));
+    // Dust fronts: blown off the scorched day side, oftener the drier its
+    // ground; or thrown out ahead of a dying storm's cold gusts over dry ground.
+    let parched = 1.0 - (0..climate::N).filter(|&i| climate::col_x(i) < 1.2).map(|i| a.moisture[i]).fold(0.0, f32::max);
+    if e.dust <= 0.01 {
+        let haboob = a.cells.iter().find(|c| c.dying() && c.power > 0.6 && e_moisture(a, c.x) < 0.15);
+        if let Some(c) = haboob.filter(|_| rng.chance(dt / 600.0)) {
+            e.dust = (c.power * 0.9).min(1.0);
+            e.dust_x = c.x;
+            e.dust_v = -0.0018;
+            w.history.push((w.time, Fact::Nature { kind: NatureKind::DustStorm, x: c.x, strength: e.dust }));
+        } else if rng.chance(dt / 21600.0 * (0.3 + 1.2 * parched.powi(3))) {
+            e.dust = rng.range(0.4, 1.0) * (0.6 + 0.4 * parched);
+            e.dust_x = 0.2;
+            e.dust_v = 0.0015;
+            w.history.push((w.time, Fact::Nature { kind: NatureKind::DustStorm, x: 0.2, strength: e.dust }));
+        }
     }
     if e.dust > 0.0 {
-        e.dust_x += 0.0015 * dt;
-        if e.dust_x > 1.8 {
-            e.dust *= (-dt / 120.0).exp();
-        }
+        e.dust_x += e.dust_v * dt;
+        // It dies where the ground is wet enough to hold the dust down.
+        let damp = e_moisture(&e.atmos, e.dust_x);
+        let out = e.dust_x > 1.8 || e.dust_x < 0.1 || damp > 0.5;
+        e.dust *= (-dt / if out { 120.0 } else { 2400.0 }).exp();
         if e.dust < 0.01 {
             e.dust = 0.0;
         }
@@ -503,7 +639,8 @@ pub fn weather(w: &mut World, dt: f32) {
     // The volcano.
     let mut erupted = None;
     if w.time >= e.next_eruption {
-        let strength = rng.range(0.4, 1.0);
+        // Most eruptions are small; now and then one is enormous.
+        let strength = 0.3 + 0.7 * rng.f32().powi(2);
         e.eruption = strength;
         e.next_eruption = w.time + rng.range(3.0, 12.0) as f64 * 3600.0;
         erupted = Some(strength);
@@ -511,7 +648,6 @@ pub fn weather(w: &mut World, dt: f32) {
     if e.eruption > 0.0 {
         let reach = 0.06 + 0.3 * e.eruption;
         e.lava = (e.lava + 0.002 * dt).min(reach);
-        e.ash = (e.ash + e.eruption * 0.004 * dt).min(0.8);
         e.eruption *= (-dt / 900.0).exp();
         if e.eruption < 0.03 {
             e.eruption = 0.0;
@@ -519,11 +655,24 @@ pub fn weather(w: &mut World, dt: f32) {
     } else {
         e.lava = (e.lava - 0.0005 * dt).max(0.0);
     }
-    e.ash *= (-dt / 1800.0).exp();
-    let (storm_x, lightning_x) = (e.storm_x, e.lightning_x);
+    let plume = e.atmos.ash.iter().fold(0.0, |m: f32, &v| m.max(v));
+    e.ash = (plume * 0.8 + e.atmos.veil * 0.6).min(0.9);
 
-    if storm_report {
-        w.nature(NatureKind::Storm, storm_x, 0.7);
+    for h in happened {
+        match h {
+            Happening::Storm { x, power } => w.nature(NatureKind::Storm, x, power.min(1.0)),
+            Happening::Hail { x, power } => w.nature(NatureKind::Hailstorm, x, power.min(1.0)),
+            Happening::Strike { x } => {
+                w.env.lightning = 1.0;
+                w.env.lightning_x = x;
+                w.nature(NatureKind::Lightning, x, 1.0);
+            }
+            Happening::Drought { strength } => w.nature(NatureKind::Drought, 1.8, strength),
+            Happening::DroughtBreaks { x, strength } => w.nature(NatureKind::Rains, x, strength),
+            Happening::Heatwave { strength } => w.nature(NatureKind::Heatwave, 1.6, strength),
+            Happening::Blizzard { x, strength } => w.nature(NatureKind::Blizzard, x, strength),
+            Happening::AshWinter { strength } => w.nature(NatureKind::AshWinter, terrain::VOLCANO_X, strength),
+        }
     }
     if flood_report {
         let f = w.env.river.flood;
@@ -532,22 +681,31 @@ pub fn weather(w: &mut World, dt: f32) {
     if shifted {
         w.nature(NatureKind::RiverShift, 2.0, w.env.river.phase);
     }
-    if strike {
-        w.nature(NatureKind::Lightning, lightning_x, 1.0);
-    }
     if let Some(s) = erupted {
         w.nature(NatureKind::Eruption, terrain::VOLCANO_X, s);
     }
     // Eruptions and vents raise matter from deep in the planet; ash and lava
     // spread it over the ground near the volcano.
-    let lift = (0.00002 + w.env.eruption * 0.0003) * w.deep * dt;
-    if lift > 0.0 {
+    let vents = 0.00002 * w.deep * dt;
+    w.deep -= vents;
+    let n = 12;
+    for k in 0..n {
+        let x = terrain::VOLCANO_X + (k as f32 / (n - 1) as f32 - 0.5) * 0.6;
+        let d = w.rng.range(0.0, DEPTH);
+        w.to_soil(x, d, vents / n as f32);
+    }
+    // Ash carries the deep's minerals wherever it falls, mostly night-ward
+    // of the mountain on the high wind.
+    let falling: f32 = w.env.atmos.ash_rate.iter().sum();
+    if falling > 1e-6 {
+        let lift = (w.env.eruption * 0.0003 * w.deep * dt).max(falling * 1e-4 * w.deep * dt).min(w.deep * 0.01);
         w.deep -= lift;
-        let n = 12;
-        for k in 0..n {
-            let x = terrain::VOLCANO_X + (k as f32 / (n - 1) as f32 - 0.5) * 0.6;
-            let d = w.rng.range(0.0, DEPTH);
-            w.to_soil(x, d, lift / n as f32);
+        for i in 0..climate::N {
+            let share = w.env.atmos.ash_rate[i] / falling;
+            if share > 1e-4 {
+                let d = w.rng.range(0.0, DEPTH);
+                w.to_soil(climate::col_x(i), d, lift * share);
+            }
         }
     }
     // The glacier buries a little matter back into the deep.
@@ -561,6 +719,10 @@ pub fn weather(w: &mut World, dt: f32) {
         }
     }
     w.deep += buried;
+}
+
+fn e_moisture(a: &Atmos, x: f32) -> f32 {
+    climate::sample(&a.moisture, x, 0.5)
 }
 
 /// Soil, air and canopy fields, stepped once per second.

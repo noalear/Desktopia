@@ -109,6 +109,7 @@ pub fn new_creature(
         back: 0.5,
         toil: 0.0,
         climb: 0.0,
+        exposure: Default::default(),
         moments: Vec::new(),
     };
     c.refresh();
@@ -582,7 +583,7 @@ pub fn disease(w: &mut World, dt: f32) {
     let mut s = 0;
     while s < w.spores.len() {
         let sp = w.spores[s].clone();
-        let wind = w.env.wind(sp.pos[2]);
+        let wind = w.env.wind_at(sp.pos[0], sp.pos[2]);
         w.spores[s].pos[0] = (sp.pos[0] + wind * dt).clamp(0.0, WORLD_W);
         w.spores[s].strength *= (-dt / 240.0).exp();
         if w.spores[s].strength < 0.05 {
@@ -689,22 +690,67 @@ pub fn metabolism(w: &mut World, dt: f32) {
         c.pain *= (-dt * 0.5).exp();
         c.mind.fade((-dt * 0.4).exp());
         c.breed_wait -= dt;
-        // Heat and cold.
+        // Weather, worn in over time.
         let (cold, hot) = c.bearable();
-        let stress = if temp > hot {
-            temp - hot
-        } else if temp < cold {
-            temp - cold
+        let x = c.pos[0];
+        let open = 1.0 - c.shelter.clamp(0.0, 1.0);
+        let low = c.pos[2] < 0.05;
+        let in_water = low && w.ground.in_river(x, c.pos[1] / DEPTH);
+        let damp_ground = if low { w.ground.wetness(x, c.pos[1] / DEPTH) } else { 0.0 };
+        let rain = env.rain(x) * open;
+        let gust = env.gust(x);
+        let humid = env.humidity(x).min(1.0);
+        let fog = env.fog_at(x);
+        let c = &mut w.creatures[ci];
+        let ex = &mut c.exposure;
+        ex.soaked += (rain * 0.02 + in_water as u8 as f32 * 0.05) * dt;
+        ex.soaked -= ex.soaked * (0.002 + 0.006 * temp.max(0.0) + 0.002 * (gust - 1.0) * open) * dt;
+        ex.soaked = ex.soaked.clamp(0.0, 1.0);
+        // How warm it feels: sun on its back (dark skins take more of it),
+        // wind and wet stripping the heat away in the cold.
+        let sun = light * 0.25 * open * (1.3 - 0.6 * c.genome.look[1]);
+        let cooling = vesper_terrain::smoothstep(0.6, -0.2, temp);
+        let felt = temp + sun - ((gust - 1.0) * 0.12 * open + ex.soaked * 0.35) * cooling;
+        if felt < cold {
+            // Cover and huddling take the edge off the cold.
+            ex.chill += (cold - felt) * 0.004 * (0.4 + 0.6 * open) * dt;
         } else {
-            0.0
-        };
-        // Cover and huddling take the edge off the cold.
-        let stress = if stress < 0.0 { stress * (1.0 - 0.6 * c.shelter) } else { stress };
-        if stress != 0.0 {
-            c.health -= stress.abs() * 0.025 * dt;
-            c.pain += stress.abs() * 0.1 * dt;
-            c.reward -= stress.abs() * 0.05;
+            ex.chill -= ((felt - cold).min(0.6) * 0.01 + 0.0005) * dt;
         }
+        if felt > hot {
+            ex.heat += (felt - hot) * 0.004 * (1.4 - 0.6 * humid) * dt;
+        } else {
+            ex.heat -= ((hot - felt).min(0.6) * 0.01 + 0.0005) * dt;
+        }
+        // Water: lost faster in heat, dry air and hard work; drunk from wet
+        // ground and the river, from rain, and even from fog.
+        let loss = (0.25 + 0.75 * temp.max(0.0) + ex.heat) * (1.2 - humid) * (1.0 + c.effort * 0.5) / 1500.0;
+        let drink = (damp_ground * 0.04 + in_water as u8 as f32 * 0.06 + rain * 0.02 + fog * 0.004) * dt;
+        ex.thirst += loss * dt - drink;
+        // Ash and dust breathed in, coughed out slowly.
+        let air = (env.dust_at(x) + env.ash_at(x) * 1.3) * (1.0 - 0.6 * c.shelter.clamp(0.0, 1.0));
+        ex.grit += air * 0.003 * (1.0 + c.effort) * dt - 0.0006 * dt;
+        for v in [&mut ex.chill, &mut ex.heat, &mut ex.thirst, &mut ex.grit] {
+            *v = v.clamp(0.0, 1.5);
+        }
+        let ex = *ex;
+        // Shivering, panting and labouring for breath all cost energy.
+        c.energy -= c.abil.upkeep * (ex.chill.min(1.0) + 0.5 * ex.heat.min(1.0) + 0.4 * ex.grit.min(1.0)) * dt;
+        let hail = env.hail_at(x) * open * (1.0 - c.abil.armor);
+        let harms = [
+            (ex.chill - 0.6).max(0.0),
+            (ex.heat - 0.6).max(0.0),
+            (ex.thirst - 0.7).max(0.0) * 0.7,
+            (ex.grit - 0.6).max(0.0) * 0.5,
+        ];
+        let harm: f32 = harms.iter().sum();
+        let stress = match harms.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)) {
+            Some((k, &v)) if v > 0.0 => Some(k),
+            _ => None,
+        };
+        c.health -= harm * 0.012 * dt + hail * 0.004 * dt;
+        c.pain += (harm * 0.15 + hail * 0.3) * dt;
+        c.reward -= (ex.chill + ex.heat + ex.thirst * 0.5 + ex.grit * 0.3 - 0.3).max(0.0) * 0.03 + hail * 0.1;
         // Light film burns in the full sun of the day edge, less in shade.
         if light > 0.85 {
             c.health -= c.pheno.frac(Tissue::LightFilm) * (light - 0.85) * 0.05 * dt * (1.0 - 0.7 * c.shelter);
@@ -743,10 +789,8 @@ pub fn metabolism(w: &mut World, dt: f32) {
         } else if c.wear >= 1.0 {
             Some(DeathCause::Age)
         } else if c.health <= 0.0 {
-            Some(if stress > 0.0 {
-                DeathCause::Heat
-            } else if stress < 0.0 {
-                DeathCause::Cold
+            Some(if let Some(k) = stress {
+                [DeathCause::Cold, DeathCause::Heat, DeathCause::Thirst, DeathCause::Choked][k]
             } else if let Some(s) = c.infections.iter().max_by(|a, b| a.load.total_cmp(&b.load)) {
                 DeathCause::Disease { strain: s.strain }
             } else {
@@ -878,7 +922,7 @@ pub fn eggs(w: &mut World, dt: f32) {
         let e = &mut w.eggs[i];
         e.hatch_in -= dt;
         if e.spore {
-            e.pos[0] = (e.pos[0] + w.env.wind(e.pos[2]) * dt).clamp(0.02, WORLD_W - 0.02);
+            e.pos[0] = (e.pos[0] + w.env.wind_at(e.pos[0], e.pos[2]) * dt).clamp(0.02, WORLD_W - 0.02);
         }
         if e.pos[2] > 0.0 {
             e.pos[2] = (e.pos[2] - 0.004 * dt).max(0.0);

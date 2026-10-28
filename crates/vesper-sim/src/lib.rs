@@ -11,6 +11,7 @@ mod act;
 pub mod animate;
 pub mod body;
 pub mod brain;
+pub mod climate;
 pub mod creature;
 mod ecology;
 pub mod frame;

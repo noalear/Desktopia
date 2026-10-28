@@ -139,6 +139,7 @@ impl Living {
         view.dust_x = e.dust_x;
         view.wind_low = e.wind_low;
         view.wind_high = e.wind_high;
+        view.sky = vesper_render::Sky::from_rows(&e.sky);
         let now = Instant::now();
         let (drift, last) = self.cloud.unwrap_or((view.cloud_drift, now));
         let drift = (drift + e.wind_high * 0.5 * (now - last).as_secs_f32().min(1.0)) % 4096.0;
@@ -174,20 +175,24 @@ impl Living {
     fn add_plant(&mut self, p: &PlantView, ground: [f32; 2], batch: &mut LifeBatch) {
         let height = p.scale * p.body.extent * self.pose.shrink;
         convert(&self.pose, |w| 0.1 * height * w * w, &mut self.segs, &mut self.membranes);
-        batch.add(&Organism {
-            segs: &self.segs,
-            membranes: &self.membranes,
-            look: &Look { genes: p.look },
-            z: self.pose.z,
-            alive: 1.0,
-            signal: p.glow * p.vigor * 0.3,
-            symbol: 0,
-            bleeding: 0.0,
-            infection: None,
-            clip_y: None,
-            ground: Some(ground),
-            seed: p.id as u32,
-        });
+        batch.add_plant(
+            &Organism {
+                segs: &self.segs,
+                membranes: &self.membranes,
+                look: &Look { genes: p.look },
+                z: self.pose.z,
+                alive: 1.0,
+                signal: p.glow * p.vigor * 0.3,
+                symbol: 0,
+                bleeding: 0.0,
+                infection: None,
+                clip_y: None,
+                ground: Some(ground),
+                seed: p.id as u32,
+            },
+            p.alarm,
+            p.dormant,
+        );
     }
 
     /// Fills `batch` with every creature, body, egg and floating mat, blended to now.

@@ -166,10 +166,12 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         let (cold, hot) = c.bearable();
         let t = w.env.temperature(c.pos[0], c.pos[2]);
         let edge = 0.1;
+        // The more the weather has already worn into it, the harder it goes.
+        let ex = c.exposure;
         let flee_heat = if t > hot - edge {
-            ((t - hot + edge) * 6.0).min(2.0)
+            ((t - hot + edge) * 6.0 + ex.heat * 1.5).min(2.5)
         } else if t < cold + edge {
-            -((cold + edge - t) * 6.0).min(2.0)
+            -((cold + edge - t) * 6.0 + ex.chill * 1.5).min(2.5)
         } else {
             0.0
         };
@@ -207,7 +209,12 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         let guarding = out[o::GUARD] > 0.3;
         // Its rhythm run whichever way has carried it further.
         let way = if c.back > c.stride { -1.0 } else { 1.0 };
-        let power = effort * way * (0.5 + 0.5 * c.health) * weary * if guarding { 0.3 } else { 1.0 };
+        // Chilled bodies stiffen and slow; parched or choking ones flag.
+        let torpor = 1.0
+            - 0.5 * c.exposure.chill.min(1.0)
+            - 0.25 * (c.exposure.thirst - 0.5).clamp(0.0, 1.0)
+            - 0.25 * (c.exposure.grit - 0.4).clamp(0.0, 1.0);
+        let power = effort * way * (0.5 + 0.5 * c.health) * weary * torpor * if guarding { 0.3 } else { 1.0 };
         c.drive = [power, (out[o::RISE] + dir[2]).clamp(-1.0, 1.0) * if resting { 0.2 } else { 1.0 }];
         c.effort = effort;
         let v = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1] + c.vel[2] * c.vel[2]).sqrt();
@@ -348,7 +355,7 @@ fn coarse(w: &mut World) {
 fn carry(rig: &mut Rig, pos: &mut [f32; 3], heading: &f32, drive: Drive, env: &Env, ground: &Ground) -> f32 {
     let (s, c) = heading.sin_cos();
     let wet = pos[2] < 0.01 && ground.in_river(pos[0], pos[1] / DEPTH);
-    let mut flow = env.wind(pos[2]);
+    let mut flow = env.wind_at(pos[0], pos[2]);
     if wet {
         flow -= 0.004 * (1.0 + env.river.flood * 2.0);
     }
@@ -380,6 +387,8 @@ pub fn digest(w: &mut World, ci: usize, m: f32, e_per: f32, eff: f32, bin: usize
     let keep = (m * eff).min(room);
     c.matter += keep;
     c.tally.eaten += m;
+    // Food is mostly water.
+    c.exposure.thirst = (c.exposure.thirst - m * eff / c.abil.body_matter.max(1e-6) * 1.5).max(0.0);
     c.intake += gain / cap;
     let valence = (gain / cap * 4.0 - harm).clamp(-1.0, 1.0);
     c.reward += valence;

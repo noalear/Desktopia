@@ -247,6 +247,13 @@ impl LifeBatch {
     }
 
     pub fn add(&mut self, o: &Organism) {
+        self.add_plant(o, 0.0, 0.0);
+    }
+
+    /// A plant, with how it is faring: `alarm` 0..1, grazed and armed and
+    /// warning its neighbours, flushes it a warning crimson at the edges;
+    /// `dormant` 0..1, shut down through hard times, greys and dulls it.
+    pub fn add_plant(&mut self, o: &Organism, alarm: f32, dormant: f32) {
         if o.segs.is_empty() && o.membranes.is_empty() {
             return;
         }
@@ -258,7 +265,27 @@ impl LifeBatch {
         look.genes[0] = (look.genes[0] + (jitter(1) - 0.5) * 0.05).rem_euclid(1.0);
         look.genes[1] = (look.genes[1] + (jitter(2) - 0.5) * 0.14).clamp(0.0, 1.0);
         look.genes[6] = (look.genes[6] + (jitter(3) - 0.5) * 0.2).clamp(0.0, 1.0);
-        let pal = look.palette();
+        let mut pal = look.palette();
+        let dormant = dormant.clamp(0.0, 1.0);
+        if dormant > 0.0 {
+            let dull = |c: [f32; 3]| {
+                let grey = 0.3 * c[0] + 0.55 * c[1] + 0.15 * c[2];
+                scale3(mix3(c, [grey * 1.1, grey, grey * 0.85], 0.7 * dormant), 1.0 - 0.35 * dormant)
+            };
+            pal.base = dull(pal.base);
+            pal.film = dull(pal.film);
+            pal.accent = dull(pal.accent);
+            pal.translucency *= 1.0 - 0.6 * dormant;
+            pal.freckles *= 1.0 - dormant;
+        }
+        let alarm = alarm.clamp(0.0, 1.0);
+        if alarm > 0.0 {
+            pal.film = mix3(pal.film, [0.45, 0.03, 0.1], 0.55 * alarm);
+            pal.accent = mix3(pal.accent, [0.95, 0.12, 0.28], 0.8 * alarm);
+            pal.contrast = pal.contrast.max(alarm);
+            pal.glow = mix3(pal.glow, [2.4, 0.3, 0.5], alarm);
+            pal.freckles = pal.freckles.max(0.6 * alarm);
+        }
         let seed = (o.seed % 9973) as f32 * 0.137;
         let rmax = o.segs.iter().fold(0.0f32, |m, s| m.max(s.ra).max(s.rb)).max(1e-4);
         let clip = o.clip_y.unwrap_or(-10.0);
