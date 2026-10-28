@@ -238,6 +238,7 @@ impl Sim {
             index_creatures(w);
             probe.at(w, 4);
         }
+        ecology::drift(w, TICK);
         think::think(w, &mut self.percepts);
         probe.at(w, 5);
         act::movement(w, &self.percepts);

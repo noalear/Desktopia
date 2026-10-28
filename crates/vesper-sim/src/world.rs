@@ -39,6 +39,8 @@ pub const BASAL: f32 = 0.06;
 pub const BRAIN_COST: f32 = 0.0006;
 pub const MAX_CREATURES: usize = 150;
 pub const MAX_PLANTS: usize = 2600;
+/// Floating mats among them; each is drawn afresh every frame.
+pub const MAX_MATS: usize = 400;
 /// Ticks between plant updates; plants grow on a one-second step.
 pub const PLANT_EVERY: u64 = 5;
 
