@@ -105,20 +105,25 @@ fn volcano_h(xz: vec2f, octaves: i32) -> f32 {
     return h;
 }
 
+// The ice is designed at the scale of a plain ending 560 m out and scaled
+// up about the eye to sit behind the real one, which keeps its size on screen.
+const ICE_K = BACK_Z / 560.0;
+
 // The ice sheet on the night edge. Its snout ends in a low cliff just
 // behind the plain on the right, and its surface climbs away into the
 // distance as a long, crevassed slope. To the west its margin pulls back
 // and thins into the hills. 0 where there is no ice.
-fn ice_h(xz: vec2f, octaves: i32) -> f32 {
-    let sx = screen_x(xz);
+fn ice_h(world: vec2f, octaves: i32) -> f32 {
+    let sx = screen_x(world);
     let mask = smoothstep(2.5, 3.0, sx);
     if (mask <= 0.0) {
         return 0.0;
     }
+    let xz = world / ICE_K;
     let x_edge = (3.05 - CAM_X) * 560.0 / FOCAL;
     let back = max(x_edge - xz.x, 0.0) * 1.4;
     // The snout wanders, bulging and notched where blocks have calved.
-    let front = 560.0 + back + 45.0 * fbm(vec2f(xz.x * 0.005, 1.3), 3) + 12.0 * fbm(vec2f(xz.x * 0.03, 7.3), 3)
+    let front = back_z(sx) / ICE_K + 6.0 + back + 45.0 * fbm(vec2f(xz.x * 0.005, 1.3), 3) + 12.0 * fbm(vec2f(xz.x * 0.03, 7.3), 3)
         + 3.0 * fbm(vec2f(xz.x * 0.2, 2.0), 2);
     let into = xz.y - front;
     let cliff = smoothstep(-3.0, 3.0, into);
@@ -128,7 +133,7 @@ fn ice_h(xz: vec2f, octaves: i32) -> f32 {
     let slope = up * 0.07 * (1.0 - 0.45 * smoothstep(800.0, 6000.0, up));
     let surface = 22.0 + 8.0 * fbm(vec2f(xz.x * 0.01, 4.2), 3) + slope + 0.02 * up * eroded(xz / 900.0, min(octaves, 5))
         + 3.0 * eroded(xz / 120.0, min(octaves, 4));
-    return mask * cliff * (surface + seracs);
+    return mask * cliff * (surface + seracs) * ICE_K;
 }
 
 fn land_h(xz: vec2f, octaves: i32) -> f32 {
@@ -138,18 +143,19 @@ fn land_h(xz: vec2f, octaves: i32) -> f32 {
 
     // Rolling foothills just past the plain, rising out of a low basin.
     let roll = eroded(u * vec2f(2.4, 1.8) + 11.0, octaves);
-    var h = z * 0.032 * clamp(0.3 + 0.7 * roll, 0.0, 1.2) * smoothstep(540.0, 900.0, z);
+    let edge = back_z(sx);
+    var h = z * 0.032 * clamp(0.3 + 0.7 * roll, 0.0, 1.2) * smoothstep(edge * 1.03, edge * 1.7, z);
 
     // Foothills and mid ranges, a kilometre or two out to the volcano's distance.
     let mid_e = 0.035 + 0.075 * ridged(vec2f(sx * 2.3, 8.1), 3)
         * smoothstep(-0.2, 0.6, eroded(u * vec2f(1.1, 0.9) + 3.0, 3));
     let mid_shape = 0.5 + 0.55 * eroded(u * vec2f(3.2, 2.4) + 7.0, octaves);
     // (Fading from far below zero, so the blend never lifts the land where they are absent.)
-    let mid = mix(-300.0, elev_h(mid_e * mid_shape, z), smoothstep(1200.0, 4500.0, z));
+    let mid = mix(-300.0, elev_h(mid_e * mid_shape, z), smoothstep(2200.0, 5500.0, z));
     h = smax(h, mid, 30.0);
 
     // Day-side mesas: soft rock eroded into flat-topped buttes and terraces.
-    let mesa_zone = smoothstep(1.1, 0.6, sx) * smoothstep(1500.0, 3500.0, z);
+    let mesa_zone = smoothstep(1.1, 0.6, sx) * smoothstep(2300.0, 4300.0, z);
     if (mesa_zone > 0.0) {
         let tier = z * 0.018;
         let k = h / tier;
@@ -289,7 +295,7 @@ fn shade_land(p: vec2f, ro: vec3f, rd: vec3f, t: f32) -> vec4f {
 
     var mat = M_ROCK;
     if (on_ice) {
-        col = shade_ice(p, pos, n, sun * dif * shadow, night);
+        col = shade_ice(p, pos / ICE_K, n, sun * dif * shadow, night);
         mat = M_ICE;
     } else if (on_volcano) {
         // Lava channels follow the gullies down from the crater.
@@ -576,7 +582,7 @@ fn ground(p: vec2f, gt: f32) -> vec4f {
     // A little of the air between here and the eye.
     col = mix(col, haze_color(vec2f(p.x, HORIZON)), clamp(z / 9000.0, 0.0, 0.2));
     // The nearest ground falls a little into shadow.
-    col *= 0.6 + 0.4 * smoothstep(0.0, gt * 0.6, p.y);
+    col *= 0.6 + 0.4 * smoothstep(0.0, 0.1, p.y);
     return vec4f(col, M_ROCK);
 }
 

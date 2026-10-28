@@ -9,8 +9,8 @@ const STEP: f32 = WORLD_W / (N - 1) as f32;
 
 #[derive(Clone, Debug, Default)]
 pub struct Ground {
-    /// Screen h of the back of the ground plane.
-    top: Vec<f32>,
+    /// Distance in metres to the back of the ground plane.
+    back: Vec<f32>,
     /// River centre and half-width.
     river: Vec<[f32; 2]>,
     /// The river state the table was built for, rounded so that a world
@@ -21,8 +21,8 @@ pub struct Ground {
 impl Ground {
     /// Brings the river up to date; cheap when it hasn't moved.
     pub fn refresh(&mut self, s: RiverState) {
-        if self.top.is_empty() {
-            self.top = (0..N).map(|i| terrain::ground_top(i as f32 * STEP)).collect();
+        if self.back.is_empty() {
+            self.back = (0..N).map(|i| terrain::back_z(i as f32 * STEP)).collect();
         }
         let key = ((s.phase / 2e-4).round() as i32, (s.flood / 2e-3).round() as i32);
         if self.state == Some(key) {
@@ -41,7 +41,7 @@ impl Ground {
     /// Screen h of a point on the ground plane, depth 0..1.
     pub fn floor_h(&self, x: f32, depth: f32) -> f32 {
         let (i, t) = Self::at(x);
-        depth * (self.top[i] + (self.top[i + 1] - self.top[i]) * t)
+        terrain::floor_h_in(self.back[i] + (self.back[i + 1] - self.back[i]) * t, depth)
     }
 
     fn river_at(&self, x: f32) -> [f32; 2] {

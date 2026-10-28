@@ -121,9 +121,38 @@ pub fn sun_pos(band_shift: f32) -> [f32; 2] {
 
 // ---------------------------------------------------------------- land
 
+// The landscape is seen through one pinhole camera CAM_H metres above the
+// plain, looking level, with its horizon at screen h HORIZON. The ground
+// plane life walks on is a real stretch of that plain: depth 0 is the bottom
+// of the screen, NEAR_Z metres out, and depth 1 its back edge about BACK_Z
+// out, with depth linear in metres so life spreads evenly over the ground.
+
+pub const HORIZON: f32 = 0.28;
+pub const FOCAL: f32 = 3.0;
+pub const CAM_H: f32 = 20.0;
+/// Distance in metres to the plain at the bottom of the screen.
+pub const NEAR_Z: f32 = CAM_H * FOCAL / HORIZON;
+/// Typical distance in metres to the back of the ground plane.
+pub const BACK_Z: f32 = 1300.0;
+
+/// Distance in metres to the back edge of the ground plane.
+pub fn back_z(x: f32) -> f32 {
+    BACK_Z * (1.0 + 0.3 * (fbm([x * 4.0, 2.7], 4) - 0.5))
+}
+
+/// Distance in metres to depth 0..1 on the ground plane, given its back edge.
+fn z_at(back: f32, depth: f32) -> f32 {
+    NEAR_Z + (back - NEAR_Z) * depth
+}
+
+/// Screen h of the plain at a distance in metres.
+fn h_at(z: f32) -> f32 {
+    HORIZON - CAM_H * FOCAL / z
+}
+
 /// Top of the foreground ground plane (its back edge) in screen h.
 pub fn ground_top(x: f32) -> f32 {
-    0.165 + 0.02 * (fbm([x * 4.0, 2.7], 4) - 0.5)
+    h_at(back_z(x))
 }
 
 /// Which serac block `x` falls in, and how far across it (0..1). Blocks vary
@@ -198,12 +227,32 @@ pub fn pan_wet(x: f32, h: f32) -> f32 {
 
 /// Depth on the ground plane (0 front .. 1 back) of a screen h on it.
 pub fn depth_of(x: f32, h: f32) -> f32 {
-    (h / ground_top(x)).clamp(0.0, 1.0)
+    depth_in(back_z(x), h)
+}
+
+/// As [`depth_of`], given the back edge's distance.
+pub fn depth_in(back: f32, h: f32) -> f32 {
+    if h >= HORIZON {
+        return 1.0;
+    }
+    let z = CAM_H * FOCAL / (HORIZON - h);
+    ((z - NEAR_Z) / (back - NEAR_Z)).clamp(0.0, 1.0)
 }
 
 /// Screen h of a depth on the ground plane.
 pub fn floor_h(x: f32, depth: f32) -> f32 {
-    depth * ground_top(x)
+    floor_h_in(back_z(x), depth)
+}
+
+/// As [`floor_h`], given the back edge's distance.
+pub fn floor_h_in(back: f32, depth: f32) -> f32 {
+    h_at(z_at(back, depth))
+}
+
+/// How much perspective shrinks something at a depth on the ground plane:
+/// 1 at the bottom of the screen, about a sixth at the back.
+pub fn shrink(x: f32, depth: f32) -> f32 {
+    NEAR_Z / z_at(back_z(x), depth)
 }
 
 /// How wet a spot on the ground plane is: 1 in the river, falling off over its banks.
@@ -237,7 +286,20 @@ mod tests {
         // Values from evaluating the WGSL on the GPU path in f32.
         let h = hash21([0.0, 0.0]);
         assert!((0.0..1.0).contains(&h));
-        assert!((ground_top(1.0) - 0.165).abs() < 0.011);
+        assert!((ground_top(1.0) - 0.234).abs() < 0.02);
+    }
+
+    #[test]
+    fn depth_round_trips_through_the_screen() {
+        for i in 0..50 {
+            let x = i as f32 * 0.07;
+            for d in [0.0, 0.1, 0.37, 0.8, 1.0] {
+                let back = depth_of(x, floor_h(x, d));
+                assert!((back - d).abs() < 1e-3, "x {x} d {d} -> {back}");
+            }
+            assert!(floor_h(x, 0.0).abs() < 1e-4);
+            assert!(shrink(x, 1.0) < 0.25);
+        }
     }
 
     #[test]
