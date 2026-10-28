@@ -35,6 +35,8 @@ pub trait Recorder: Send {
     fn record(&mut self, facts: Vec<(f64, Fact)>);
     /// The world has just been saved with every fact recorded so far.
     fn saved(&mut self);
+    /// A new frame of the world, drawn or not, after its facts were recorded.
+    fn frame(&mut self, _frame: &Frame) {}
 }
 
 #[derive(Default)]
@@ -153,10 +155,13 @@ fn publish(sim: &mut Sim, s: &Shared, recorder: &mut Option<Box<dyn Recorder>>) 
     let frame = Arc::new(Frame::of(sim.world()));
     {
         let mut f = s.frames.lock().unwrap();
-        f.prev = std::mem::replace(&mut f.next, frame);
+        f.prev = std::mem::replace(&mut f.next, frame.clone());
         f.made = Instant::now();
     }
     hand_on(sim, s, recorder);
+    if let Some(r) = recorder {
+        r.frame(&frame);
+    }
 }
 
 /// Passes the latest facts to the recorder, or keeps them for the host.

@@ -4,12 +4,11 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 use vesper_chronicle::likeness::Sketchbook;
-use vesper_chronicle::{Chronicle, Likeness, SpeciesId};
+use vesper_chronicle::Chronicle;
 use vesper_render::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue, WorldView};
-use vesper_sim::frame::{CreatureView, PlantView};
+use vesper_sim::frame::{CreatureView, Frame, PlantView};
 use vesper_sim::history::Fact;
 use vesper_sim::history::Locomotion;
 use vesper_sim::pose::{self, Pose};
@@ -30,8 +29,6 @@ pub struct Living {
     membranes: Vec<Membrane>,
     /// How far the high wind has carried the clouds, and when it was last moved.
     cloud: Option<(f32, Instant)>,
-    /// Draws each species now and then for the chronicle, which keeps the drawings.
-    sketches: Option<(Sketchbook, Sender<(SpeciesId, Likeness)>)>,
     /// Where each floating mat was in the older snapshot, and that snapshot's tick.
     mats_before: (u64, HashMap<u64, [f32; 3]>),
 }
@@ -74,12 +71,8 @@ impl Living {
                 (sim, 0.0)
             }
         };
-        let (tx, rx) = channel();
-        let sketches = chronicle.is_some().then(|| (Sketchbook::default(), tx));
-        let recorder = chronicle.map(|c| Box::new(Chronicler(c, rx)) as Box<dyn Recorder>);
-        let mut living = Self::run(sim, Options { save_path, save_every: SAVE_EVERY, catch_up, on_start, recorder });
-        living.sketches = sketches;
-        living
+        let recorder = chronicle.map(|c| Box::new(Chronicler(c, Sketchbook::default())) as Box<dyn Recorder>);
+        Self::run(sim, Options { save_path, save_every: SAVE_EVERY, catch_up, on_start, recorder })
     }
 
     /// Runs a world already in hand, e.g. one the preview tool fast-forwarded.
@@ -92,7 +85,6 @@ impl Living {
             segs: Vec::new(),
             membranes: Vec::new(),
             cloud: None,
-            sketches: None,
             mats_before: (u64::MAX, HashMap::new()),
         }
     }
@@ -169,12 +161,6 @@ impl Living {
     pub fn creatures(&mut self, batch: &mut LifeBatch) {
         let f = self.runner.frames();
         let t = f.alpha();
-        if let Some((book, tx)) = &mut self.sketches {
-            // Usually nothing: it looks once a minute and draws a species every half hour.
-            for sketch in book.sketch(&f.next) {
-                let _ = tx.send(sketch);
-            }
-        }
         batch.clear();
         if self.mats_before.0 != f.prev.tick {
             let (tick, before) = &mut self.mats_before;
@@ -276,27 +262,24 @@ impl Living {
     }
 }
 
-/// Writes the world's history down for the chronicle window, on the sim
-/// thread, with the drawings of species sent from the drawing side.
-struct Chronicler(Chronicle, Receiver<(SpeciesId, Likeness)>);
-
-impl Chronicler {
-    fn keep_sketches(&mut self) {
-        while let Ok((species, likeness)) = self.1.try_recv() {
-            self.0.record_likeness(species, likeness);
-        }
-    }
-}
+/// Writes the world's history down for the chronicle window, and draws its
+/// species now and then, on the sim thread, whether or not the desktop shows.
+struct Chronicler(Chronicle, Sketchbook);
 
 impl Recorder for Chronicler {
     fn record(&mut self, facts: Vec<(f64, Fact)>) {
         self.0.record_all(facts);
-        self.keep_sketches();
     }
 
     fn saved(&mut self) {
-        self.keep_sketches();
         self.0.checkpoint();
+    }
+
+    fn frame(&mut self, frame: &Frame) {
+        // Usually nothing: it looks once a minute and draws a species every half hour.
+        for (species, likeness) in self.1.sketch(frame, self.0.history()) {
+            self.0.record_likeness(species, likeness);
+        }
     }
 }
 
