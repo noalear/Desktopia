@@ -409,6 +409,8 @@ impl Brain {
         let sigma = rule.explore * tone.explore;
         for o in 0..NO {
             let n = self.gauss();
+            // Violence is tried more warily than anything else.
+            let sigma = if o == self::o::ATTACK { sigma * 0.3 } else { sigma };
             self.wander[o] = self.wander[o] * 0.9 + n * sigma * 0.436;
             self.out[o] = fast_tanh(acc_o[o] + self.wander[o]);
         }
@@ -574,7 +576,7 @@ pub fn seed_reflexes(b: &mut BrainGenes) {
     set(i::OTHER_TASTE, o::ATTACK, 0.8);
     // Join a fight a friend is in.
     set(i::QUARRY, o::ATTACK, 0.7);
-    set(i::ALLY_HURT, o::ATTACK, 0.5);
+    set(i::ALLY_HURT, o::ATTACK, 0.3);
     // Fear runs from danger, and towards company.
     set(i::FEAR, o::FLEE, 0.6);
     set(i::PLACE_DANGER, o::FLEE, 0.5);

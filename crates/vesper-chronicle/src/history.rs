@@ -1254,7 +1254,10 @@ impl History {
                 format!("{actor} groomed one it had fought with only moments before. Quarrels can be mended.")
             }
             Behavior::Ritual => {
-                format!("Two {} squared up, and one backed down. Rivals settle it by display now, not blood.", sps(species))
+                format!(
+                    "Two {} squared up, and one backed down. Rivals settle it by display now, not blood.",
+                    sps(species)
+                )
             }
             Behavior::Deterrence => {
                 format!("{actor} reared up at a hunter and the hunter turned away. It will remember that kind.")
@@ -1804,7 +1807,11 @@ fn temperament(m: &MindSketch) -> String {
     let mut s = String::new();
     if !traits.is_empty() {
         let last = traits[traits.len() - 1];
-        let list = if traits.len() == 1 { last.to_string() } else { format!("{} and {last}", traits[..traits.len() - 1].join(", ")) };
+        let list = if traits.len() == 1 {
+            last.to_string()
+        } else {
+            format!("{} and {last}", traits[..traits.len() - 1].join(", "))
+        };
         s.push_str(&format!("By nature it was {list}. "));
     }
     let mut knew = Vec::new();

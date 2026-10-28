@@ -98,9 +98,8 @@ fn main() {
             for c in &w.creatures {
                 *acts.entry(format!("{:?}", c.action)).or_default() += 1;
             }
-            let mean = |f: &dyn Fn(&vesper_sim::creature::Creature) -> f32| {
-                w.creatures.iter().map(|c| f(c)).sum::<f32>() / n
-            };
+            let mean =
+                |f: &dyn Fn(&vesper_sim::creature::Creature) -> f32| w.creatures.iter().map(|c| f(c)).sum::<f32>() / n;
             println!(
                 "        minds: learned {:.1} surprise {:.3} value {:.2} places {:.1} known {:.1} wary {:.2} | fear {:.2} curious {:.2} lonely {:.2} tired {:.2} shelter {:.2}",
                 mean(&|c| c.brain.learned()),

@@ -222,7 +222,9 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         att.health -= hurt * 0.3;
         att.pain += hurt;
         let eff = 0.1 + 0.9 * att_diet;
-        digest_meat(w, ai, eaten, eff, bin, toxin * 1.5);
+        // Its own kind's flesh sits badly: a taste most learn to shun.
+        let kin_meat = if att_species == def_species { 0.4 } else { 0.0 };
+        digest_meat(w, ai, eaten, eff, bin, toxin * 1.5 + kin_meat);
     }
     if let Some((sub, m, body, scale, look, chunk_rig)) = chunk {
         let id = w.id();
@@ -858,7 +860,14 @@ pub fn eggs(w: &mut World, dt: f32) {
             let id = CreatureId(w.id());
             let mut mind = Mind::hatch(e.voice, e.home, e.route_from, &e.wary, &e.places);
             if let Some(m) = e.mother {
-                mind.known.push(mind::Acquaintance { id: m, bond: 0.6, kin: true, seen: now, trust: 0.8, fought: -1.0 });
+                mind.known.push(mind::Acquaintance {
+                    id: m,
+                    bond: 0.6,
+                    kin: true,
+                    seen: now,
+                    trust: 0.8,
+                    fought: -1.0,
+                });
             }
             let heading = w.rng.signed() * std::f32::consts::PI;
             let c = new_creature(

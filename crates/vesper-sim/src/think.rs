@@ -5,7 +5,7 @@ use crate::brain::{NI, Tone, i, o};
 use crate::creature::Action;
 use crate::genome::{Genome, Tissue};
 use crate::history::CreatureId;
-use crate::mind::{self, creature_bin, plant_bin};
+use crate::mind::{self, PlaceKind, creature_bin, plant_bin};
 use crate::world::{ALT_MAX, TICK, World, col_of, dist2, dist3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -189,7 +189,8 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             {
                 if friend_of_mine(t) && !is_ally {
                     ally_hurt = ally_hurt.max(close);
-                    if close + 0.5 > quarry_score {
+                    // Its own kind it only holds off; against another kind, it fights.
+                    if close + 0.5 > quarry_score && o.species != me.species {
                         quarry_score = close + 0.5;
                         p.quarry = Some(j);
                     }
@@ -197,6 +198,8 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                     && !friend_of_mine(t)
                     && let Some(tj) = w.find(t)
                     && close > quarry_score
+                    // Joining in on its own kind only against a known foe.
+                    && (w.creatures[tj].species != c.species || c.mind.bond(t) < 0.0)
                 {
                     quarry_score = close;
                     p.quarry = Some(tj);
@@ -481,6 +484,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         if explore_new {
             c.brain.settle(TICK * 5.0, resting);
             c.mind.visit(c.pos[0]);
+            // Good cover found when it was needed is worth coming back to.
+            if sheltered > 0.5 && (storm > 0.2 || resting) {
+                let (x, d) = (c.pos[0], c.pos[1]);
+                c.mind.remember(PlaceKind::Shelter, x, d, sheltered, now, false);
+            }
         }
         if (tick + ci as u64) % 50 == 0 {
             c.mind.forget(TICK * 50.0);

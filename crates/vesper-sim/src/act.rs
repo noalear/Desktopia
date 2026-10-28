@@ -142,6 +142,7 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         if let Some(g) = c.mind.grief
             && g.until > now
             && p.threat_level < 0.3
+            && c.energy > 0.35 * c.abil.energy_cap
         {
             let d = dist3(c.pos, g.pos);
             if d > c.length() * 1.5 {
@@ -380,8 +381,20 @@ pub fn digest(w: &mut World, ci: usize, m: f32, e_per: f32, eff: f32, bin: usize
     c.reward += valence;
     c.last_meal = Some((bin as u8, valence, w.time));
     c.mind.learn_taste(bin, valence, 0.2);
-    let pos = c.pos;
+    if valence > 0.03 {
+        let (x, d, now) = (c.pos[0], c.pos[1], w.time);
+        c.mind.remember(PlaceKind::Food, x, d, (valence * 4.0).clamp(0.2, 1.0), now, false);
+    }
+    // A food its parent showed it, now found and eaten on its own.
+    let taught = c.mind.taught == Some(bin as u8) && valence > 0.0;
+    if c.mind.taught == Some(bin as u8) {
+        c.mind.taught = None;
+    }
+    let (pos, sp, parent) = (c.pos, c.species, c.parent);
     w.shed(pos, m - keep);
+    if taught {
+        w.first(Behavior::Teaching, sp, parent);
+    }
 }
 
 pub fn actions(w: &mut World, percepts: &[Percept]) {
@@ -673,7 +686,9 @@ fn joined(w: &mut World, ci: usize, q: usize) {
     let together = w
         .creatures
         .iter()
-        .filter(|o| o.id != c.id && o.species == c.species && o.action == Action::Attacking && o.target == Some(quarry.id))
+        .filter(|o| {
+            o.id != c.id && o.species == c.species && o.action == Action::Attacking && o.target == Some(quarry.id)
+        })
         .count();
     if together == 0 || quarry.species == c.species {
         return;
@@ -1044,7 +1059,7 @@ pub fn bereave(w: &mut World, dead: &Creature, cause: DeathCause) {
             continue;
         }
         let known = l.mind.find(dead.id).map(|a| (a.bond, a.kin));
-        let close = known.is_some_and(|(b, kin)| b > 0.3 || kin);
+        let close = known.is_some_and(|(b, kin)| b > 0.3 || (kin && b > 0.1));
         let same = l.species == dead.species;
         if violent && (same || close) && Some(l.id) != killer {
             let near = 1.0 - d / l.abil.sense;
@@ -1060,7 +1075,7 @@ pub fn bereave(w: &mut World, dead: &Creature, cause: DeathCause) {
         }
         if close && body_left {
             let bond = known.map_or(0.0, |(b, _)| b.max(0.3));
-            l.mind.grief = Some(Grief { who: dead.id, pos, until: now + 30.0 + 90.0 * bond as f64 });
+            l.mind.grief = Some(Grief { who: dead.id, pos, until: now + 20.0 + 60.0 * bond as f64 });
             l.reward -= 0.5 * bond;
         }
     }
@@ -1109,8 +1124,7 @@ mod tests {
         w.creatures[b].mind.feel(aid, 0.8, true, now);
         let bin = creature_bin(&w.creatures[k].genome.look, w.creatures[k].length());
         let bid = w.creatures[b].id;
-        w.creatures[a].doom =
-            Some(DeathCause::Predation { killer: kid, killer_species: w.creatures[k].species });
+        w.creatures[a].doom = Some(DeathCause::Predation { killer: kid, killer_species: w.creatures[k].species });
         life::bury(w);
         let b = w.creatures.iter().find(|c| c.id == bid).unwrap();
         assert!(b.mind.wary(bin) > 0.1, "wary {}", b.mind.wary(bin));
