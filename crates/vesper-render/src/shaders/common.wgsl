@@ -138,47 +138,46 @@ fn ground_top(x: f32) -> f32 {
     return 0.165 + 0.02 * (fbm(vec2f(x * 4.0, 2.7), 4) - 0.5);
 }
 
-// Near hills just behind the ground plane. The glacier rises on the night edge.
-fn near_top(x: f32) -> f32 {
-    // Rolling foothills that sometimes sink below the plain's back edge, so
-    // the layers behind show through instead of stacking into flat bands.
-    let roll = fbm(vec2f(x * 1.7, 5.3), 4);
-    let hills = 0.2 + 0.13 * (roll - 0.45) + 0.03 * (fbm(vec2f(x * 6.0, 2.1), 4) - 0.5)
-        + 0.015 * (ridged(vec2f(x * 9.0, 2.0), 3) - 0.3);
-    return hills + glacier_lift(x);
+// ---------------------------------------------------------------- camera
+
+// Everything behind the plain is a real landscape seen through one pinhole
+// camera, CAM_H metres above the plain, looking level across the band. Its
+// optical centre is the middle of the span, so the two monitors share one
+// perspective. World positions behind the plain are metres: x across the
+// band (0 under the centre), y up from the plain, z away from the eye.
+const CAM_X = 1.7777778;
+const HORIZON = 0.28;
+const FOCAL = 3.0;
+const CAM_H = 20.0;
+
+fn view_ray(p: vec2f) -> vec3f {
+    return normalize(vec3f(p.x - CAM_X, p.y - HORIZON, FOCAL));
 }
 
-// The ice wall: a broad rise broken into leaning serac blocks of uneven width.
-fn glacier_lift(x: f32) -> f32 {
-    let rise = smoothstep(3.0, 3.3, x);
-    let b = serac(x);
-    let bevel = smoothstep(0.0, 0.25, b.y) * smoothstep(1.0, 0.75, b.y);
-    let h = hash21(vec2f(b.x, 3.7));
-    let lean = (hash21(vec2f(b.x, 8.1)) - 0.5) * 0.04;
-    let block = (0.03 * h + lean * (b.y - 0.5)) * mix(0.6, 1.0, bevel);
-    return rise * (0.19 + 0.07 * fbm(vec2f(x * 2.5, 1.1), 3) + block + 0.006 * (fbm(vec2f(x * 60.0, 4.0), 3) - 0.5));
+// Distance (z) to the point of the plain under screen point p.
+fn plain_z(h: f32) -> f32 {
+    return CAM_H * FOCAL / max(HORIZON - h, 1e-4);
 }
 
-// Which serac block x falls in, and how far across it (0..1). Blocks vary
-// in width so the wall never reads as a grid.
-fn serac(x: f32) -> vec2f {
-    let w = x / 0.03 + 1.6 * fbm(vec2f(x * 9.0, 6.6), 3);
-    return vec2f(floor(w), fract(w));
+// The plain's surface point (x, z) in metres under screen point p.
+fn plain_point(p: vec2f) -> vec2f {
+    let z = plain_z(p.y);
+    return vec2f((p.x - CAM_X) * z / FOCAL, z);
 }
 
-fn volcano(x: f32) -> f32 {
-    let d = abs(x - VOLCANO_X);
-    var v = VOLCANO_TOP - d * 0.8 - 0.06 * d * d;
-    v += 0.03 * (ridged(vec2f(x * 16.0, 3.3), 4) - 0.35);
-    v -= 0.018 * smoothstep(0.03, 0.0, d); // crater
-    return v;
+// Screen x of a world point.
+fn screen_x(xz: vec2f) -> f32 {
+    return CAM_X + xz.x * FOCAL / max(xz.y, 1.0);
 }
 
-fn mid_top(x: f32) -> f32 {
-    let hills = 0.3 + 0.1 * (ridged(vec2f(x * 2.3, 8.1), 6) - 0.35);
-    return max(hills, volcano(x));
+// Screen uv on this output of a world screen position.
+fn uv_of(p: vec2f) -> vec2f {
+    let px = vec2f(p.x, 1.0 - p.y) * P.world_size.y;
+    return (px - P.view_origin) / P.view_size;
 }
 
+// Skyline of the far ranges, in screen h. The far mountains are shaped so
+// their crests follow it.
 fn far_top(x: f32) -> f32 {
     return 0.36 + 0.15 * (ridged(vec2f(x * 1.6, 13.7), 7) - 0.3);
 }
