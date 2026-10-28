@@ -25,14 +25,14 @@ use crate::rng::{Rng, hash01};
 use std::sync::Arc;
 
 /// Quantitative loci, in chromosome order (see `loci_mut`).
-pub const LOCI: usize = 45;
+pub const LOCI: usize = 46;
 /// Genes that must work with each other.
 pub const COMPAT: usize = 16;
 pub const CHROMOSOMES: usize = 6;
 /// The first locus on each chromosome; chromosome 5 carries the body's part genes.
-const CHROM_START: [usize; CHROMOSOMES] = [0, 9, 15, 21, 41, LOCI];
+const CHROM_START: [usize; CHROMOSOMES] = [0, 9, 16, 22, 42, LOCI];
 /// Loci that are hues, which blend around the colour wheel.
-const CIRCULAR: [usize; 4] = [21, 22, 27, 28];
+const CIRCULAR: [usize; 4] = [22, 23, 28, 29];
 /// Chromosome that carries genes the locus list doesn't know by name.
 const UNLISTED: usize = 2;
 const BODY: usize = 5;
@@ -76,6 +76,7 @@ pub(crate) fn loci(g: &Genome) -> [f32; LOCI] {
         g.toxin,
         g.mutation,
         g.canalization,
+        g.detox,
         g.sexual,
         g.selfing,
         g.choosiness,
@@ -133,6 +134,7 @@ pub(crate) fn loci_mut(g: &mut Genome) -> [&mut f32; LOCI] {
         &mut g.toxin,
         &mut g.mutation,
         &mut g.canalization,
+        &mut g.detox,
         &mut g.sexual,
         &mut g.selfing,
         &mut g.choosiness,
@@ -630,6 +632,12 @@ mod tests {
         let written: Vec<f32> = loci_mut(&mut g).into_iter().map(|v| *v).collect();
         assert_eq!(read.to_vec(), written);
         assert_eq!(CHROM_START[BODY - 1] + 4, LOCI);
+        // The hue loci are the hues.
+        let mut h = g.clone();
+        (h.look[0], h.mate_pref[0], h.look[3], h.mate_pref[3]) = (0.11, 0.22, 0.33, 0.44);
+        let l = loci(&h);
+        assert_eq!(CIRCULAR.map(|i| l[i]), [0.11, 0.22, 0.33, 0.44]);
+        assert_eq!(loci(&g)[CHROM_START[BODY - 1]], g.immune[0]);
     }
 
     #[test]

@@ -295,12 +295,21 @@ pub fn creature_traits(g: &Genome) -> Traits {
         clutch: g.clutch,
         look: [g.look[0], g.look[1], g.look[2], g.look[3]],
         segments: body.segments.len() as u16,
+        diversity: genetics::heterozygosity(g),
+        inbreeding: 1.0 - g.vigor,
+        selfing: if g.sexual <= 0.25 {
+            1.0
+        } else if g.sexual <= 0.5 {
+            0.6
+        } else {
+            g.selfing * 0.2
+        },
     }
 }
 
-/// Expected natural lifespan in seconds.
+/// Expected natural lifespan in seconds: the same clock that ages them.
 pub fn lifespan(g: &Genome) -> f32 {
-    crate::life::LIFESPAN_K * (g.adult_scale / 0.01).powf(0.6) / g.aging.max(0.1) + g.growth_time
+    crate::life::lifespan(g)
 }
 
 pub fn plant_traits(g: &PlantGenome) -> Traits {
@@ -324,5 +333,8 @@ pub fn plant_traits(g: &PlantGenome) -> Traits {
         clutch: 1.0,
         look: [g.look[0], g.look[1], g.look[2], g.look[3]],
         segments: body.segments.len() as u16,
+        diversity: g.heterozygosity(),
+        inbreeding: 1.0 - g.vigor,
+        selfing: g.selfing,
     }
 }

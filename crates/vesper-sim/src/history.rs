@@ -98,6 +98,15 @@ pub struct Traits {
     pub look: [f32; 4],
     /// Number of body segments (creatures) or branches (plants).
     pub segments: u16,
+    /// 0..1 how often its members' two copies of a gene differ: its genetic variety.
+    #[serde(default)]
+    pub diversity: f32,
+    /// 0..1 how much broken genes, exposed by inbreeding, weigh on it.
+    #[serde(default)]
+    pub inbreeding: f32,
+    /// 0..1 how much of its young come from one parent alone, by selfing or budding.
+    #[serde(default)]
+    pub selfing: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

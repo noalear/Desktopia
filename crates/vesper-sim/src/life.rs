@@ -209,7 +209,8 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         def.rank -= 0.02;
     }
     if eaten > 0.0 {
-        // Poison in the flesh.
+        // Poison in the flesh, less what the hunter's body can break down.
+        let toxin = att.genome.felt(toxin);
         let hurt = toxin * eaten * 4.0 / att.matter.max(1e-4);
         att.health -= hurt * 0.3;
         att.pain += hurt;

@@ -516,6 +516,18 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species, portraits:
                 },
                 color,
             );
+            ui.add_space(8.0);
+            section(ui, "Genes");
+            let pick = |v: f32, words: [&'static str; 3]| words[((v * 3.0) as usize).min(2)];
+            bar(ui, "Variety", t.diversity, pick(t.diversity, ["uniform", "varied", "very varied"]), color);
+            bar(ui, "Inbreeding", t.inbreeding * 3.0, pick(t.inbreeding * 3.0, ["sound", "showing", "heavy"]), color);
+            bar(
+                ui,
+                "One parent",
+                t.selfing,
+                pick(t.selfing, ["mostly two parents", "mixed", "mostly one parent"]),
+                color,
+            );
         },
         |ui, nav| {
             let w = ui.available_width();

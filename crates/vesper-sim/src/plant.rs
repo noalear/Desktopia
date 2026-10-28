@@ -239,6 +239,15 @@ impl PlantGenome {
         self.haplotypes.as_ref().map_or(0, |h| genetics::clash_count(&h[0].compat, &h[1].compat))
     }
 
+    /// Fraction of its genes at which its two copies differ, 0..1.
+    pub fn heterozygosity(&self) -> f32 {
+        let Some(h) = &self.haplotypes else { return 0.0 };
+        let (a, b) = (h[0].loci(), h[1].loci());
+        let mut differ = a.iter().zip(&b).filter(|(x, y)| (*x - *y).abs() > 1e-6).count();
+        differ += h[0].compat.iter().zip(&h[1].compat).filter(|(x, y)| x != y).count();
+        differ as f32 / (PLANT_LOCI + COMPAT) as f32
+    }
+
     /// How far apart two plants' interacting genes are, 0 same .. 1 none shared.
     pub fn compat_divergence(&self, o: &Self) -> f32 {
         let (Some(a), Some(b)) = (&self.haplotypes, &o.haplotypes) else { return 0.0 };

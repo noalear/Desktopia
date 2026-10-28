@@ -282,6 +282,9 @@ pub struct Genome {
     /// How closely its body follows its genes, 0 loosely .. 1 exactly. No two
     /// bodies grow quite alike; poorly buffered ones, and inbred ones, vary most.
     pub canalization: f32,
+    /// Poison it can break down, 0..1, at a cost to keep up. Eaters and the
+    /// poisonous things they eat push each other up, round after round.
+    pub detox: f32,
 }
 
 fn w(rng: &mut Rng, spread: f32) -> i8 {
@@ -617,6 +620,7 @@ impl Genome {
             mhc_pref: rng.range(0.0, 0.3),
             selfing: rng.range(0.0, 0.3),
             canalization: rng.range(0.4, 0.8),
+            detox: rng.range(0.0, 0.1),
         };
         for p in g.parts.iter_mut() {
             p.origin = rng.next_u64() as u32;
@@ -732,6 +736,7 @@ impl Genome {
         nudge(&mut self.mhc_pref, 0.05, -1.0, 1.0, rng);
         nudge(&mut self.selfing, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.canalization, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.detox, 0.03, 0.0, 1.0, rng);
         for i in 0..4 {
             if i == 0 || i == 3 {
                 turn(&mut self.mate_pref[i], 0.05, rng);
@@ -854,6 +859,11 @@ impl Genome {
     /// that drift freely until a new link wakes them.
     pub fn grows(&self, i: usize) -> bool {
         i == 0 || self.parts.iter().any(|p| p.links.iter().any(|l| l.to as usize % self.parts.len() == i))
+    }
+
+    /// How much of a dose of poison still harms it.
+    pub fn felt(&self, toxin: f32) -> f32 {
+        (toxin - self.detox * 0.8).max(0.0)
     }
 
     /// How much two genomes share their neutral markers, 0..1.
