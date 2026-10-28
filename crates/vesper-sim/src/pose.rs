@@ -257,7 +257,7 @@ pub fn sample(motion: &[Moment], t: f32) -> Option<Moment> {
 }
 
 /// Lays out a body from its physical pose and emits it.
-fn physical(
+pub(crate) fn physical(
     body: &Body,
     m: &Moment,
     keep: impl Fn(usize, &Segment) -> bool,
@@ -292,17 +292,21 @@ fn physical(
 /// came from, from the physics of its body.
 pub fn creature(c: &CreatureView, t: f32, out: &mut Pose) {
     out.clear();
-    let wounded = 1.0 - c.health;
-    let damage = |i: usize, _: &Segment| {
-        // Stumps where a limb was torn off, and a general toll from wounds.
-        let stump = body_has_lost_child(&c.body, c.lost, i);
-        (wounded * 0.6 + if stump { 0.8 } else { 0.0 } + c.bleeding * 0.3).min(1.0)
-    };
     if let Some(m) = sample(&c.motion, t) {
-        physical(&c.body, &m, |_, _| true, damage, out);
+        physical(&c.body, &m, |_, _| true, wounds(c), out);
         return;
     }
     scripted(c, out);
+}
+
+/// How damaged each segment of a living creature looks.
+pub(crate) fn wounds(c: &CreatureView) -> impl Fn(usize, &Segment) -> f32 + '_ {
+    let wounded = 1.0 - c.health;
+    move |i: usize, _: &Segment| {
+        // Stumps where a limb was torn off, and a general toll from wounds.
+        let stump = body_has_lost_child(&c.body, c.lost, i);
+        (wounded * 0.6 + if stump { 0.8 } else { 0.0 } + c.bleeding * 0.3).min(1.0)
+    }
 }
 
 /// A creature without physics, posed from its gait alone.
@@ -414,7 +418,7 @@ pub fn remains(r: &RemainsView, t: f32, out: &mut Pose) {
 }
 
 /// How far into decay each tissue lasts: soft tissue goes first, then shell and frame.
-fn lasts(t: Tissue) -> f32 {
+pub(crate) fn lasts(t: Tissue) -> f32 {
     match t {
         Tissue::LightFilm | Tissue::Float => 0.3,
         Tissue::Gut | Tissue::Brood | Tissue::Glow | Tissue::Sense => 0.45,

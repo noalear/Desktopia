@@ -3,10 +3,12 @@
 //! societies and their wars, all running headless and cheaply on the CPU.
 //!
 //! The host steps a [`Sim`], reads a [`frame::Frame`] for the renderer each
-//! tick, turns frames into drawable segments with [`pose`], forwards
-//! [`history`] facts to the chronicle, and saves the world with [`save`].
+//! tick, turns frames into drawable segments with [`pose`] and acts out what
+//! each creature is doing with [`animate`], forwards [`history`] facts to the
+//! chronicle, and saves the world with [`save`].
 
 mod act;
+pub mod animate;
 pub mod body;
 pub mod brain;
 pub mod creature;

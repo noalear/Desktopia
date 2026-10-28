@@ -137,6 +137,9 @@ pub struct Creature {
     pub intake: f32,
     /// Who or what it's interacting with, for the renderer.
     pub target: Option<CreatureId>,
+    /// Where the food it is eating is, for the renderer.
+    #[serde(skip)]
+    pub focus: Option<[f32; 3]>,
     /// Set when it dies this tick; the body is laid out at the end of the tick.
     #[serde(skip)]
     pub doom: Option<DeathCause>,

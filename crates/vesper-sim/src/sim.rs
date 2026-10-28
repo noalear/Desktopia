@@ -188,6 +188,11 @@ impl Sim {
         &self.w
     }
 
+    /// For tools that stage a scene, such as the preview's sheet of behaviours.
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.w
+    }
+
     /// Facts reported since the last call, oldest first.
     pub fn drain_history(&mut self) -> Vec<(f64, Fact)> {
         std::mem::take(&mut self.w.history)

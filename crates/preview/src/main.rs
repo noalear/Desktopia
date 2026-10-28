@@ -5,7 +5,7 @@
 //!                [--band SHIFT] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
-//!                [--follow] [--crop X Y W H] [--out DIR]
+//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--out DIR]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
 //! its size, in monitor heights) at full 4K density times `--scale`, for
@@ -14,7 +14,12 @@
 //! `--sim` grows a real simulated world for that many sim minutes and draws
 //! it exactly as the wallpaper does, in place of the stand-in menagerie;
 //! `--follow` then frames the walker with the most limbs, close up.
+//!
+//! `--acts` grows a world for that many sim minutes, then has a few of its
+//! creatures act out every behaviour the animator knows, `--frames` frames
+//! at 15 a second, one sheet per creature (see acts.rs).
 
+mod acts;
 #[path = "../../desktopia/src/living.rs"]
 #[allow(dead_code)]
 mod living;
@@ -42,6 +47,7 @@ struct Args {
     life: bool,
     lineup: bool,
     sim: Option<f64>,
+    acts: Option<f64>,
     crop: Option<[f32; 4]>,
     /// With --sim: frame one walking creature instead of the whole world.
     follow: bool,
@@ -66,6 +72,7 @@ fn parse_args() -> Args {
         life: true,
         lineup: false,
         sim: None,
+        acts: None,
         crop: None,
         follow: false,
         out: "preview-out".into(),
@@ -96,6 +103,7 @@ fn parse_args() -> Args {
             "--no-life" => a.life = false,
             "--lineup" => a.lineup = true,
             "--sim" => a.sim = Some(val().parse().unwrap()),
+            "--acts" => a.acts = Some(val().parse().unwrap()),
             "--follow" => a.follow = true,
             "--crop" => {
                 let mut c = [0.0; 4];
@@ -122,6 +130,9 @@ fn main() {
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut renderer = Renderer::new(device, queue);
 
+    if let Some(minutes) = args.acts {
+        return acts::render(&mut renderer, &args, minutes);
+    }
     if let Some(minutes) = args.sim {
         return render_sim(&mut renderer, &args, minutes);
     }
