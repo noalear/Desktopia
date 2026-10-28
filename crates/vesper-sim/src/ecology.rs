@@ -3,13 +3,40 @@
 
 use crate::history::{Behavior, DeathCause, PlantId};
 use crate::plant::{Plant, Seed};
-use crate::world::{DEPTH, MAX_MATS, MAX_PLANTS, World, col_of, dist3};
+use crate::world::{DEPTH, Dormant, MAX_MATS, MAX_PLANTS, World, col_of, dist3};
+
+/// Seeds lying dormant at most.
+const MAX_DORMANT: usize = 800;
 use std::sync::Arc;
 use vesper_terrain::{self as terrain, WORLD_W};
 
 /// Grows a seed into a seedling, if it lands somewhere it can live. `matter`
 /// is what the seed carries; zero draws a seedling's worth from the soil.
 pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32) -> bool {
+    plant_seed(w, seed, x, depth, alt, matter, false)
+}
+
+/// Seeds lying in dry ground sprout when rain has soaked it, all at once,
+/// greening the land after a drought; those that wait too long rot.
+pub fn seedbank(w: &mut World) {
+    let mut i = 0;
+    while i < w.seedbank.len() {
+        let d = &w.seedbank[i];
+        let water = w.ground.wetness(d.x, d.depth / DEPTH) + w.env.moisture(d.x) * 0.9 + 0.05;
+        let need = d.seed.genome.thirst * 0.8 + 0.1;
+        if water >= need * 0.8 {
+            let d = w.seedbank.swap_remove(i);
+            plant_seed(w, &d.seed, d.x, d.depth, 0.0, d.matter, true);
+        } else if w.time - d.since > 2.0 * 86400.0 {
+            let d = w.seedbank.swap_remove(i);
+            w.to_soil(d.x, d.depth, d.matter);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+fn plant_seed(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32, waking: bool) -> bool {
     let g = &seed.genome;
     let floats = g.floats();
     let x = x.clamp(0.03, WORLD_W - 0.03);
@@ -36,6 +63,14 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
             return false;
         }
     }
+    // On ground too dry for it, a seed lies dormant until rain comes.
+    if !floats && alt < 0.05 && !waking {
+        let water = w.ground.wetness(x, depth / DEPTH) + w.env.moisture(x) * 0.9 + 0.05;
+        if water < (g.thirst * 0.8 + 0.1) * 0.6 && w.seedbank.len() < MAX_DORMANT {
+            w.seedbank.push(Dormant { seed: seed.clone(), x, depth, matter: m, since: w.time });
+            return true;
+        }
+    }
     let species = w.species.classify_plant(g, seed.species, w.time, &mut w.history);
     w.species.born(species);
     let id = PlantId(w.id());
@@ -57,6 +92,10 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
         vigor: 1.0,
         born: w.time,
         generation: seed.generation,
+        wilt: 0.0,
+        frost: 0.0,
+        burn: 0.0,
+        coat: 0.0,
     });
     w.counters.plant_births += 1;
     true
@@ -109,17 +148,21 @@ pub fn drift(w: &mut World, dt: f32) {
         let wander = 0.07 * (p.age * 0.02 + (p.id.0 % 64) as f32).sin();
         let goal = (still + (warm * 0.15).clamp(-0.12, 0.25) + wander).clamp(0.03, 0.45);
         p.alt += (goal - p.alt) * 0.1 * dt;
-        p.x = (p.x + env.wind(p.alt) * dt * 0.8).clamp(0.05, WORLD_W - 0.05);
+        p.x = (p.x + env.wind_at(p.x, p.alt) * dt * 0.8).clamp(0.05, WORLD_W - 0.05);
     }
 }
 
 pub fn plants(w: &mut World, dt: f32) {
+    seedbank(w);
     let env = w.env.clone();
     let mut dead = Vec::new();
     let mut seeds = Vec::new();
     for i in 0..w.plants.len() {
         let col = col_of(w.plants[i].x);
         let canopy = w.canopy.get(col).copied().unwrap_or(0.0);
+        let (px, pd) = (w.plants[i].x, w.plants[i].depth / DEPTH);
+        let wet = w.ground.wetness(px, pd);
+        let flooded = env.river.flood > 0.1 && w.ground.in_river(px, pd);
         let p = &mut w.plants[i];
         let g = p.genome.clone();
         p.age += dt;
@@ -131,24 +174,52 @@ pub fn plants(w: &mut World, dt: f32) {
         if !floats {
             let others = (canopy - leaf).max(0.0) * (1.0 - (height * 3.0).min(0.7));
             light /= 1.0 + others / (0.0005 + leaf * 2.0);
+            // Low plants vanish under lying snow.
+            light *= 1.0 - 0.9 * env.snow_cover(p.x) * terrain::smoothstep(0.03, 0.005, height);
         }
+        // Ash and dust settle on the leaves until rain washes them clean.
+        p.coat += (env.ashfall_at(p.x) * 0.004 + env.dust_at(p.x) * 0.0004) * dt;
+        p.coat -= p.coat * (env.rain(p.x) * 0.01 + 0.0002 * env.gust(p.x)) * dt;
+        p.coat = p.coat.clamp(0.0, 1.0);
+        light *= 1.0 - 0.7 * p.coat;
+        // Water: the river's banks, the ground's own (rain soaked in over the
+        // past hours, gone in a drought), or for mats the damp of the air.
         let water = if floats {
-            0.4 + env.rain(p.x)
+            0.3 + 0.7 * env.humidity(p.x).min(1.0)
         } else {
-            w.ground.wetness(p.x, p.depth / DEPTH) + env.rain(p.x) * 0.8 + 0.15
+            wet + env.moisture(p.x) * 0.9 + 0.05
         };
-        let water_factor = (1.0 + g.thirst * 0.8) * (1.0 - g.thirst * (1.0 - water.min(1.0)));
+        let need = g.thirst * 0.8 + 0.1;
+        let short = ((need - water) / need).clamp(0.0, 1.0);
+        // A plant wilts over hours of drought and recovers faster once watered.
+        p.wilt += (short - p.wilt) * dt / if short > p.wilt { 5400.0 } else { 1200.0 };
+        let water_factor = (1.0 + g.thirst * 0.8) * (1.0 - g.thirst * (1.0 - water.min(1.0))) * (1.0 - 0.8 * p.wilt);
         let temp = env.temperature(p.x, p.alt);
         let hot = 0.4 + g.heat_tolerance;
         let cold = -(0.4 + g.cold_tolerance);
-        let stress = if temp > hot {
-            temp - hot
-        } else if temp < cold {
-            cold - temp
+        // Snow lying over a low plant keeps the worst of the frost off it.
+        let blanket = if floats { 0.0 } else { env.snow_cover(p.x) * terrain::smoothstep(0.04, 0.01, height) };
+        if temp < cold {
+            p.frost += (cold - temp) * 0.004 * (1.0 - 0.8 * blanket) * dt;
         } else {
-            0.0
-        };
-        p.health = (p.health - stress * 0.01 * dt + 0.002 * dt).min(1.0);
+            p.frost -= dt / 3600.0;
+        }
+        if temp > hot {
+            p.burn += (temp - hot) * 0.004 * (1.0 + p.wilt) * dt;
+        } else {
+            p.burn -= dt / 3600.0;
+        }
+        p.frost = p.frost.clamp(0.0, 1.0);
+        p.burn = p.burn.clamp(0.0, 1.0);
+        light *= 1.0 - 0.6 * p.frost.max(p.burn);
+        // Hail shreds leaves; floods drown roots that can't stand them.
+        let drowned = !floats && g.thirst < 0.6 && flooded;
+        let harm = (p.wilt - 0.6).max(0.0) * 0.004
+            + (p.frost - 0.5).max(0.0) * 0.006
+            + (p.burn - 0.5).max(0.0) * 0.006
+            + env.hail_at(p.x) * 0.003
+            + drowned as u8 as f32 * env.river.flood * 0.002;
+        p.health = (p.health - harm * dt + 0.002 * dt).min(1.0);
         let s = p.scale();
         let area: f32 = p.body.segments.iter().map(|q| q.area()).sum::<f32>() * s * s;
         let photo = leaf * light * 60.0 * (1.0 - g.vent);
@@ -176,6 +247,14 @@ pub fn plants(w: &mut World, dt: f32) {
         let pay = upkeep.min(p.matter);
         p.matter -= pay;
         let mut litter = pay;
+        // Gales tear at whatever stands tall, and hail strips leaves.
+        let gust = env.gust(x);
+        if !floats && (gust > 2.2 || env.hail_at(x) > 0.0) {
+            let torn = p.matter * ((gust - 2.2).max(0.0) * height * 0.3 + env.hail_at(x) * 0.002) * dt;
+            let torn = torn.min(p.matter * 0.05);
+            p.matter -= torn;
+            litter += torn;
+        }
         let surplus = (p.matter - p.adult_matter).max(0.0);
         if surplus > 0.0 {
             p.matter -= surplus;
@@ -213,7 +292,7 @@ pub fn plants(w: &mut World, dt: f32) {
         let mut child = (*g).clone();
         child.mutate(&mut w.rng);
         let spread = 0.015 + g.wind * 0.25;
-        let nx = x + w.rng.normal() * spread + env.wind(0.1) * 20.0 * g.wind;
+        let nx = x + w.rng.normal() * spread + env.wind_at(x, 0.1) * 20.0 * g.wind;
         let nd = depth + w.rng.normal() * 0.05;
         let seed = Seed { genome: Arc::new(child), species, generation: generation + 1 };
         sow(w, &seed, nx, nd, alt, m);

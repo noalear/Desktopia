@@ -11,12 +11,14 @@ use std::borrow::Cow;
 pub mod life;
 
 pub use life::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue};
+pub use vesper_terrain::{SKY_CELLS, SKY_COLS, SKY_ROWS};
 
 const COMMON_WGSL: &str = include_str!("shaders/common.wgsl");
 const BAKE_WGSL: &str = include_str!("shaders/bake.wgsl");
 const FRAME_WGSL: &str = include_str!("shaders/frame.wgsl");
 const LIFE_WGSL: &str = include_str!("shaders/life.wgsl");
 const COMPOSITE_WGSL: &str = include_str!("shaders/composite.wgsl");
+const WEATHER_WGSL: &str = include_str!("shaders/weather.wgsl");
 
 const BAKED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -80,6 +82,31 @@ pub struct WorldView {
     /// host integrates `wind_high` into this; it may wrap like `time`.
     pub cloud_drift: f32,
     pub exposure: f32,
+    /// The weather column by column, as the simulation has it.
+    pub sky: Sky,
+}
+
+/// The weather along the band, laid out as [`vesper_terrain::SKY_ROWS`]
+/// describes.
+#[derive(Clone, Copy, Debug)]
+pub struct Sky {
+    pub rows: [[f32; 4]; SKY_ROWS],
+}
+
+impl Default for Sky {
+    fn default() -> Self {
+        Self { rows: [[0.0; 4]; SKY_ROWS] }
+    }
+}
+
+impl Sky {
+    /// Copies rows handed over by the simulation.
+    pub fn from_rows(rows: &[[f32; 4]]) -> Self {
+        let mut s = Self::default();
+        let n = rows.len().min(SKY_ROWS);
+        s.rows[..n].copy_from_slice(&rows[..n]);
+        s
+    }
 }
 
 impl WorldView {
@@ -114,6 +141,7 @@ impl WorldView {
             wind_high: rhythm::CALM_HIGH * (1.0 + w.storm),
             cloud_drift: time * rhythm::CALM_HIGH * 0.5,
             exposure,
+            sky: rhythm::sky(&w),
         }
     }
 }
@@ -172,6 +200,7 @@ struct LifeBuffer {
 pub struct Output {
     config: OutputConfig,
     params: wgpu::Buffer,
+    sky: wgpu::Buffer,
     _baked: wgpu::Texture,
     baked_view: wgpu::TextureView,
     _scene: wgpu::Texture,
@@ -232,13 +261,14 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry { binding: SKY_BINDING, ..uniform_entry },
             ],
         });
 
         let bake_module = shader(&device, "bake", BAKE_WGSL);
-        let frame_module = shader(&device, "frame", FRAME_WGSL);
-        let life_module = shader(&device, "life", LIFE_WGSL);
-        let composite_module = shader(&device, "composite", COMPOSITE_WGSL);
+        let frame_module = shader(&device, "frame", &with_weather(FRAME_WGSL));
+        let life_module = shader(&device, "life", &with_weather(LIFE_WGSL));
+        let composite_module = shader(&device, "composite", &with_weather(COMPOSITE_WGSL));
 
         let bake_pipeline_layout = pipeline_layout(&device, "bake", &bake_layout);
         let frame_pipeline_layout = pipeline_layout(&device, "frame", &frame_layout);
@@ -301,6 +331,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let sky = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sky"),
+            size: (SKY_ROWS * 16) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let baked = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("baked landscape"),
             size: wgpu::Extent3d {
@@ -355,6 +391,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&baked_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: SKY_BINDING, resource: sky.as_entire_binding() },
             ],
         });
         let composite_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -364,6 +401,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&scene_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: SKY_BINDING, resource: sky.as_entire_binding() },
             ],
         });
         let composite_pipeline = fullscreen_pipeline(
@@ -377,6 +415,7 @@ impl Renderer {
         Output {
             config,
             params,
+            sky,
             _baked: baked,
             baked_view,
             _scene: scene,
@@ -429,6 +468,7 @@ impl Renderer {
             cloud_drift: world.cloud_drift,
         };
         self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params));
+        self.queue.write_buffer(&output.sky, 0, bytemuck::cast_slice(&world.sky.rows));
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vesper") });
 
@@ -562,6 +602,16 @@ fn life_pipelines(
         make("life membrane", "vs_membrane", "fs_membrane", false),
         make("life glow", "vs_glow", "fs_glow", false),
     ]
+}
+
+/// Where the weather's columns are bound, in the frame, life and composite passes.
+const SKY_BINDING: u32 = 5;
+
+/// A pass's shader with the weather columns and their helpers in front of it.
+fn with_weather(body: &str) -> String {
+    format!(
+        "const SKY_COLS: i32 = {SKY_COLS};\nconst SKY_CELLS: i32 = {SKY_CELLS};\nconst SKY_ROWS: u32 = {SKY_ROWS}u;\nconst SKY_BINDING: u32 = {SKY_BINDING}u;\n{WEATHER_WGSL}\n{body}"
+    )
 }
 
 fn shader(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
@@ -762,6 +812,29 @@ pub mod rhythm {
             }
         }
         ash.min(0.8)
+    }
+
+    /// Weather columns for the stand-in storm: a cloud deck thickening
+    /// toward the night side, the storm's tower and rain, damp ground in the
+    /// twilight and snow lying on the night side.
+    pub fn sky(w: &Weather) -> super::Sky {
+        use super::SKY_COLS;
+        let mut sky = super::Sky::default();
+        let col_w = 7680.0 / 2160.0 / SKY_COLS as f32;
+        for i in 0..SKY_COLS {
+            let x = (i as f32 + 0.5) * col_w;
+            let d = (x - w.storm_x) / 0.15;
+            let under = w.storm * (-d * d).exp();
+            let night = smooth(0.25, 3.3, x as f64) as f32;
+            let snowy = smooth(2.35, 2.6, x as f64) as f32;
+            sky.rows[i] = [(0.15 + 0.4 * night + under).min(1.0), under, snowy, 0.0];
+            sky.rows[SKY_COLS + i] = [(0.1 + 0.5 * night + under).min(1.0), snowy, 0.0, 0.0];
+            sky.rows[2 * SKY_COLS + i] = [0.0, 0.0, 2.0 * under, 0.0];
+        }
+        if w.storm > 0.0 {
+            sky.rows[3 * SKY_COLS] = [w.storm_x, w.storm, 0.06 + 0.07 * w.storm, 0.5];
+        }
+        sky
     }
 
     /// A front of cold air spilling off the glacier and creeping day-ward,

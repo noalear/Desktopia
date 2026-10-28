@@ -76,6 +76,30 @@ pub struct Tally {
     pub scars: u32,
 }
 
+/// Weather builds up in a body and only harms it once it has: one cold
+/// snap, soaking or dry afternoon is nothing, but hours of them are. Each
+/// runs 0 (fine) to about 1 (in danger); harm starts past about 0.6.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Exposure {
+    /// Body heat lost below what it can bear.
+    pub chill: f32,
+    /// Heat taken on above what it can bear.
+    pub heat: f32,
+    /// Water lost and not drunk or eaten back.
+    pub thirst: f32,
+    /// How wet it is: rain and river soak in and make cold far worse.
+    pub soaked: f32,
+    /// Ash and dust clogging its breathing.
+    pub grit: f32,
+}
+
+impl Exposure {
+    /// The worst of it, 0..1, for anything that wants one number.
+    pub fn worst(&self) -> f32 {
+        self.chill.max(self.heat).max(self.thirst).max(self.grit).min(1.0)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Creature {
     pub id: CreatureId,
@@ -160,6 +184,13 @@ pub struct Creature {
     pub toil: f32,
     #[serde(default)]
     pub climb: f32,
+    /// What the weather has worn into it.
+    #[serde(default)]
+    pub exposure: Exposure,
+    /// 0 out in the open .. 1 fully sheltered (under a canopy, huddled with
+    /// kin, dug in); it keeps off wind, rain, sun, hail and dust.
+    #[serde(default)]
+    pub shelter: f32,
     /// Its pose at each physics step this tick, the first being where the tick began.
     #[serde(skip)]
     pub moments: Vec<Moment>,

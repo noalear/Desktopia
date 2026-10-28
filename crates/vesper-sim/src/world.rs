@@ -275,6 +275,16 @@ pub struct Egg {
     pub spore: bool,
 }
 
+/// A seed that fell on ground too dry to sprout, and waits for rain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Dormant {
+    pub seed: crate::plant::Seed,
+    pub x: f32,
+    pub depth: f32,
+    pub matter: f32,
+    pub since: f64,
+}
+
 /// A cloud of a strain's spores, left when a parasite bursts out.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Spores {
@@ -316,6 +326,9 @@ pub struct World {
     pub remains: Vec<Remains>,
     pub eggs: Vec<Egg>,
     pub spores: Vec<Spores>,
+    /// Seeds lying dormant in dry ground, waiting for rain.
+    #[serde(default)]
+    pub seedbank: Vec<Dormant>,
     pub strains: Vec<Strain>,
     pub species: Registry,
     pub society: Society,
@@ -444,6 +457,7 @@ impl World {
         m += self.plants.iter().map(|p| (p.matter + p.fruit + p.seeds) as f64).sum::<f64>();
         m += self.remains.iter().map(|r| r.matter as f64).sum::<f64>();
         m += self.eggs.iter().map(|e| e.matter as f64).sum::<f64>();
+        m += self.seedbank.iter().map(|d| d.matter as f64).sum::<f64>();
         m
     }
 

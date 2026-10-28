@@ -7,28 +7,38 @@ fn is_mat(m: f32, code: f32) -> bool {
     return abs(m - code) < 0.1;
 }
 
-// Cloud density in the high deck at screen point p, 0..1.
+// Cloud density in the high deck at screen point p, 0..1. How much of the
+// sky it fills follows the simulation's cloud cover overhead: a few wisps in
+// fair weather, broken bands under a passing wave, a closed deck in a wet
+// spell.
 fn cloud_density(p: vec2f, octaves: i32) -> f32 {
+    let cover = sky_air(p.x).x;
     let q = vec2f((p.x - P.cloud_drift) * 1.4, p.y * 5.5);
     let n = fbm(q, octaves) + 0.12 * (fbm(q * 3.3 + 7.0, 3) - 0.5);
-    let band = smoothstep(0.5, 0.62, p.y) * smoothstep(0.98, 0.78, p.y);
-    return smoothstep(0.52, 0.8, n) * band;
+    let base = mix(0.62, 0.5, cover);
+    let band = smoothstep(base - 0.08, base + 0.06, p.y) * smoothstep(0.98, 0.78, p.y);
+    let lo = mix(0.7, 0.3, cover);
+    return smoothstep(lo, lo + 0.28, n) * band;
 }
 
 // The high cloud deck, lit by the sun from the side: light soaks through
 // the thin edges and dies inside the thick cores, the sunward side of each
-// billow glows and the far side falls into shade.
+// billow glows and the far side falls into shade. A heavy deck is grey and
+// dark underneath.
 fn clouds(p: vec2f, base: vec3f) -> vec3f {
+    let cover = sky_air(p.x).x;
+    // Overcast dulls the whole sky behind the clouds.
+    var sky = mix(base, base * 0.55 + sky_base(vec2f(p.x, 0.6)) * 0.12, cover * 0.7 * smoothstep(0.35, 0.6, p.y));
     let dens = cloud_density(p, 5);
     if (dens < 0.003) {
-        return base;
+        return sky;
     }
     let t = nightness(p.x);
     let day = daylight(p.x);
     let to_sun = normalize(sun_pos() - p);
     let d1 = cloud_density(p + to_sun * 0.012, 3);
     let d2 = cloud_density(p + to_sun * 0.035, 3);
-    let through = exp(-(d1 * 1.5 + d2 * 1.5 + dens * 0.8));
+    let through = exp(-(d1 * 1.5 + d2 * 1.5 + dens * 0.8) * (1.0 + cover));
     // Forward scattering: edges near the sun's line of sight blaze.
     let near_sun = exp(-distance(p, sun_pos()) * 2.2);
     let sun = vec3f(2.4, 0.95, 0.3) * day * (through * (0.8 + 1.3 * near_sun * (1.0 - dens)));
@@ -36,41 +46,96 @@ fn clouds(p: vec2f, base: vec3f) -> vec3f {
     let ambient = sky_base(vec2f(p.x, 0.95)) * 0.9 + sky_base(vec2f(p.x, 0.35)) * 0.25 * (1.0 - dens);
     let night_lit = vec3f(0.06, 0.03, 0.12) * (1.0 - t) * 0.5;
     var cc = sun + ambient + night_lit;
-    cc *= 0.55 + 0.45 * (1.0 - dens);
+    cc *= (0.55 + 0.45 * (1.0 - dens)) * (1.0 - 0.45 * cover * smoothstep(0.75, 0.55, p.y));
     // Ash from an eruption dulls the deck and thickens it.
-    cc = mix(cc, vec3f(0.04, 0.03, 0.03), P.ash * 0.5);
-    let alpha = clamp((1.0 - exp(-dens * 3.5)) * (0.9 + 0.3 * P.ash), 0.0, 0.97);
-    return mix(base, cc, alpha);
+    let ash = max(P.ash, sky_ground(p.x).z);
+    cc = mix(cc, vec3f(0.04, 0.03, 0.03), ash * 0.5);
+    let alpha = clamp((1.0 - exp(-dens * 3.5)) * (0.9 + 0.3 * ash + 0.3 * cover), 0.0, 0.97);
+    return mix(sky, cc, alpha);
+}
+
+// One storm cell: a billowing tower that climbs as it grows, flattens into
+// an anvil dragged night-ward by the high wind when mature, and slumps into
+// ragged cloud as it dies. Lightning lights it from within.
+fn tower(p: vec2f, c: vec4f, k: f32) -> vec2f {
+    let power = c.y;
+    if (power < 0.02) {
+        return vec2f(0.0);
+    }
+    let dx = p.x - c.x;
+    let r = c.z;
+    let age = c.w;
+    let base_y = 0.53;
+    let grown = smoothstep(0.0, 0.35, age) * (1.0 - 0.4 * smoothstep(0.75, 1.0, age));
+    let top = base_y + (0.12 + 0.33 * min(power, 1.2)) * grown;
+    // The anvil spreads at the top, mostly downwind (night-ward).
+    let anvil_y = top - 0.04;
+    let spread = smoothstep(0.3, 0.7, age) * (0.15 + 0.35 * power);
+    let up = clamp((p.y - base_y) / max(top - base_y, 0.01), 0.0, 1.0);
+    let lean = (p.y - base_y) * 0.25;
+    let width = r * (0.9 + 0.3 * up) + spread * smoothstep(anvil_y - 0.06, anvil_y, p.y) * select(0.45, 1.0, dx > lean);
+    let n = fbm(vec2f((p.x - P.time * 0.0008) * 9.0 + k * 13.0, p.y * 11.0 - P.time * 0.002), 5);
+    let edge = width * (0.75 + 0.5 * n);
+    let inside = smoothstep(edge, edge * 0.55, abs(dx - lean))
+        * smoothstep(base_y - 0.01, base_y + 0.02, p.y)
+        * smoothstep(top + 0.02 * n, top - 0.03, p.y);
+    return vec2f(inside * smoothstep(0.0, 0.15, power), n);
 }
 
 fn storm(p: vec2f, base: vec3f) -> vec3f {
-    let dx = p.x - P.storm_x;
-    let cell = exp(-dx * dx * 14.0) * P.storm;
-    if (cell < 0.0005) {
-        return base;
-    }
     var col = base;
-    // A dark cloud tower with a flat base.
-    let n = fbm(vec2f(p.x * 3.0 - P.time * 0.004, p.y * 7.0), 5);
-    let tower = smoothstep(0.98, 0.6, p.y + dx * dx * 6.0);
-    let deck = smoothstep(0.5, 0.6, p.y) * tower * smoothstep(0.3, 0.55, n) * cell;
-    col = mix(col, vec3f(0.01, 0.008, 0.025), deck * 0.95);
-    // Rain curtains below it.
-    let rp = vec2f((p.x + p.y * 0.18) * 520.0, p.y * 22.0 + P.time * 1.6);
-    let column = step(0.72, hash21(vec2f(floor(rp.x), 3.0)));
-    let streak = smoothstep(0.75, 1.0, fract(rp.y + hash21(vec2f(floor(rp.x), 9.0)) * 7.0));
-    let rain = column * streak * smoothstep(0.56, 0.45, p.y) * smoothstep(0.25, 0.6, cell);
-    col += vec3f(0.08, 0.09, 0.16) * rain;
-    // Lightning lights the cloud from inside and drops one forked bolt.
-    if (P.lightning > 0.0) {
-        let gd = length(vec2f((p.x - P.lightning_x) * 1.4, p.y - 0.64));
-        col += vec3f(0.9, 0.8, 1.7) * P.lightning * exp(-gd * 13.0) * (0.25 + 1.2 * deck) * cell;
-        let bx = P.lightning_x + 0.025 * (fbm(vec2f(p.y * 30.0, floor(P.time * 0.05)), 4) - 0.5)
-            + 0.04 * (0.55 - p.y);
-        let bolt = smoothstep(0.0016, 0.0, abs(p.x - bx)) * step(p.y, 0.56) * step(0.5, P.storm);
-        col += vec3f(12.0, 12.0, 20.0) * bolt * P.lightning;
+    for (var k = 0; k < SKY_CELLS; k++) {
+        let c = sky_cell(k);
+        let tw = tower(p, c, f32(k));
+        if (tw.x < 0.002) {
+            continue;
+        }
+        let day = daylight(p.x);
+        let t = nightness(p.x);
+        // Sunlit crowns on the day side, a near-black base everywhere.
+        let rel = clamp((p.y - 0.53) / 0.4, 0.0, 1.0);
+        let lit = vec3f(2.0, 0.85, 0.35) * day * day * smoothstep(0.3, 1.0, rel) * (0.5 + 0.6 * tw.y);
+        let shade = mix(vec3f(0.012, 0.01, 0.025), band3(vec3f(0.35, 0.16, 0.12), vec3f(0.12, 0.05, 0.14), vec3f(0.02, 0.02, 0.05), t), rel);
+        var cc = shade * (0.6 + 0.6 * tw.y) + lit;
+        // Lightning lights the cloud from inside.
+        let gd = length(vec2f((p.x - P.lightning_x) * 1.4, p.y - 0.62));
+        cc += vec3f(0.9, 0.8, 1.7) * P.lightning * exp(-gd * 9.0) * 1.4;
+        col = mix(col, cc, clamp(tw.x * 1.3, 0.0, 0.97));
+    }
+    // One forked bolt from the cloud base to the ground.
+    if (P.lightning > 0.05) {
+        let fork = floor(P.time * 0.05);
+        let jag = 0.02 * (fbm(vec2f(p.y * 30.0, fork), 4) - 0.5) + 0.006 * (fbm(vec2f(p.y * 140.0, fork + 3.0), 2) - 0.5);
+        let bx = P.lightning_x + jag + 0.04 * (0.55 - p.y);
+        let floor_y = ground_top(P.lightning_x) - 0.01;
+        let bolt = smoothstep(0.0016, 0.0, abs(p.x - bx)) * step(p.y, 0.55) * step(floor_y, p.y);
+        // A side branch that dies out partway down.
+        let bx2 = bx + (0.55 - p.y) * 0.35 * select(-1.0, 1.0, fract(fork * 0.37) > 0.5);
+        let branch = smoothstep(0.0011, 0.0, abs(p.x - bx2)) * step(p.y, 0.53) * step(0.44, p.y) * 0.5;
+        col += vec3f(12.0, 12.0, 20.0) * (bolt + branch) * P.lightning;
+        // The air around it glows.
+        col += vec3f(0.5, 0.45, 0.9) * P.lightning * exp(-abs(p.x - bx) * 60.0) * 0.4 * step(floor_y, p.y);
     }
     return col;
+}
+
+// Rain and snow hanging under the clouds in curtains, far off over the land.
+// Snow falls in soft grey veils; rain in darker sheets streaked downward.
+fn curtains(p: vec2f, base: vec3f, floor_y: f32) -> vec3f {
+    let air = sky_air(p.x);
+    let fall = air.y;
+    if (fall < 0.02 || p.y < floor_y || p.y > 0.58) {
+        return base;
+    }
+    let t = nightness(p.x);
+    let ragged = fbm(vec2f(p.x * 18.0 + P.time * 0.002, 2.0), 3);
+    let hang = smoothstep(0.58, 0.5 - 0.04 * ragged, p.y);
+    let streak = fbm(vec2f((p.x + (0.55 - p.y) * 0.08) * 160.0, p.y * 3.0 - P.time * 0.4), 3);
+    let snow = air.z;
+    let dens = fall * hang * mix(0.45 + 0.55 * streak, 0.7 + 0.3 * ragged, snow) * smoothstep(0.25, 0.6, ragged + fall * 0.4);
+    let rain_col = band3(vec3f(0.5, 0.32, 0.25), vec3f(0.16, 0.08, 0.2), vec3f(0.03, 0.04, 0.09), t);
+    let snow_col = band3(vec3f(1.0, 0.75, 0.6), vec3f(0.42, 0.32, 0.55), vec3f(0.07, 0.09, 0.16), t);
+    return mix(base, mix(rain_col, snow_col, snow), clamp(dens * 0.75, 0.0, 0.8));
 }
 
 // The volcano's plume follows its mood: a thin steam wisp when quiet, a
@@ -106,13 +171,50 @@ fn smoke(p: vec2f, base: vec3f) -> vec3f {
     return col;
 }
 
-// How frosted the ground is: behind the cold fall's front, back toward the ice.
+// How frosted the ground is: behind the cold fall's front, back toward the
+// ice, and wherever a cold snap has settled on clear, still ground.
 fn frost(p: vec2f) -> f32 {
+    let snap = smoothstep(0.25, 0.9, sky_more(p.x).w) * smoothstep(0.25, 0.6, nightness(p.x));
     if (P.cold < 0.01) {
-        return 0.0;
+        return snap;
     }
     let dx = p.x - P.cold_x + 0.08 * (fbm(vec2f(min(p.y, ground_top(p.x)) * 30.0, p.x * 3.0), 3) - 0.5);
-    return P.cold * smoothstep(0.0, 0.18, dx) * exp(-max(dx - 0.3, 0.0) * 1.5);
+    return max(snap, P.cold * smoothstep(0.0, 0.18, dx) * exp(-max(dx - 0.3, 0.0) * 1.5));
+}
+
+// What the weather has left lying on the land: rain soaking the plain dark,
+// puddles in its hollows mirroring the sky, snow drifted over it, and ash
+// greying everything downwind of the volcano.
+fn weathered_ground(p: vec2f, base: vec3f, on_plain: bool) -> vec3f {
+    let g = sky_ground(p.x);
+    let air = sky_air(p.x);
+    let ashfall = sky_more(p.x).x;
+    if (g.x < 0.3 && air.y < 0.02 && g.y < 0.01 && ashfall < 0.01) {
+        return base;
+    }
+    let t = nightness(p.x);
+    var col = base;
+    var q = p * vec2f(30.0, 60.0);
+    if (on_plain) {
+        q = plain_point(p) * vec2f(0.012, 0.03);
+    }
+    let n = fbm(q, 4);
+    // Wet ground darkens and takes on a sheen.
+    let wet = smoothstep(0.35, 0.95, g.x) * (1.0 - g.y) + air.y * 0.5 * (1.0 - air.z);
+    col *= 1.0 - 0.35 * clamp(wet, 0.0, 1.0);
+    if (on_plain && wet > 0.4) {
+        let pool = smoothstep(0.6, 0.66, n + (wet - 0.4) * 0.3) * (1.0 - g.y);
+        let sky = sky_base(vec2f(p.x, 0.7 - (HORIZON - p.y))) * (1.0 - 0.6 * air.x);
+        let rip = 0.85 + 0.15 * sin(P.time * 9.0 + fbm(q * 9.0 + P.time * 0.5, 2) * 30.0) * air.y;
+        col = mix(col, sky * 0.7 * rip, pool * 0.75);
+    }
+    // Ash, grey and gritty.
+    col = mix(col, vec3f(0.05, 0.045, 0.045) * (0.6 + 0.6 * n), clamp(ashfall * 0.8, 0.0, 0.8));
+    // Snow, drifted into the hollows first, lit by whatever light there is.
+    let snow = smoothstep(0.42, 0.58, n + g.y * 0.55 - 0.3) * g.y;
+    let lit = band3(vec3f(1.6, 1.05, 0.8), vec3f(0.62, 0.48, 0.85), vec3f(0.07, 0.09, 0.18), t);
+    col = mix(col, lit * (0.8 + 0.3 * n), clamp(snow, 0.0, 0.95));
+    return col;
 }
 
 // Light from the crater on the rock and air around it.
@@ -171,10 +273,12 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
     let m = b.a;
 
     let rv = river(p.x);
+    let on_plain = p.y < ground_top(p.x) + 0.002;
     if (is_mat(m, 1.0)) {
         col += stars(p);
         col = clouds(p, col);
         col = smoke(p, col);
+        col = curtains(p, col, 0.0);
         col = storm(p, col);
         // Snow blowing off the ice wall on the night wind.
         if (p.x > 2.95) {

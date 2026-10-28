@@ -365,6 +365,16 @@ pub struct Plant {
     pub vigor: f32,
     pub born: f64,
     pub generation: u32,
+    /// Weather worn into it, each 0..1: wilting from thirst, frost-bitten
+    /// and sun-scorched leaves, and a coat of ash or dust over them.
+    #[serde(default)]
+    pub wilt: f32,
+    #[serde(default)]
+    pub frost: f32,
+    #[serde(default)]
+    pub burn: f32,
+    #[serde(default)]
+    pub coat: f32,
 }
 
 impl Plant {

@@ -20,7 +20,7 @@
 
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
-use vesper_terrain::{self as terrain, SKY_COLS, WORLD_W};
+use vesper_terrain::{self as terrain, SKY_CELLS, SKY_COLS, SKY_ROWS, WORLD_W};
 
 /// Columns of air along the band.
 pub const N: usize = SKY_COLS;
@@ -29,7 +29,7 @@ pub const DX: f32 = WORLD_W / N as f32;
 /// Below this air temperature what falls is snow, and lying snow keeps.
 pub const FREEZE: f32 = -0.45;
 /// At most this many storm cells at once.
-const MAX_CELLS: usize = 5;
+const MAX_CELLS: usize = SKY_CELLS;
 
 /// Water the air can hold at a temperature: about five times as much at the
 /// day edge as in the twilight, and almost none over the ice.
@@ -210,6 +210,30 @@ impl Atmos {
         self.waves.clear();
     }
 
+    /// The weather as the renderer reads it; see [`vesper_terrain::SKY_ROWS`].
+    pub fn sky(&self, cold_v: f32, dust_v: f32) -> Vec<[f32; 4]> {
+        let mut rows = vec![[0.0; 4]; SKY_ROWS];
+        if !self.ready() {
+            return rows;
+        }
+        for i in 0..N {
+            rows[i] = [
+                1.0 - (-4.0 * self.cloud[i]).exp(),
+                self.precip[i].clamp(0.0, 1.0),
+                self.snowy[i],
+                (self.fog[i] * 12.0).min(1.0),
+            ];
+            rows[N + i] = [self.moisture[i], (self.snow[i] / 0.3).min(1.0), self.ash[i], self.dust[i].min(1.0)];
+            rows[2 * N + i] =
+                [self.ashfall[i], self.hail[i], (self.gust[i] - 1.0).clamp(0.0, 3.0), (-self.anom[i]).clamp(0.0, 1.5)];
+        }
+        for (k, c) in self.cells.iter().take(SKY_CELLS).enumerate() {
+            rows[3 * N + k] = [c.x, c.power, c.radius, c.life01()];
+        }
+        rows[3 * N + SKY_CELLS] = [self.veil, dust_v, cold_v, 0.0];
+        rows
+    }
+
     pub fn cover(&self, x: f32) -> f32 {
         1.0 - (-4.0 * sample(&self.cloud, x, 0.0)).exp()
     }
@@ -282,7 +306,7 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
     let tau_era = 86400.0;
     a.era += -a.era * dt / tau_era + rng.normal() * (2.0 * dt / tau_era).sqrt() * 0.75;
     a.era = a.era.clamp(-1.0, 1.0);
-    let wet_era = 1.0 + 0.5 * a.era;
+    let wet_era = (1.0 + 0.75 * a.era).max(0.2);
     a.veil *= (-dt / 43_200.0).exp();
     let shift = offset(a.era, a.veil);
 
@@ -562,7 +586,7 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
         // Drying: faster under the sun, in warm dry wind, slowed by snow.
         let qs = saturation(t);
         let rh = (a.vapour[i] / qs).min(1.0);
-        let dry = qs * (1.0 - rh) * (0.25 + 0.75 * day) * a.gust[i] / 2500.0 + 1.0 / 80_000.0;
+        let dry = qs * (1.0 - rh) * (0.25 + 0.75 * day) * a.gust[i] / 900.0 + 1.0 / 30_000.0;
         let cover = (a.snow[i] / 0.3).min(1.0);
         a.moisture[i] -= a.moisture[i] * dry * (1.0 - 0.8 * cover) * dt;
         a.moisture[i] = a.moisture[i].clamp(0.0, 1.0);
@@ -571,11 +595,11 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
     }
     a.dry_for = {
         let twilight: f32 = (0..N)
-            .filter(|&i| (1.0..2.6).contains(&col_x(i)))
+            .filter(|&i| (0.9..2.2).contains(&col_x(i)))
             .map(|i| a.moisture[i])
             .sum::<f32>()
-            / (0..N).filter(|&i| (1.0..2.6).contains(&col_x(i))).count() as f32;
-        if twilight < 0.12 {
+            / (0..N).filter(|&i| (0.9..2.2).contains(&col_x(i))).count() as f32;
+        if twilight < 0.15 {
             a.dry_for + dt
         } else if twilight > 0.3 {
             if a.told.drought {
@@ -590,7 +614,7 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
             a.dry_for
         }
     };
-    if a.dry_for > 6.0 * 3600.0 && !a.told.drought {
+    if a.dry_for > 4.0 * 3600.0 && !a.told.drought {
         a.told.drought = true;
         out.push(Happening::Drought { strength: (a.dry_for / (12.0 * 3600.0)).min(1.0) });
     }

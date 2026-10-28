@@ -48,7 +48,7 @@ fn main() {
         sums[3] += w.env.river.flood as f64;
         sums[4] += tw.iter().filter(|&&i| a.precip[i] > 0.05).count() as f64 / tw.len() as f64;
         sums[5] += a.cells.iter().map(|c| c.power).fold(0.0f32, f32::max) as f64;
-        sums[6] += (m < 0.12) as u8 as f64;
+        sums[6] += (w.env.atmos.dry_for > 4.0 * 3600.0) as u8 as f64;
         sums[7] += tw.iter().map(|&i| a.anom[i]).sum::<f32>() as f64 / tw.len() as f64;
         let born = a.cells.iter().filter(|c| c.age == 1.0).count();
         cells_born += born;
