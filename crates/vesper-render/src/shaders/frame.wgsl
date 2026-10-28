@@ -128,8 +128,9 @@ fn stars(p: vec2f) -> vec3f {
     if (t < 0.55) {
         return vec3f(0.0);
     }
-    let fade = smoothstep(0.55, 0.9, t) * smoothstep(0.35, 0.6, p.y);
-    let clump = fbm(p * 3.0 + 11.0, 3);
+    let fade = smoothstep(0.55, 0.9, t) * smoothstep(0.35, 0.6, p.y) * (1.0 - planet_cover(p));
+    // Thickest along the galaxy's band.
+    let clump = fbm(p * 3.0 + 11.0, 3) + 0.3 * galaxy_near(p);
     var acc = vec3f(0.0);
     for (var layer = 0; layer < 2; layer++) {
         let fl = f32(layer);
@@ -186,16 +187,27 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         }
     } else if (is_mat(m, 0.5)) {
         // A rippled mirror. The ripples lie on the water in perspective and
-        // drift day-ward with the current; each pixel reflects whatever of
-        // the land and sky its tilted surface faces, sun glitter included.
+        // drift day-ward with the current: long swells, chop across them,
+        // and streaks drawn out along the flow. Each pixel reflects whatever
+        // of the land and sky its tilted surface faces, sun glitter included.
         let w = plain_point(p);
-        let q = vec2f(w.x * 0.8 + P.time * 0.5, w.y * 2.2);
-        let e = 0.08;
-        let h0 = fbm(q, 4);
-        let hx = fbm(q + vec2f(e, 0.0), 4);
-        let hz = fbm(q + vec2f(0.0, e), 4);
         let calm = 1.0 - 0.6 * smoothstep(0.6, 0.3, p.x); // shallow, slow water in the pan
-        let slope = vec2f(hx - h0, hz - h0) / e * 0.012 * calm;
+        let flow = P.time * (0.6 + 0.6 * P.river_flood);
+        let swell = noised(vec2f(w.x * 0.3 + flow * 0.35, w.y * 0.8));
+        let chop = noised(vec2f(w.x * 1.4 + flow * 1.2, w.y * 2.6 + P.time * 0.15) + 7.0);
+        let streak = noised(vec2f(w.x * 0.12 + flow * 0.2, w.y * 3.5) + 3.0);
+        // Depth of ground one pixel row spans: ripples finer than that would
+        // only alias into lines, so they fade out with distance.
+        // Across the view a pixel spans far less ground than along it, so
+        // ripples stay sharp sideways long after they blur away in depth.
+        let dz = w.y * w.y / (CAM_H * FOCAL * P.world_size.y);
+        let dx = w.y / (FOCAL * P.world_size.y);
+        let fine = smoothstep(0.35, 0.12, dz * 2.6);
+        let mid = smoothstep(0.35, 0.12, dz * 0.8);
+        let side = smoothstep(0.35, 0.12, dx * 2.6);
+        let slope = (swell.yz * vec2f(0.3, 0.8) * 0.05 * vec2f(1.0, mid)
+            + chop.yz * vec2f(1.4, 2.6) * 0.012 * vec2f(side, fine)
+            + streak.yz * vec2f(0.12, 3.5) * 0.006 * vec2f(side, fine)) * calm * (1.0 + P.river_flood);
         let nrm = normalize(vec3f(-slope.x, 1.0, -slope.y));
         let rd = view_ray(p);
         let rr = reflect(rd, nrm);
@@ -205,10 +217,26 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         if (is_mat(refl.a, 1.0)) {
             rc = clouds(mp, rc);
         }
+        // Ripples too fine to see still roughen the mirror: what it shows
+        // smears up and down, as reflections on moving water do.
+        let smear = (1.0 - fine) * calm * (0.025 + 0.04 * P.river_flood);
+        let up = textureSampleLevel(baked, samp, uv_of(mp + vec2f(slope.x * 0.3, smear)), 0.0).rgb;
+        let down = textureSampleLevel(baked, samp, uv_of(mp - vec2f(slope.x * 0.3, smear)), 0.0).rgb;
+        rc = mix(rc, (up + down) * 0.5, 0.6 * smoothstep(0.0, 0.01, smear));
         let fres = 0.02 + 0.98 * pow(1.0 - clamp(dot(-rd, nrm), 0.0, 1.0), 5.0);
-        col = mix(col, rc * 0.85, fres);
-        // Meltwater from the glacier carries a faint living glow at night.
-        col += vec3f(0.05, 0.5, 0.75) * smoothstep(0.6, 0.85, h0) * t * t * 0.12;
+        // Shore pixels are only partly water (see water_code in the bake).
+        let cover = clamp((m - 0.4) / 0.19, 0.0, 1.0);
+        col = mix(col, rc * 0.78, fres * cover);
+        // Foam and scum lines along the banks and in the eddies, drifting.
+        let e = river_across(w);
+        let foam_n = fbm(vec2f(w.x * 0.5 + flow * 0.5, w.y * 4.0), 3);
+        let foam = smoothstep(0.78, 1.0, e) * smoothstep(0.45, 0.75, foam_n) + smoothstep(0.72, 0.85, foam_n) * 0.25;
+        let foam_col = band3(vec3f(1.2, 0.7, 0.45), vec3f(0.35, 0.25, 0.45), vec3f(0.04, 0.08, 0.15), t);
+        col = mix(col, foam_col, foam * 0.45 * cover * calm);
+        // Meltwater from the glacier carries a living glow at night: drifting
+        // threads of light, brightest near the ice.
+        let threads = smoothstep(0.55, 0.8, fbm(vec2f(w.x * 0.25 + flow * 0.3, w.y * 2.0) + 11.0, 4));
+        col += vec3f(0.03, 0.45, 0.7) * (threads * 0.18 + 0.025) * t * t * cover * (0.5 + 0.5 * smoothstep(2.4, 3.2, p.x));
     } else if (is_mat(m, 0.25)) {
         // Flows glow as far as the lava has run, brightest at the front,
         // cooling as the eruption dies and crusting over when it is quiet.
@@ -218,8 +246,17 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         let heat = reach * (0.45 + 0.55 * smoothstep(0.0, 0.4, P.volcano)) + front * 0.8;
         col += vec3f(9.0, 2.2, 0.3) * heat * (0.75 + 0.35 * sin(P.time * 0.6 + p.y * 90.0 - p.x * 30.0));
     } else if (is_mat(m, 0.75)) {
-        let n = fbm(vec2f(p.x * 14.0, p.y * 20.0 + P.time * 0.02), 3);
-        col *= 0.85 + 0.3 * n;
+        if (m > 0.77) {
+            // A meltwater fall: streaks pouring down, foaming white.
+            let q = vec2f(p.x * 900.0, p.y * 60.0 + P.time * 1.4);
+            let streak = fbm(vec2f(q.x, q.y), 3);
+            col *= 0.7 + 0.6 * smoothstep(0.35, 0.75, streak);
+            col += vec3f(0.08, 0.14, 0.2) * smoothstep(0.62, 0.8, streak) * (0.4 + t);
+        } else {
+            // Light shifting slowly inside the ice.
+            let n = fbm(vec2f(p.x * 14.0, p.y * 20.0 + P.time * 0.02), 3);
+            col *= 0.92 + 0.16 * n;
+        }
     } else if (t > 0.5 && frost(p) < 0.05) {
         // Glow speckles on night-side ground, slowly breathing.
         let gq = p * 160.0;

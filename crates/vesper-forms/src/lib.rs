@@ -128,6 +128,7 @@ impl Menagerie {
                 bleeding: 0.0,
                 infection: None,
                 clip_y: None,
+                ground: p.segs.first().map(|s| s.a),
                 seed: p.seed,
             });
         }
@@ -151,6 +152,7 @@ impl Menagerie {
                 bleeding: c.bleeding,
                 infection: c.infection,
                 clip_y: c.clip_y(),
+                ground: Some(c.ground()),
                 seed: c.seed,
             });
         }

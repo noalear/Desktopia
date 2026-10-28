@@ -86,6 +86,9 @@ pub struct Organism<'a> {
     pub infection: Option<Infection>,
     /// Hide everything below this height (a burrower half in the ground).
     pub clip_y: Option<f32>,
+    /// The point on the floor under it, where its shadow falls. `None`
+    /// draws no shadow (a portrait with no ground, say).
+    pub ground: Option<[f32; 2]>,
     /// Stable per-individual number, so patterns don't swim between frames.
     pub seed: u32,
 }
@@ -140,16 +143,22 @@ pub(crate) const PRIM_ATTRIBS: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_a
 /// Draw groups, drawn in this order with different depth rules.
 #[derive(Clone, Copy)]
 pub(crate) enum Group {
+    /// Shadows on the ground under each body, drawn first so every body
+    /// stands over them.
+    Shadow = 0,
     /// Skin, shell, limbs: writes depth.
-    Body = 0,
+    Body = 1,
     /// Organs glimpsed through translucent skin.
-    Inner = 1,
-    Membrane = 2,
+    Inner = 2,
+    Membrane = 3,
     /// Additive halos around glow cells.
-    Glow = 3,
+    Glow = 4,
 }
 
-pub(crate) const GROUPS: usize = 4;
+pub(crate) const GROUPS: usize = 5;
+
+/// Shader code for a shadow prim, past the tissue codes.
+const SHADOW: f32 = 12.0;
 
 /// A frame's worth of organisms, ready to upload.
 #[derive(Default)]
@@ -201,7 +210,8 @@ impl Look {
             glow: glow_color(g[3]),
             translucency: (g[10] - 0.15).max(0.0) * 1.05,
             pattern_kind: (g[4] * 5.999).floor() + 1.0,
-            pattern_scale: 0.003 + 0.022 * g[5],
+            // Relative to the body's thickness, so small creatures show it too.
+            pattern_scale: 0.9 + 3.0 * g[5],
             contrast: 0.25 + 0.75 * g[2],
             sheen: g[7],
             fringe: ((g[8] - 0.62) / 0.38).max(0.0) * 1.4,
@@ -240,7 +250,15 @@ impl LifeBatch {
         if o.segs.is_empty() && o.membranes.is_empty() {
             return;
         }
-        let pal = o.look.palette();
+        // No two individuals are quite alike: a little of their colour is
+        // their own, beyond what their genes say.
+        let mut look = *o.look;
+        let jitter =
+            |k: u32| (o.seed.wrapping_mul(2654435761).wrapping_add(k.wrapping_mul(40503)) >> 8) as f32 / 16777216.0;
+        look.genes[0] = (look.genes[0] + (jitter(1) - 0.5) * 0.05).rem_euclid(1.0);
+        look.genes[1] = (look.genes[1] + (jitter(2) - 0.5) * 0.14).clamp(0.0, 1.0);
+        look.genes[6] = (look.genes[6] + (jitter(3) - 0.5) * 0.2).clamp(0.0, 1.0);
+        let pal = look.palette();
         let seed = (o.seed % 9973) as f32 * 0.137;
         let rmax = o.segs.iter().fold(0.0f32, |m, s| m.max(s.ra).max(s.rb)).max(1e-4);
         let clip = o.clip_y.unwrap_or(-10.0);
@@ -293,12 +311,34 @@ impl LifeBatch {
                 accent: [pal.accent[0], pal.accent[1], pal.accent[2], pal.pattern_kind],
                 glow: [pal.glow[0], pal.glow[1], pal.glow[2], pal.freckles],
                 mat: [tissue as u8 as f32, seed, damage.clamp(0.0, 1.0), alive],
-                look: [pal.pattern_scale, sheen, pal.fringe, pal.contrast],
+                look: [pal.pattern_scale * rmax, sheen, pal.fringe, pal.contrast],
                 extra: [pal.countershade, pal.iridescence, o.signal, (o.symbol % 16) as f32],
                 state,
                 ..Default::default()
             }
         };
+
+        if let Some(g) = o.ground {
+            // Its footprint and height on screen, and how high it is off the
+            // floor, set the shadow's size and softness (see vs_shadow).
+            let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for s in o.segs {
+                for q in [s.a, s.b] {
+                    x0 = x0.min(q[0]);
+                    x1 = x1.max(q[0]);
+                    y0 = y0.min(q[1]);
+                    y1 = y1.max(q[1]);
+                }
+            }
+            if x0 <= x1 && alive > 0.0 {
+                let mut p = common(Tissue::Frame, 0.0, 0.0);
+                p.mat[0] = SHADOW;
+                p.a = [(x0 + x1) * 0.5, g[1]];
+                p.r = [(x1 - x0) * 0.5 + rmax, (y1 - y0).max(rmax)];
+                p.c = [(y0 - g[1]).max(0.0), 0.0];
+                self.groups[Group::Shadow as usize].push((z, p));
+            }
+        }
 
         for (i, s) in o.segs.iter().enumerate() {
             let mut p = common(s.tissue, s.damage, s.side);
@@ -307,6 +347,8 @@ impl LifeBatch {
             p.r = [s.ra.max(0.0), s.rb.max(0.0)];
             p.sway[0] = sway_a[i];
             p.sway[1] = s.sway;
+            // The organism's thickest part, so the shader can tell body from limb.
+            p.sway[2] = rmax;
             p.zinfo[2] = u[i][0];
             p.zinfo[3] = u[i][1];
             // Only skin and shell grow hair.

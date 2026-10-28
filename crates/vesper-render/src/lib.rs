@@ -3,8 +3,9 @@
 //!
 //! Each output (one per monitor) owns a baked landscape texture that is redrawn
 //! rarely. Every frame, a cheap pass animates the landscape into an HDR scene
-//! texture, creatures and plants are drawn into it as instanced tissue, and a
-//! last pass tone maps the scene for that display, SDR or HDR.
+//! texture, creatures and plants are drawn into it as instanced tissue, the
+//! brightest light is blurred into a bloom at low resolution, and a last pass
+//! tone maps the scene for that display, SDR or HDR.
 
 use std::borrow::Cow;
 
@@ -17,10 +18,12 @@ const BAKE_WGSL: &str = include_str!("shaders/bake.wgsl");
 const FRAME_WGSL: &str = include_str!("shaders/frame.wgsl");
 const LIFE_WGSL: &str = include_str!("shaders/life.wgsl");
 const COMPOSITE_WGSL: &str = include_str!("shaders/composite.wgsl");
+const BLOOM_WGSL: &str = include_str!("shaders/bloom.wgsl");
 
 const BAKED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const BLOOM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// How a display wants its pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -153,14 +156,33 @@ pub struct Renderer {
     queue: wgpu::Queue,
     bake_layout: wgpu::BindGroupLayout,
     frame_layout: wgpu::BindGroupLayout,
+    composite_layout: wgpu::BindGroupLayout,
     bake_pipeline: wgpu::RenderPipeline,
     frame_pipeline: wgpu::RenderPipeline,
     composite_module: wgpu::ShaderModule,
-    frame_pipeline_layout: wgpu::PipelineLayout,
+    composite_pipeline_layout: wgpu::PipelineLayout,
+    bloom: BloomPipelines,
     life_pipelines: [wgpu::RenderPipeline; life::GROUPS],
     sampler: wgpu::Sampler,
     plants: LifeBuffer,
     creatures: LifeBuffer,
+}
+
+struct BloomPipelines {
+    down: wgpu::RenderPipeline,
+    down2: wgpu::RenderPipeline,
+    blur_h: wgpu::RenderPipeline,
+    blur_v: wgpu::RenderPipeline,
+}
+
+/// One output's bloom: two levels, each with a ping-pong pair for blurring.
+struct Bloom {
+    _textures: Vec<wgpu::Texture>,
+    /// Quarter size: result, scratch. Sixteenth size: result, scratch.
+    views: [wgpu::TextureView; 4],
+    /// Reading the scene, quarter result, quarter scratch, sixteenth result,
+    /// sixteenth scratch.
+    groups: [wgpu::BindGroup; 5],
 }
 
 /// Instances for one kind of life, kept on the GPU between frames.
@@ -172,17 +194,25 @@ struct LifeBuffer {
 pub struct Output {
     config: OutputConfig,
     params: wgpu::Buffer,
-    _baked: wgpu::Texture,
-    baked_view: wgpu::TextureView,
+    /// Two baked landscapes: the one on show, and one being baked a strip
+    /// at a time behind it (see `BAKE_STRIPS`).
+    _baked: [wgpu::Texture; 2],
+    baked_views: [wgpu::TextureView; 2],
     _scene: wgpu::Texture,
     scene_view: wgpu::TextureView,
     _depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
     bake_group: wgpu::BindGroup,
-    frame_group: wgpu::BindGroup,
+    /// Frame-pass groups reading each baked landscape.
+    frame_groups: [wgpu::BindGroup; 2],
+    front: usize,
     composite_group: wgpu::BindGroup,
     composite_pipeline: wgpu::RenderPipeline,
+    bloom: Bloom,
     baked_band_shift: Option<f32>,
+    /// A bake under way in the back texture: the band shift it bakes and the
+    /// next strip to draw.
+    baking: Option<(f32, u32)>,
 }
 
 impl Output {
@@ -190,9 +220,10 @@ impl Output {
         &self.config
     }
 
-    /// Forces the landscape to be baked again on the next frame.
+    /// Forces the landscape to be baked again, whole, on the next frame.
     pub fn invalidate(&mut self) {
         self.baked_band_shift = None;
+        self.baking = None;
     }
 }
 
@@ -235,10 +266,37 @@ impl Renderer {
             ],
         });
 
+        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("composite"),
+            entries: &[
+                uniform_entry,
+                texture_entry(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                texture_entry(3),
+                texture_entry(4),
+            ],
+        });
+
         let bake_module = shader(&device, "bake", BAKE_WGSL);
         let frame_module = shader(&device, "frame", FRAME_WGSL);
         let life_module = shader(&device, "life", LIFE_WGSL);
         let composite_module = shader(&device, "composite", COMPOSITE_WGSL);
+        let bloom_module = shader(&device, "bloom", BLOOM_WGSL);
 
         let bake_pipeline_layout = pipeline_layout(&device, "bake", &bake_layout);
         let frame_pipeline_layout = pipeline_layout(&device, "frame", &frame_layout);
@@ -247,6 +305,15 @@ impl Renderer {
         let frame_pipeline =
             fullscreen_pipeline(&device, "frame", &frame_pipeline_layout, &frame_module, "fs_frame", SCENE_FORMAT);
         let life_pipelines = life_pipelines(&device, &frame_pipeline_layout, &life_module);
+        let composite_pipeline_layout = pipeline_layout(&device, "composite", &composite_layout);
+        let bloom_pipeline =
+            |entry| fullscreen_pipeline(&device, "bloom", &frame_pipeline_layout, &bloom_module, entry, BLOOM_FORMAT);
+        let bloom = BloomPipelines {
+            down: bloom_pipeline("fs_down"),
+            down2: bloom_pipeline("fs_down2"),
+            blur_h: bloom_pipeline("fs_blur_h"),
+            blur_v: bloom_pipeline("fs_blur_v"),
+        };
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("baked"),
@@ -263,10 +330,12 @@ impl Renderer {
             queue,
             bake_layout,
             frame_layout,
+            composite_layout,
             bake_pipeline,
             frame_pipeline,
             composite_module,
-            frame_pipeline_layout,
+            composite_pipeline_layout,
+            bloom,
             life_pipelines,
             sampler,
             plants: empty(),
@@ -301,21 +370,25 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let baked = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("baked landscape"),
-            size: wgpu::Extent3d {
-                width: config.size_px[0].max(1),
-                height: config.size_px[1].max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: BAKED_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let baked_view = baked.create_view(&wgpu::TextureViewDescriptor::default());
+        let make_baked = || {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("baked landscape"),
+                size: wgpu::Extent3d {
+                    width: config.size_px[0].max(1),
+                    height: config.size_px[1].max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: BAKED_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        let baked = [make_baked(), make_baked()];
+        let baked_views: [wgpu::TextureView; 2] =
+            std::array::from_fn(|i| baked[i].create_view(&wgpu::TextureViewDescriptor::default()));
         let size = wgpu::Extent3d {
             width: config.size_px[0].max(1),
             height: config.size_px[1].max(1),
@@ -348,28 +421,33 @@ impl Renderer {
             layout: &self.bake_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }],
         });
-        let frame_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame"),
-            layout: &self.frame_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&baked_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-            ],
+        let frame_groups: [wgpu::BindGroup; 2] = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("frame"),
+                layout: &self.frame_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&baked_views[i]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            })
         });
+        let bloom = self.create_bloom(&params, &scene_view, config.size_px);
         let composite_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("composite"),
-            layout: &self.frame_layout,
+            layout: &self.composite_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&scene_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bloom.views[0]) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&bloom.views[2]) },
             ],
         });
         let composite_pipeline = fullscreen_pipeline(
             device,
             "composite",
-            &self.frame_pipeline_layout,
+            &self.composite_pipeline_layout,
             &self.composite_module,
             "fs_composite",
             config.format,
@@ -378,17 +456,107 @@ impl Renderer {
             config,
             params,
             _baked: baked,
-            baked_view,
+            baked_views,
             _scene: scene,
             scene_view,
             _depth: depth,
             depth_view,
             bake_group,
-            frame_group,
+            frame_groups,
+            front: 0,
             composite_group,
             composite_pipeline,
+            bloom,
             baked_band_shift: None,
+            baking: None,
         }
+    }
+
+    /// Keeps the baked landscape up to date with the season. The first bake
+    /// is drawn whole. Later ones, when the band has slid a little, are drawn
+    /// a strip per frame into the back texture and shown once complete, so a
+    /// heavy bake never stalls the GPU for a whole frame.
+    fn bake(&self, encoder: &mut wgpu::CommandEncoder, output: &mut Output, band_shift: f32) {
+        let Some(shown) = output.baked_band_shift else {
+            let front = output.front;
+            bake_strips(
+                encoder,
+                &output.baked_views[front],
+                &self.bake_pipeline,
+                &output.bake_group,
+                0..BAKE_STRIPS,
+                output.config.size_px,
+            );
+            output.baked_band_shift = Some(band_shift);
+            return;
+        };
+        if output.baking.is_none() && (shown - band_shift).abs() > 0.002 {
+            output.baking = Some((band_shift, 0));
+        }
+        let Some((shift, next)) = output.baking else { return };
+        let back = 1 - output.front;
+        bake_strips(
+            encoder,
+            &output.baked_views[back],
+            &self.bake_pipeline,
+            &output.bake_group,
+            next..next + 1,
+            output.config.size_px,
+        );
+        if next + 1 < BAKE_STRIPS {
+            output.baking = Some((shift, next + 1));
+        } else {
+            output.front = back;
+            output.baked_band_shift = Some(shift);
+            output.baking = None;
+        }
+    }
+
+    fn create_bloom(&self, params: &wgpu::Buffer, scene: &wgpu::TextureView, size: [u32; 2]) -> Bloom {
+        let device = &self.device;
+        let make = |div: u32| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bloom"),
+                size: wgpu::Extent3d {
+                    width: (size[0] / div).max(1),
+                    height: (size[1] / div).max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: BLOOM_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        let textures = vec![make(4), make(4), make(16), make(16)];
+        let views: [wgpu::TextureView; 4] =
+            std::array::from_fn(|i| textures[i].create_view(&wgpu::TextureViewDescriptor::default()));
+        let group = |src: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("bloom"),
+                layout: &self.frame_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(src) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            })
+        };
+        let groups = [group(scene), group(&views[0]), group(&views[1]), group(&views[2]), group(&views[3])];
+        Bloom { _textures: textures, views, groups }
+    }
+
+    /// Blurs the scene's brightest light into the output's bloom textures.
+    fn draw_bloom(&self, encoder: &mut wgpu::CommandEncoder, output: &Output) {
+        let (b, p) = (&output.bloom, &self.bloom);
+        draw_fullscreen(encoder, "bloom down", &b.views[0], &p.down, &b.groups[0]);
+        draw_fullscreen(encoder, "bloom blur", &b.views[1], &p.blur_h, &b.groups[1]);
+        draw_fullscreen(encoder, "bloom blur", &b.views[0], &p.blur_v, &b.groups[2]);
+        draw_fullscreen(encoder, "bloom down", &b.views[2], &p.down2, &b.groups[1]);
+        draw_fullscreen(encoder, "bloom blur", &b.views[3], &p.blur_h, &b.groups[3]);
+        draw_fullscreen(encoder, "bloom blur", &b.views[2], &p.blur_v, &b.groups[4]);
     }
 
     /// Draws one frame of `output` into `target`, re-baking the landscape first
@@ -432,16 +600,16 @@ impl Renderer {
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vesper") });
 
-        let stale = match output.baked_band_shift {
-            None => true,
-            Some(b) => (b - world.band_shift).abs() > 0.002,
-        };
-        if stale {
-            draw_fullscreen(&mut encoder, "bake", &output.baked_view, &self.bake_pipeline, &output.bake_group);
-            output.baked_band_shift = Some(world.band_shift);
-        }
-        draw_fullscreen(&mut encoder, "frame", &output.scene_view, &self.frame_pipeline, &output.frame_group);
+        self.bake(&mut encoder, output, world.band_shift);
+        draw_fullscreen(
+            &mut encoder,
+            "frame",
+            &output.scene_view,
+            &self.frame_pipeline,
+            &output.frame_groups[output.front],
+        );
         self.draw_life(&mut encoder, output);
+        self.draw_bloom(&mut encoder, output);
         draw_fullscreen(&mut encoder, "composite", target, &output.composite_pipeline, &output.composite_group);
         self.queue.submit(Some(encoder.finish()));
     }
@@ -468,7 +636,7 @@ impl Renderer {
         });
         // The frame group carries the baked landscape, which translucent
         // bodies show through.
-        pass.set_bind_group(0, &output.frame_group, &[]);
+        pass.set_bind_group(0, &output.frame_groups[output.front], &[]);
         // Each group draws plants first, then creatures, far to near.
         for (g, pipeline) in self.life_pipelines.iter().enumerate() {
             pass.set_pipeline(pipeline);
@@ -557,6 +725,7 @@ fn life_pipelines(
         })
     };
     [
+        make("life shadow", "vs_shadow", "fs_shadow", false),
         make("life body", "vs_seg", "fs_body", true),
         make("life inner", "vs_seg", "fs_inner", false),
         make("life membrane", "vs_membrane", "fs_membrane", false),
@@ -609,6 +778,44 @@ fn fullscreen_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// How many frames a re-bake of the landscape is spread over.
+const BAKE_STRIPS: u32 = 12;
+
+/// Bakes some horizontal strips of the landscape (of BAKE_STRIPS), leaving
+/// the rest of the texture as it was.
+fn bake_strips(
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    pipeline: &wgpu::RenderPipeline,
+    group: &wgpu::BindGroup,
+    strips: std::ops::Range<u32>,
+    size: [u32; 2],
+) {
+    let (w, h) = (size[0].max(1), size[1].max(1));
+    let row = |k: u32| (h as u64 * k as u64 / BAKE_STRIPS as u64) as u32;
+    let (y0, y1) = (row(strips.start), row(strips.end));
+    if y1 <= y0 {
+        return;
+    }
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("bake"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    });
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, group, &[]);
+    pass.set_scissor_rect(0, y0, w, y1 - y0);
+    pass.draw(0..3, 0..1);
 }
 
 fn draw_fullscreen(
