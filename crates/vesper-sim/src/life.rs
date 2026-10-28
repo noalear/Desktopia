@@ -631,8 +631,7 @@ pub fn metabolism(w: &mut World, dt: f32) {
         c.mind.fade((-dt * 0.4).exp());
         c.breed_wait -= dt;
         // Heat and cold.
-        let hot = 0.35 + c.genome.heat_tolerance * 0.8 + c.abil.armor * 0.5;
-        let cold = -(0.35 + c.genome.cold_tolerance * 0.8 + c.pheno.frac(Tissue::Store) * 1.5);
+        let (cold, hot) = c.bearable();
         let stress = if temp > hot {
             temp - hot
         } else if temp < cold {

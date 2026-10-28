@@ -330,6 +330,26 @@ thread_local! {
     static AUDIT: bool = std::env::var_os("VESPER_AUDIT").is_some();
 }
 
+/// Somewhere along the band, out of the lava, whose warmth sits well inside
+/// what a genome can stand.
+fn livable(w: &mut World, g: &Genome) -> f32 {
+    let cold = -(0.35 + g.cold_tolerance * 0.8);
+    let hot = 0.35 + g.heat_tolerance * 0.8;
+    let mut best = (f32::MIN, WORLD_W * 0.5);
+    for _ in 0..40 {
+        let x = w.rng.range(0.1, WORLD_W - 0.1);
+        if w.env.lava_at(x) {
+            continue;
+        }
+        let t = w.env.temperature(x, 0.0);
+        let margin = (hot - t).min(t - cold);
+        if margin > best.0 {
+            best = (margin, x);
+        }
+    }
+    best.1
+}
+
 /// Retires strains nobody carries any more.
 fn sweep_strains(w: &mut World) {
     let mut gone = Vec::new();
@@ -349,19 +369,22 @@ fn sweep_strains(w: &mut World) {
     }
 }
 
-/// When life is nearly gone, new life seeps up from the vents: a new founder
-/// lineage, not a revival of anything that died.
+/// When animal life is thin, a new founder lineage wanders in from
+/// beyond the band: not a revival of anything that died. It arrives where
+/// it can stand the warmth, rather than having to cross the day or night
+/// side to get there.
 fn renew(w: &mut World) {
-    if w.creatures.len() + w.eggs.len() < 12 && w.rng.chance(0.2) {
+    if w.creatures.len() + w.eggs.len() < 30 && w.rng.chance(0.2) {
         let kinds = [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler];
         let kind = *w.rng.pick(&kinds);
         let g = Arc::new(Genome::founder(kind, &mut w.rng));
         let species = w.species.found_creature(&g, w.time, &mut w.history);
         let voice = [0, 1, 2, 3];
-        let vent = terrain::VENTS[w.rng.below(terrain::VENTS.len())].0;
+        let home = livable(w, &g);
         for _ in 0..20 {
             let child = Arc::new(g.bud(&mut w.rng));
-            let pos = [vent + w.rng.normal() * 0.05, w.rng.range(0.02, DEPTH - 0.02), 0.0];
+            let x = (home + w.rng.normal() * 0.05).clamp(0.05, WORLD_W - 0.05);
+            let pos = [x, w.rng.range(0.02, DEPTH - 0.02), 0.0];
             let body = crate::body::Body::develop(&child);
             let adult = crate::creature::adult_matter(&child, &body);
             let m = w.take_soil(pos[0], pos[1], adult * 0.5);
@@ -382,5 +405,31 @@ fn renew(w: &mut World) {
             let seed = Seed { genome: g.clone(), species, generation: 0 };
             ecology::sow(w, &seed, x, d, 0.2, 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn newcomers_arrive_where_they_can_live() {
+        let mut sim = Sim::new(5, 0.0);
+        let w = &mut sim.w;
+        w.creatures.clear();
+        w.eggs.clear();
+        let mut arrivals = 0;
+        for _ in 0..200 {
+            let before = w.creatures.len();
+            renew(w);
+            for c in &w.creatures[before..] {
+                arrivals += 1;
+                let (cold, hot) = c.bearable();
+                let t = w.env.temperature(c.pos[0], c.pos[2]);
+                assert!(t > cold && t < hot, "a newcomer arrived at {:.2} where it is {t:.2}", c.pos[0]);
+            }
+            w.creatures.clear();
+        }
+        assert!(arrivals > 0);
     }
 }

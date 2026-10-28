@@ -195,8 +195,7 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         let cap = c.abil.energy_cap.max(1e-6);
         let e01 = (c.energy / cap).clamp(0.0, 1.0);
         let temp = w.env.temperature(c.pos[0], c.pos[2]);
-        let hot = 0.35 + c.genome.heat_tolerance * 0.8 + c.abil.armor * 0.5;
-        let cold = -(0.35 + c.genome.cold_tolerance * 0.8 + c.pheno.frac(Tissue::Store) * 1.5);
+        let (cold, hot) = c.bearable();
         inputs[i::BIAS] = 1.0;
         inputs[i::ENERGY] = e01;
         inputs[i::HUNGER] = 1.0 - e01;

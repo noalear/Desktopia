@@ -70,6 +70,21 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
                 dir[0] += (t * 2.0).clamp(-1.0, 1.0) * go_home;
             }
         }
+        // Whatever the brain wants, a body turns back from heat or cold it
+        // can't stand: towards the night edge and up into thinner air from
+        // heat, towards the day edge and down from cold.
+        let (cold, hot) = c.bearable();
+        let t = w.env.temperature(c.pos[0], c.pos[2]);
+        let edge = 0.1;
+        let flee = if t > hot - edge {
+            ((t - hot + edge) * 6.0).min(2.0)
+        } else if t < cold + edge {
+            -((cold + edge - t) * 6.0).min(2.0)
+        } else {
+            0.0
+        };
+        dir[0] += flee;
+        dir[2] += flee;
         let want = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
         if want > 0.02 {
             let goal = dir[1].atan2(dir[0]);
