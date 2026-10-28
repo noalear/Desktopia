@@ -403,19 +403,45 @@ pub struct Reader {
     generation: u64,
     offset: u64,
     pub history: History,
+    /// When the folder was made; a new world makes it again.
+    born: Option<SystemTime>,
+    /// The folder was started over for a new world since the last look.
+    renewed: bool,
 }
 
 impl Reader {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        let mut r =
-            Self { dir: dir.into(), snapshot_stamp: None, generation: 0, offset: 0, history: History::default() };
+        let mut r = Self {
+            dir: dir.into(),
+            snapshot_stamp: None,
+            generation: 0,
+            offset: 0,
+            history: History::default(),
+            born: None,
+            renewed: false,
+        };
         r.poll();
+        r.renewed = false;
         r
     }
 
     /// A reader over a history built in memory, for demos and tests.
     pub fn fixed(history: History) -> Self {
-        Self { dir: PathBuf::new(), snapshot_stamp: None, generation: 0, offset: 0, history }
+        Self {
+            dir: PathBuf::new(),
+            snapshot_stamp: None,
+            generation: 0,
+            offset: 0,
+            history,
+            born: None,
+            renewed: false,
+        }
+    }
+
+    /// Whether a new world has begun since the last call, so the window can
+    /// leave pages about the old one.
+    pub fn take_renewed(&mut self) -> bool {
+        std::mem::take(&mut self.renewed)
     }
 
     /// Whether the folder has anything in it yet.
@@ -430,6 +456,20 @@ impl Reader {
         }
         let mut changed = false;
         let stamp = fs::metadata(self.dir.join(SNAPSHOT)).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
+        // A new world moves the old folder away and makes a new one: the
+        // snapshot vanishes, or the log we were following starts again.
+        let born = fs::metadata(&self.dir).ok().and_then(|m| m.created().ok());
+        let remade = born.is_some() && self.born.is_some() && born != self.born;
+        let shrunk = fs::metadata(log_path(&self.dir, self.generation)).is_ok_and(|m| m.len() < self.offset);
+        self.born = born;
+        if remade || (stamp.is_none() && self.snapshot_stamp.is_some()) || shrunk {
+            self.history = History::default();
+            self.snapshot_stamp = None;
+            self.generation = 0;
+            self.offset = 0;
+            self.renewed = true;
+            changed = true;
+        }
         if stamp.is_some()
             && stamp != self.snapshot_stamp
             && let Some(s) = read_snapshot(&self.dir)
@@ -614,5 +654,34 @@ mod tests {
         }
         assert_eq!(Chronicle::open(&dir).history().species.len(), 2);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reader_follows_a_new_world() {
+        let root = temp_dir("renew");
+        let dir = root.join("chronicle");
+        for checkpointed in [false, true] {
+            {
+                let mut c = Chronicle::open(&dir);
+                c.record(1.0, arose(1));
+                c.record(2.0, arose(2));
+                if checkpointed {
+                    c.checkpoint();
+                }
+            }
+            let mut r = Reader::new(&dir);
+            assert_eq!(r.history.species.len(), 2);
+            assert!(!r.take_renewed());
+            {
+                let mut c = Chronicle::open(&dir);
+                c.new_world();
+                c.record(1.0, arose(7));
+            }
+            assert!(r.poll());
+            assert!(r.take_renewed());
+            assert_eq!(r.history.species.keys().copied().collect::<Vec<_>>(), [SpeciesId(7)]);
+            assert!(root.join("chronicle-past").read_dir().unwrap().next().is_some(), "the old world is kept");
+            let _ = fs::remove_dir_all(&root);
+        }
     }
 }

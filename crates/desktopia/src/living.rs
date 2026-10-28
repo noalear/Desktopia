@@ -3,7 +3,8 @@
 //! through each tick so movement stays smooth at any frame rate.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use vesper_chronicle::Chronicle;
 use vesper_chronicle::likeness::Sketchbook;
@@ -45,8 +46,30 @@ impl Living {
         chronicle_dir: Option<PathBuf>,
         on_start: Option<Box<dyn FnOnce() + Send>>,
     ) -> Self {
+        Self::open(save_path, chronicle_dir, on_start, false)
+    }
+
+    /// Starts a new world from nothing. The old save moves to `world-past`
+    /// beside it, and its chronicle to `chronicle-past`, so nothing is destroyed.
+    pub fn begin_anew(
+        save_path: Option<PathBuf>,
+        chronicle_dir: Option<PathBuf>,
+        on_start: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Self {
+        if let Some(p) = &save_path {
+            archive_save(p);
+        }
+        Self::open(save_path, chronicle_dir, on_start, true)
+    }
+
+    fn open(
+        save_path: Option<PathBuf>,
+        chronicle_dir: Option<PathBuf>,
+        on_start: Option<Box<dyn FnOnce() + Send>>,
+        fresh: bool,
+    ) -> Self {
         let now = unix_now();
-        let loaded = save_path.as_deref().map(save::load);
+        let loaded = save_path.as_deref().filter(|_| !fresh).map(save::load);
         let mut chronicle = chronicle_dir.map(Chronicle::open);
         let (sim, catch_up) = match loaded {
             Some(Ok(sim)) => {
@@ -64,8 +87,9 @@ impl Living {
                 (sim, behind)
             }
             other => {
-                if let Some(Err(e)) = other {
-                    log::warn!("no saved world ({e}); a new one begins");
+                match other {
+                    Some(Err(e)) => log::warn!("no saved world ({e}); a new one begins"),
+                    _ => log::info!("a new world begins"),
                 }
                 let seed = now as u64 ^ 0x5eed_7e57;
                 let sim = Sim::new(seed, now);
@@ -334,6 +358,26 @@ fn tissue(t: vesper_sim::Tissue) -> Tissue {
         S::Store => Tissue::Store,
         S::Brood => Tissue::Brood,
         S::Mouth => Tissue::Mouth,
+    }
+}
+
+/// Moves a world's save, and the backup that would otherwise be loaded in
+/// its place, out of the way.
+fn archive_save(path: &Path) {
+    let past = path.with_file_name("world-past");
+    if path.exists() {
+        let to = past.join(format!("{}.vesper", unix_now() as u64));
+        let moved = fs::create_dir_all(&past).and_then(|()| fs::rename(path, &to));
+        match moved {
+            Ok(()) => log::info!("old world kept at {}", to.display()),
+            Err(e) => {
+                log::error!("can't keep the old world ({e}); removing it");
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+    for ext in ["bak", "tmp"] {
+        let _ = fs::remove_file(path.with_extension(ext));
     }
 }
 
