@@ -15,7 +15,8 @@ fn render_every_page() {
         Ok(folder) => Reader::new(folder).history,
         Err(_) => demo::history(4.0, 7),
     };
-    let species = h.species.values().filter(|s| s.alive()).max_by_key(|s| (!s.children.is_empty(), s.peak)).map(|s| s.id);
+    let species =
+        h.species.values().filter(|s| s.alive()).max_by_key(|s| (!s.children.is_empty(), s.peak)).map(|s| s.id);
     let creature = h.notables.values().max_by(|a, b| a.score.total_cmp(&b.score)).map(|n| n.id);
     let group = h.groups.values().max_by_key(|g| (g.notable, g.peak)).map(|g| g.id);
     let mut pages: Vec<(String, Page)> = vec![
