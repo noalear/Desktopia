@@ -21,6 +21,8 @@ Download `desktopia.exe` from the [latest build](https://github.com/noalear/Desk
 
 Desktopia lives in the tray. Right-click its icon to pause, to start it with Windows, or to quit. Quitting gives the normal wallpaper back.
 
+To start Vesper over, right-click the tray icon and choose **New world…**. After you confirm, the current world ends and life begins again from its first founders. The old world isn't deleted: its save moves to `%LOCALAPPDATA%\Desktopia\world-past` and its history to `chronicle-past`, and an open chronicle window switches to the new world by itself.
+
 It stays out of the way:
 
 - It draws at 30 fps at most, at below-normal priority, in Windows efficiency mode.
