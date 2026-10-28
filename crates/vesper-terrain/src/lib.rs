@@ -22,6 +22,10 @@ pub const GLACIER_X: f32 = 3.02;
 /// flank; the others glow in the dark near the glacier.
 pub const VENTS: [(f32, f32); 3] = [(VOLCANO_X + 0.09, 1.0), (2.86, 0.7), (3.24, 0.9)];
 
+/// Columns of air the simulation steps its weather in, and the renderer
+/// reads it by.
+pub const SKY_COLS: usize = 64;
+
 /// Length of one seasonal wobble of the twilight band, in days.
 pub const SEASON_DAYS: f64 = 4.0;
 /// How far the band slides each way, in world units.

@@ -206,6 +206,8 @@ pub enum CauseKind {
     Lava,
     Lightning,
     Flood,
+    Thirst,
+    Choked,
 }
 
 impl CauseKind {
@@ -227,6 +229,8 @@ impl CauseKind {
             DeathCause::Lava => Self::Lava,
             DeathCause::Lightning => Self::Lightning,
             DeathCause::Flood => Self::Flood,
+            DeathCause::Thirst => Self::Thirst,
+            DeathCause::Choked => Self::Choked,
         }
     }
 
@@ -248,6 +252,8 @@ impl CauseKind {
             Self::Lava => "lava",
             Self::Lightning => "lightning",
             Self::Flood => "floods",
+            Self::Thirst => "thirst",
+            Self::Choked => "ash and dust",
         }
     }
 }
@@ -758,6 +764,8 @@ impl History {
             DeathCause::Lava => "was burned alive by lava".into(),
             DeathCause::Lightning => "was struck dead by lightning".into(),
             DeathCause::Flood => "was swept away in a flood".into(),
+            DeathCause::Thirst => format!("dried out and died of thirst in {}", names::place(x)),
+            DeathCause::Choked => format!("choked on ash and dust in {}", names::place(x)),
         }
     }
 
@@ -1169,6 +1177,37 @@ impl History {
             NatureKind::Lightning => (
                 format!("Lightning in {region}"),
                 "Lightning walked across the ground, setting the air glowing.".into(),
+            ),
+            NatureKind::Hailstorm => (
+                format!("Hail over {region}"),
+                names::pick(
+                    seed,
+                    &[
+                        "A storm tower rose so high its rain froze, and hail stripped the leaves and battered the backs of everything caught in the open.",
+                        "Hail fell out of a towering storm, shredding the plants and bruising whatever could not find cover.",
+                    ],
+                )
+                .to_string(),
+            ),
+            NatureKind::Drought => (
+                format!("Drought across {region}"),
+                "No rain had fallen for hours on end. The ground cracked, leaves curled, and the thirsty began to gather at the river.".into(),
+            ),
+            NatureKind::Rains => (
+                format!("The rains return to {region}"),
+                "Rain fell at last on the parched ground. Buried seeds woke, and the land began to green.".into(),
+            ),
+            NatureKind::Heatwave => (
+                format!("Heat wave over {region}"),
+                "The air over the twilight grew hotter than anyone living had known it, and stayed that way.".into(),
+            ),
+            NatureKind::Blizzard => (
+                format!("Blizzard in {region}"),
+                "Snow drove in sideways on a freezing wind and buried the ground. Whatever was caught out in it had to shelter or freeze.".into(),
+            ),
+            NatureKind::AshWinter => (
+                "Ash winter".to_string(),
+                "The eruption's ash hung high over the whole world. The light dimmed, the air cooled, and the cold would last for days.".into(),
             ),
         };
         let weight = if event == NatureKind::Lightning {
