@@ -226,6 +226,10 @@ impl Sim {
         w.tick += 1;
         w.time += TICK as f64;
         index_creatures(w);
+        // Floating plants drift and animals drop seeds between rebuilds, so
+        // the plant grid is made afresh each tick: a loaded world then finds
+        // the same neighbours as one that never stopped.
+        ecology::rebuild_plant_grid(w);
         w.ground.refresh(w.env.river);
         let dt_slow = TICK * PLANT_EVERY as f32;
         if w.tick % PLANT_EVERY == 0 {
