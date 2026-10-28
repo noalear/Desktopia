@@ -1,6 +1,7 @@
 //! The pages other than the tree.
 
 use crate::theme::*;
+use crate::portrait::{Portrait, Portraits};
 use crate::widgets::*;
 use eframe::egui::{self, Color32, RichText, Ui, vec2};
 use std::collections::BTreeSet;
@@ -340,7 +341,7 @@ pub fn annals(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState) {
 
 // ---------------------------------------------------------------- Species
 
-pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState) {
+pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState, portraits: &mut Portraits) {
     heading(ui, "Species", "A field guide to every kind of life Vesper has made.");
     ui.horizontal(|ui| {
         for (f, label) in
@@ -383,6 +384,10 @@ pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState)
         section(ui, if kingdom == Kingdom::Motile { "Creatures" } else { "Plants" });
         egui::Grid::new(format!("species-{kingdom:?}")).striped(true).spacing(vec2(18.0, 8.0)).show(ui, |ui| {
             for s in rows {
+                let thumb = ui.scope(|ui| portrait(ui, portraits, h, s, vec2(84.0, 48.0), true)).response;
+                if thumb.interact(egui::Sense::click()).clicked() {
+                    nav.go = Some(Ref::Species(s.id));
+                }
                 ui.horizontal(|ui| {
                     swatch(ui, species_color(&s.traits));
                     link_styled(
@@ -409,7 +414,35 @@ pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState)
     }
 }
 
-fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species) {
+/// A species as it looks, `width` points wide, or a note saying why not.
+fn portrait(ui: &mut Ui, portraits: &mut Portraits, h: &History, s: &Species, size: egui::Vec2, small: bool) {
+    let ppp = ui.ctx().pixels_per_point();
+    let px = [(size.x * ppp).round() as u32, (size.y * ppp).round() as u32];
+    let shown = match h.likenesses.get(&s.id) {
+        Some(l) => portraits.get(ui.ctx(), s.id, l, px),
+        None => Portrait::None,
+    };
+    match shown {
+        Portrait::Ready(tex) => {
+            ui.add(egui::Image::new(&tex).fit_to_exact_size(size).corner_radius(if small { 4 } else { 8 }));
+        }
+        other => {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, if small { 4 } else { 8 }, CARD);
+            if !small {
+                let note = match (other, s.alive(), h.likenesses.contains_key(&s.id)) {
+                    (Portrait::Pending, ..) => "Painting…",
+                    (_, _, true) => "This window can't paint pictures here.",
+                    (_, true, false) => "Not drawn yet. Species are drawn a few minutes after they appear.",
+                    (_, false, false) => "It died out before anyone drew it.",
+                };
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, note, italic(15.0), DIM);
+            }
+        }
+    }
+}
+
+fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species, portraits: &mut Portraits) {
     let color = species_color(&s.traits);
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(vec2(14.0, 34.0), egui::Sense::hover());
@@ -485,6 +518,24 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species) {
             );
         },
         |ui, nav| {
+            let w = ui.available_width();
+            portrait(ui, portraits, h, s, vec2(w, (w * 0.56).round()), false);
+            if let Some(l) = h.likenesses.get(&s.id) {
+                let b = l.bounds();
+                let what = if l.plant { "One" } else { "A grown one" };
+                // World units are monitor heights; Kyle's monitors are 2160 pixels tall.
+                let px = ((b[2] - b[0]).max(b[3] - b[1]) * 2160.0).round().max(1.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{what}, as seen {} in {}. On a 4K screen it is about {px} pixels across.",
+                        when(l.tick),
+                        place((b[0] + b[2]) / 2.0)
+                    ))
+                    .small()
+                    .color(DIM),
+                );
+            }
+            ui.add_space(10.0);
             section(ui, "Numbers");
             chart(
                 ui,
@@ -865,11 +916,11 @@ fn strain_page(ui: &mut Ui, nav: &mut Nav, h: &History, id: StrainId) {
     mentions(ui, nav, h, Ref::Strain(id));
 }
 
-pub fn detail(ui: &mut Ui, nav: &mut Nav, h: &History, r: Ref) {
+pub fn detail(ui: &mut Ui, nav: &mut Nav, h: &History, r: Ref, portraits: &mut Portraits) {
     ui.add_space(8.0);
     match r {
         Ref::Species(id) => match h.species.get(&id) {
-            Some(s) => species_page(ui, nav, h, s),
+            Some(s) => species_page(ui, nav, h, s, portraits),
             None => {
                 ui.label("Unknown species.");
             }

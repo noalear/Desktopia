@@ -15,28 +15,30 @@ fn render_every_page() {
         Ok(folder) => Reader::new(folder).history,
         Err(_) => demo::history(4.0, 7),
     };
-    let species = h.species.values().filter(|s| s.alive()).max_by_key(|s| (!s.children.is_empty(), s.peak)).unwrap().id;
-    let creature = h.notables.values().max_by(|a, b| a.score.total_cmp(&b.score)).unwrap().id;
-    let group = h.groups.values().max_by_key(|g| (g.notable, g.peak)).unwrap().id;
-    let pages = [
-        ("1-now", Page::Now),
-        ("2-tree", Page::Tree),
-        ("3-annals", Page::Annals),
-        ("4-species", Page::Species),
-        ("5-lives", Page::Lives),
-        ("6-peoples", Page::Peoples),
-        ("7-species-page", Page::Detail(Ref::Species(species))),
-        ("8-creature-page", Page::Detail(Ref::Creature(creature))),
-        ("9-group-page", Page::Detail(Ref::Group(group))),
+    let species = h.species.values().filter(|s| s.alive()).max_by_key(|s| (!s.children.is_empty(), s.peak)).map(|s| s.id);
+    let creature = h.notables.values().max_by(|a, b| a.score.total_cmp(&b.score)).map(|n| n.id);
+    let group = h.groups.values().max_by_key(|g| (g.notable, g.peak)).map(|g| g.id);
+    let mut pages: Vec<(String, Page)> = vec![
+        ("1-now".into(), Page::Now),
+        ("2-tree".into(), Page::Tree),
+        ("3-annals".into(), Page::Annals),
+        ("4-species".into(), Page::Species),
+        ("5-lives".into(), Page::Lives),
+        ("6-peoples".into(), Page::Peoples),
     ];
+    pages.extend(species.map(|id| ("7-species-page".into(), Page::Detail(Ref::Species(id)))));
+    pages.extend(creature.map(|id| ("8-creature-page".into(), Page::Detail(Ref::Creature(id)))));
+    pages.extend(group.map(|id| ("9-group-page".into(), Page::Detail(Ref::Group(id)))));
+    // Every species with a portrait, to check them all.
+    pages.extend(h.likenesses.keys().map(|id| (format!("portrait-{}", id.0), Page::Detail(Ref::Species(*id)))));
     for (name, page) in pages {
         let h = h.clone();
         let mut harness = Harness::builder().with_size([1360.0, 880.0]).wgpu().build_eframe(move |cc| {
-            let mut app = ChronicleApp::new(&cc.egui_ctx, Source::Fixed(Box::new(h)));
+            let mut app = ChronicleApp::new(cc, Source::Fixed(Box::new(h)));
             app.open(page);
             app
         });
-        harness.run_steps(4);
+        harness.run_steps(6);
         let image = harness.render().expect("render");
         image.save(dir.join(format!("{name}.png"))).unwrap();
     }

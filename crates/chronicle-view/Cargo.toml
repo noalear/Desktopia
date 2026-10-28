@@ -8,6 +8,8 @@ description = "The chronicle window: Vesper's history, species tree and notable 
 
 [dependencies]
 vesper-chronicle = { path = "../vesper-chronicle" }
+vesper-render = { path = "../vesper-render" }
+vesper-sim = { path = "../vesper-sim" }
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "x11", "default_fonts"] }
 log.workspace = true
 

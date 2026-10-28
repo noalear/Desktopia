@@ -10,8 +10,9 @@
 //! Those are logged as one [`Tally`] line before the next fact that matters,
 //! and the log checkpoints itself once it grows past [`LOG_LIMIT`].
 
-use crate::facts::Fact;
+use crate::facts::{Fact, SpeciesId};
 use crate::history::{History, Tally};
+use crate::likeness::Likeness;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -34,6 +35,8 @@ struct RecordOut<'a> {
     fact: Option<&'a Fact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tally: Option<&'a Tally>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    likeness: Option<(SpeciesId, &'a Likeness)>,
 }
 
 #[derive(Deserialize)]
@@ -44,6 +47,8 @@ struct RecordIn {
     fact: Option<Fact>,
     #[serde(default)]
     tally: Option<Tally>,
+    #[serde(default)]
+    likeness: Option<(SpeciesId, Likeness)>,
 }
 
 #[derive(Serialize)]
@@ -100,6 +105,9 @@ fn replay(history: &mut History, bytes: &[u8], until: Option<f64>) -> (usize, bo
                     }
                     if let Some(f) = &r.fact {
                         history.apply(r.tick, r.wall, f);
+                    }
+                    if let Some((species, l)) = &r.likeness {
+                        history.apply_likeness(r.tick, r.wall, *species, l);
                     }
                 }
                 Err(e) => log::warn!("skipping a chronicle line: {e}"),
@@ -276,7 +284,7 @@ impl Chronicle {
             self.tally_tick = tick;
         } else {
             self.flush_tally(wall);
-            self.write(&RecordOut { tick, wall, fact: Some(&fact), tally: None });
+            self.write(&RecordOut { tick, wall, fact: Some(&fact), tally: None, likeness: None });
         }
         self.history.apply(tick, wall, &fact);
         if self.logged > LOG_LIMIT {
@@ -293,6 +301,20 @@ impl Chronicle {
         }
     }
 
+    /// Keeps a portrait of `species`, as [`crate::likeness::sitters`] finds them.
+    pub fn record_likeness(&mut self, species: SpeciesId, likeness: Likeness) {
+        if !self.history.species.contains_key(&species) {
+            return;
+        }
+        let (tick, wall) = (likeness.tick, unix_now());
+        self.flush_tally(wall);
+        self.write(&RecordOut { tick, wall, fact: None, tally: None, likeness: Some((species, &likeness)) });
+        self.history.apply_likeness(tick, wall, species, &likeness);
+        if self.logged > LOG_LIMIT {
+            self.checkpoint();
+        }
+    }
+
     /// Writes the routine deaths counted since the last line, stamped no
     /// earlier than any of them so replaying gives the same history.
     fn flush_tally(&mut self, wall: f64) {
@@ -300,7 +322,7 @@ impl Chronicle {
             return;
         }
         let tally = std::mem::take(&mut self.tally);
-        self.write(&RecordOut { tick: self.tally_tick, wall, fact: None, tally: Some(&tally) });
+        self.write(&RecordOut { tick: self.tally_tick, wall, fact: None, tally: Some(&tally), likeness: None });
     }
 
     pub fn record_all(&mut self, facts: impl IntoIterator<Item = (f64, Fact)>) {
@@ -460,6 +482,47 @@ mod tests {
         assert_eq!(c.history().species.len(), 2);
         let r = Reader::new(&dir);
         assert_eq!(r.history.species.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn likenesses_are_kept_from_the_log_and_the_snapshot() {
+        use crate::likeness::Part;
+        let dir = temp_dir("likeness");
+        let sketch = |tick: f64, x: f32| Likeness {
+            tick,
+            wall: 0.0,
+            plant: false,
+            parts: vec![Part {
+                a: [x, 0.3],
+                b: [x + 0.01, 0.3],
+                ra: 0.002,
+                rb: 0.001,
+                tissue: vesper_sim::Tissue::Muscle,
+                damage: 0.0,
+                side: 0,
+            }],
+            sheets: Vec::new(),
+            look: [0.5; vesper_sim::genome::LOOK_GENES],
+            z: 0.4,
+            seed: 7,
+        };
+        {
+            let mut c = Chronicle::open(&dir);
+            c.record(1.0, arose(1));
+            c.record_likeness(SpeciesId(1), sketch(2.0, 1.0));
+            // Nobody knows species 9, so its drawing isn't kept.
+            c.record_likeness(SpeciesId(9), sketch(2.0, 1.0));
+        }
+        let mut c = Chronicle::open(&dir);
+        assert_eq!(c.history().likenesses.len(), 1);
+        assert_eq!(c.history().likenesses[&SpeciesId(1)].parts[0].a, [1.0, 0.3]);
+        c.checkpoint();
+        c.record_likeness(SpeciesId(1), sketch(3.0, 2.0));
+        drop(c);
+        let r = Reader::new(&dir);
+        let l = &r.history.likenesses[&SpeciesId(1)];
+        assert_eq!((l.tick, l.parts[0].a), (3.0, [2.0, 0.3]));
         let _ = fs::remove_dir_all(&dir);
     }
 

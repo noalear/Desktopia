@@ -539,6 +539,8 @@ dependencies = [
  "egui_kittest",
  "log",
  "vesper-chronicle",
+ "vesper-render",
+ "vesper-sim",
 ]
 
 [[package]]

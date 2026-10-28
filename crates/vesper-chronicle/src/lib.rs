@@ -9,9 +9,11 @@
 pub mod demo;
 pub mod facts;
 pub mod history;
+pub mod likeness;
 pub mod names;
 mod store;
 
 pub use facts::*;
 pub use history::{Entry, History, Kind, Piece, Ref, Tally, notability};
+pub use likeness::Likeness;
 pub use store::{Chronicle, Reader};

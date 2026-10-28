@@ -1,6 +1,7 @@
 //! The window's frame: header, navigation, and keeping up with the files.
 
 use crate::pages::{self, PageState};
+use crate::portrait::Portraits;
 use crate::theme::*;
 use crate::tree::TreeState;
 use crate::widgets::{Nav, ago, when};
@@ -57,11 +58,12 @@ pub struct ChronicleApp {
     last_change: Instant,
     state: PageState,
     tree: TreeState,
+    portraits: Portraits,
 }
 
 impl ChronicleApp {
-    pub fn new(ctx: &egui::Context, source: Source) -> Self {
-        install(ctx);
+    pub fn new(cc: &eframe::CreationContext, source: Source) -> Self {
+        install(&cc.egui_ctx);
         let (reader, demo, folder) = match source {
             Source::Folder(dir) => (Reader::new(&dir), None, Some(dir)),
             Source::Demo => {
@@ -80,6 +82,7 @@ impl ChronicleApp {
             last_change: Instant::now(),
             state: PageState::default(),
             tree: TreeState::default(),
+            portraits: Portraits::new(cc.wgpu_render_state.as_ref()),
         }
     }
 
@@ -237,6 +240,7 @@ impl eframe::App for ChronicleApp {
 
         let mut nav = Nav::default();
         let page = self.page;
+        self.portraits.begin_frame();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PANEL).inner_margin(egui::Margin::same(0))).show(
             ui,
             |ui| {
@@ -266,10 +270,12 @@ impl eframe::App for ChronicleApp {
                             match page {
                                 Page::Now => pages::now(ui, &mut nav, h),
                                 Page::Annals => pages::annals(ui, &mut nav, h, &mut self.state),
-                                Page::Species => pages::species_list(ui, &mut nav, h, &mut self.state),
+                                Page::Species => {
+                                    pages::species_list(ui, &mut nav, h, &mut self.state, &mut self.portraits)
+                                }
                                 Page::Lives => pages::lives(ui, &mut nav, h, &mut self.state),
                                 Page::Peoples => pages::peoples(ui, &mut nav, h),
-                                Page::Detail(r) => pages::detail(ui, &mut nav, h, r),
+                                Page::Detail(r) => pages::detail(ui, &mut nav, h, r, &mut self.portraits),
                                 Page::Tree => {}
                             }
                         },
