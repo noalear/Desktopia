@@ -2,13 +2,14 @@
 //! turns its snapshots into draw lists, sampling the motion recorded
 //! through each tick so movement stays smooth at any frame rate.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 use vesper_chronicle::likeness::Sketchbook;
 use vesper_chronicle::{Chronicle, Likeness, SpeciesId};
 use vesper_render::{Infection, LifeBatch, Look, Membrane, Organism, Seg, Tissue, WorldView};
-use vesper_sim::frame::CreatureView;
+use vesper_sim::frame::{CreatureView, PlantView};
 use vesper_sim::history::Fact;
 use vesper_sim::history::Locomotion;
 use vesper_sim::pose::{self, Pose};
@@ -31,6 +32,8 @@ pub struct Living {
     cloud: Option<(f32, Instant)>,
     /// Draws each species now and then for the chronicle, which keeps the drawings.
     sketches: Option<(Sketchbook, Sender<(SpeciesId, Likeness)>)>,
+    /// Where each floating mat was in the older snapshot, and that snapshot's tick.
+    mats_before: (u64, HashMap<u64, [f32; 3]>),
 }
 
 impl Living {
@@ -90,6 +93,7 @@ impl Living {
             membranes: Vec::new(),
             cloud: None,
             sketches: None,
+            mats_before: (u64::MAX, HashMap::new()),
         }
     }
 
@@ -126,7 +130,8 @@ impl Living {
         self.plants_tick = None;
     }
 
-    /// Fills `plants` when they need uploading again, returning whether it did.
+    /// Fills `plants` with the rooted plants when they need uploading again,
+    /// returning whether it did. Floating mats go with the creatures.
     pub fn plants(&mut self, batch: &mut LifeBatch) -> bool {
         let f = self.runner.frames();
         let tick = f.next.tick;
@@ -135,28 +140,32 @@ impl Living {
         }
         self.plants_tick = Some(tick);
         batch.clear();
-        for p in &f.next.plants {
+        for p in f.next.plants.iter().filter(|p| !p.floating) {
             pose::plant(p, &mut self.pose);
-            let height = p.scale * p.body.extent * self.pose.shrink;
-            convert(&self.pose, |w| 0.1 * height * w * w, &mut self.segs, &mut self.membranes);
-            batch.add(&Organism {
-                segs: &self.segs,
-                membranes: &self.membranes,
-                look: &Look { genes: p.look },
-                z: self.pose.z,
-                alive: 1.0,
-                signal: p.glow * p.vigor * 0.3,
-                symbol: 0,
-                bleeding: 0.0,
-                infection: None,
-                clip_y: None,
-                seed: p.id as u32,
-            });
+            self.add_plant(p, batch);
         }
         true
     }
 
-    /// Fills `batch` with every creature, body and egg, blended to now.
+    fn add_plant(&mut self, p: &PlantView, batch: &mut LifeBatch) {
+        let height = p.scale * p.body.extent * self.pose.shrink;
+        convert(&self.pose, |w| 0.1 * height * w * w, &mut self.segs, &mut self.membranes);
+        batch.add(&Organism {
+            segs: &self.segs,
+            membranes: &self.membranes,
+            look: &Look { genes: p.look },
+            z: self.pose.z,
+            alive: 1.0,
+            signal: p.glow * p.vigor * 0.3,
+            symbol: 0,
+            bleeding: 0.0,
+            infection: None,
+            clip_y: None,
+            seed: p.id as u32,
+        });
+    }
+
+    /// Fills `batch` with every creature, body, egg and floating mat, blended to now.
     pub fn creatures(&mut self, batch: &mut LifeBatch) {
         let f = self.runner.frames();
         let t = f.alpha();
@@ -167,6 +176,19 @@ impl Living {
             }
         }
         batch.clear();
+        if self.mats_before.0 != f.prev.tick {
+            let (tick, before) = &mut self.mats_before;
+            *tick = f.prev.tick;
+            before.clear();
+            before.extend(f.prev.plants.iter().filter(|p| p.floating).map(|p| (p.id, p.pos)));
+        }
+        for p in f.next.plants.iter().filter(|p| p.floating) {
+            let to = p.pos;
+            let from = self.mats_before.1.get(&p.id).copied().unwrap_or(to);
+            let pos = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
+            pose::plant_at(p, pos, &mut self.pose);
+            self.add_plant(p, batch);
+        }
         for v in &f.next.creatures {
             pose::creature(v, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);

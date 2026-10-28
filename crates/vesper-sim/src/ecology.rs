@@ -3,7 +3,7 @@
 
 use crate::history::{Behavior, DeathCause, PlantId};
 use crate::plant::{Plant, Seed};
-use crate::world::{DEPTH, MAX_PLANTS, World, col_of, dist3};
+use crate::world::{DEPTH, MAX_MATS, MAX_PLANTS, World, col_of, dist3};
 use std::sync::Arc;
 use vesper_terrain::{self as terrain, WORLD_W};
 
@@ -17,7 +17,11 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
     let ok = w.plants.len() < MAX_PLANTS
         && (floats || !w.ground.in_river(x, depth / DEPTH))
         && !w.env.lava_at(x)
-        && crowd(w, x, depth) < 7;
+        && if floats {
+            crowd_aloft(w, x, depth, alt) < 3 && w.plants.iter().filter(|p| p.genome.floats()).count() < MAX_MATS
+        } else {
+            crowd(w, x, depth) < 7
+        };
     if !ok {
         w.to_soil(x, depth, matter);
         return false;
@@ -69,10 +73,43 @@ fn crowd(w: &World, x: f32, depth: f32) -> usize {
     n
 }
 
+/// Floating mats near a spot in the air, which shade and starve each other.
+fn crowd_aloft(w: &World, x: f32, depth: f32, alt: f32) -> usize {
+    let mut n = 0;
+    w.pgrid.near_any_alt([x, depth, alt], 0.1, |j| {
+        let p = &w.plants[j];
+        if p.alt >= 0.05 && (p.x - x).abs() < 0.04 && (p.depth - depth).abs() < 0.1 && (p.alt - alt).abs() < 0.08 {
+            n += 1;
+        }
+    });
+    n
+}
+
 pub fn rebuild_plant_grid(w: &mut World) {
     w.pgrid.clear();
     for (i, p) in w.plants.iter().enumerate() {
         w.pgrid.insert(i, [p.x, p.depth, p.alt]);
+    }
+}
+
+/// Floating mats ride the wind, every tick so they glide rather than hop.
+/// The wind runs night-ward up high and day-ward low down, so a mat steers
+/// by its height: up when too warm, down when too cold, and between the two
+/// it wanders slowly back and forth.
+pub fn drift(w: &mut World, dt: f32) {
+    let World { plants, env, .. } = w;
+    // Where the two winds cancel.
+    let still = 0.35 * 4.0 / 9.0;
+    for p in plants.iter_mut().filter(|p| p.genome.floats()) {
+        let g = &p.genome;
+        // Each mat likes its own warmth, so they spread along the band.
+        let own = (p.id.0 % 97) as f32 / 97.0 - 0.5;
+        let comfort = (g.heat_tolerance - g.cold_tolerance) * 0.5 + (g.look[5] - 0.5) * 0.8 + own * 0.6;
+        let warm = env.temperature(p.x, p.alt) - comfort;
+        let wander = 0.07 * (p.age * 0.02 + (p.id.0 % 64) as f32).sin();
+        let goal = (still + (warm * 0.15).clamp(-0.12, 0.25) + wander).clamp(0.03, 0.45);
+        p.alt += (goal - p.alt) * 0.1 * dt;
+        p.x = (p.x + env.wind(p.alt) * dt * 0.8).clamp(0.05, WORLD_W - 0.05);
     }
 }
 
@@ -88,14 +125,6 @@ pub fn plants(w: &mut World, dt: f32) {
         p.age += dt;
         p.trap_shut = (p.trap_shut - dt).max(0.0);
         let floats = g.floats();
-        if floats {
-            let goal = 0.12 + g.look[5] * 0.3;
-            p.alt += (goal - p.alt) * 0.02 * dt;
-            p.x += env.wind(p.alt) * dt * 0.8;
-            if p.x < 0.05 || p.x > WORLD_W - 0.05 {
-                p.x = p.x.clamp(0.05, WORLD_W - 0.05);
-            }
-        }
         let height = p.height();
         let leaf = p.leaf_area();
         let mut light = env.light(p.x, p.alt + height * 0.5);
@@ -134,7 +163,7 @@ pub fn plants(w: &mut World, dt: f32) {
         let reach = 0.3 + g.root;
         let got = if floats {
             let c = col_of(x);
-            let m = (w.air[c] * 0.02 * dt).min(potential);
+            let m = (w.air[c] * 0.006 * dt).min(potential);
             w.air[c] -= m;
             m
         } else {

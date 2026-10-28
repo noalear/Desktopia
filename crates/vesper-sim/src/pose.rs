@@ -357,8 +357,14 @@ pub(crate) fn body_has_lost_child(body: &Body, lost: u64, i: usize) -> bool {
 
 /// Poses a plant. Sway is left to the renderer: each piece says how much it moves.
 pub fn plant(p: &PlantView, out: &mut Pose) {
+    plant_at(p, p.pos, out);
+}
+
+/// Poses a plant somewhere other than where its snapshot has it, such as a
+/// floating mat blended between ticks.
+pub fn plant_at(p: &PlantView, pos: [f32; 3], out: &mut Pose) {
     out.clear();
-    let (at, shrink, z) = project(p.pos);
+    let (at, shrink, z) = project(pos);
     let place = Place { origin: at, scale: p.scale * shrink, face: 1.0, fore: 1.0, tilt: 0.0 };
     out.z = z;
     out.at = at;
