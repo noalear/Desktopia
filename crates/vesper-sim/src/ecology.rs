@@ -1,7 +1,7 @@
 //! Plants: growing on light, vents, water and soil, shading each other out,
 //! fruiting and seeding, catching animals, and dying back into the ground.
 
-use crate::history::{Behavior, DeathCause, PlantId};
+use crate::history::{Behavior, DeathCause, PlantId, SpeciesId};
 use crate::plant::{Plant, Seed};
 use crate::world::{DEPTH, MAX_MATS, MAX_PLANTS, World, col_of, dist3};
 use std::sync::Arc;
@@ -57,6 +57,11 @@ pub fn sow(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: f32
         vigor: 1.0,
         born: w.time,
         generation: seed.generation,
+        alarm: 0.0,
+        primed: 0.0,
+        dormant: 0.0,
+        hardship: 0.0,
+        acclim: 0.0,
     });
     w.counters.plant_births += 1;
     true
@@ -117,12 +122,15 @@ pub fn plants(w: &mut World, dt: f32) {
     let env = w.env.clone();
     let mut dead = Vec::new();
     let mut seeds = Vec::new();
+    let mut warnings = Vec::new();
+    let mut events = Vec::new();
     for i in 0..w.plants.len() {
         let col = col_of(w.plants[i].x);
         let canopy = w.canopy.get(col).copied().unwrap_or(0.0);
         let p = &mut w.plants[i];
         let g = p.genome.clone();
-        p.age += dt;
+        // A dormant plant's clock runs slow.
+        p.age += dt * (1.0 - 0.5 * p.dormant);
         p.trap_shut = (p.trap_shut - dt).max(0.0);
         let floats = g.floats();
         let height = p.height();
@@ -139,8 +147,13 @@ pub fn plants(w: &mut World, dt: f32) {
         };
         let water_factor = (1.0 + g.thirst * 0.8) * (1.0 - g.thirst * (1.0 - water.min(1.0)));
         let temp = env.temperature(p.x, p.alt);
-        let hot = 0.4 + g.heat_tolerance;
-        let cold = -(0.4 + g.cold_tolerance);
+        // Hardening: tolerance shifts slowly towards the warmth it keeps meeting.
+        let reach = 0.4 * g.hardening;
+        let middle = (g.heat_tolerance - g.cold_tolerance) * 0.5;
+        let pull = ((temp - middle) * 0.5).clamp(-reach, reach);
+        p.acclim += (pull - p.acclim) * (g.hardening * dt / 600.0).min(1.0);
+        let hot = 0.4 + g.heat_tolerance + p.acclim.max(0.0);
+        let cold = -(0.4 + g.cold_tolerance + (-p.acclim).max(0.0));
         let stress = if temp > hot {
             temp - hot
         } else if temp < cold {
@@ -148,17 +161,57 @@ pub fn plants(w: &mut World, dt: f32) {
         } else {
             0.0
         };
-        p.health = (p.health - stress * 0.01 * dt + 0.002 * dt).min(1.0);
+        // Dormancy: when heat, cold, drought or darkness have gone on long
+        // enough it shuts down, and it wakes again once they ease.
+        let dry = if floats { 0.0 } else { g.thirst * (1.0 - water.min(1.0)) };
+        let dark = if g.vent < 0.5 { ((0.15 - light) * 4.0).max(0.0) } else { 0.0 };
+        p.hardship += (stress * 2.0 + dry + dark - p.hardship) * (dt / 60.0).min(1.0);
+        if g.dormancy > 0.05 {
+            let threshold = 0.2 + (1.0 - g.dormancy) * 0.8;
+            let goal = if p.hardship > threshold {
+                1.0
+            } else if p.hardship < threshold * 0.5 {
+                0.0
+            } else {
+                p.dormant.round()
+            };
+            let was = p.dormant;
+            p.dormant += (goal - p.dormant) * (dt / 30.0).min(1.0);
+            if was < 0.8 && p.dormant >= 0.8 {
+                events.push((Behavior::Dormancy, p.species));
+            }
+        } else {
+            p.dormant = 0.0;
+        }
+        let sleep = p.dormant;
+        p.health = (p.health - stress * 0.01 * dt * (1.0 - 0.7 * sleep) + 0.002 * dt).min(1.0);
         let s = p.scale();
         let area: f32 = p.body.segments.iter().map(|q| q.area()).sum::<f32>() * s * s;
         let photo = leaf * light * 60.0 * (1.0 - g.vent);
         let chemo = terrain::vent_heat(p.x) * g.vent * area * 40.0 * (p.alt < 0.05) as u8 as f32;
-        let potential = (photo + chemo) * g.growth * water_factor * dt;
+        let potential = (photo + chemo) * g.growth * water_factor * dt * (1.0 - 0.9 * sleep);
         let upkeep = p.matter
             * 0.0012
-            * (1.0 + g.spines * 0.3 + g.toxin * 0.5 + g.trap * 0.3 + g.glow * 0.3 + g.root * 0.2)
-            * dt;
-        p.vigor += ((light + chemo * 50.0).min(1.0) - p.vigor) * 0.05 * dt;
+            * (1.0
+                + g.spines * 0.3
+                + g.toxin * 0.5
+                + g.trap * 0.3
+                + g.glow * 0.3
+                + g.root * 0.2
+                + p.alarm * g.induce * 0.6
+                + g.warn * 0.1
+                + g.listen * 0.05
+                + p.acclim.abs() * 0.5
+                + g.hardening * 0.1)
+            * dt
+            * (1.0 - 0.7 * sleep);
+        p.vigor += (((light + chemo * 50.0).min(1.0) * (1.0 - sleep)) - p.vigor) * 0.05 * dt;
+        // Defences raised against grazing fade, and so does the memory of it.
+        p.alarm *= (-dt / 240.0).exp();
+        p.primed *= (-dt / 3600.0).exp();
+        if p.alarm > 0.25 && g.warn > 0.05 {
+            warnings.push((i, p.alarm * g.warn));
+        }
         let (x, depth, alt) = (p.x, p.depth, p.alt);
         let reach = 0.3 + g.root;
         let got = if floats {
@@ -187,11 +240,28 @@ pub fn plants(w: &mut World, dt: f32) {
         let rot = p.fruit * 0.002 * dt;
         p.fruit -= rot;
         litter += rot;
-        // Seeds.
+        // Seeds. Some plants hold theirs back and let it all go when rain
+        // comes, together with their neighbours, so seed-eaters can't keep up
+        // and the seedlings start in wet ground.
         let seed_m = p.adult_matter * g.seed_size;
-        if p.seeds >= seed_m && p.growth01() > 0.5 {
-            p.seeds -= seed_m;
-            seeds.push((i, seed_m));
+        if p.growth01() > 0.5 && p.seeds >= seed_m {
+            if g.mast > 0.3 && !floats {
+                let hoard = p.adult_matter * (0.1 + g.mast * 0.6);
+                let wet = env.rain(x) > 0.35;
+                if wet || p.seeds > hoard || p.age > g.lifespan * 0.95 {
+                    let k = ((p.seeds / seed_m).floor() as usize).min(12);
+                    p.seeds -= seed_m * k as f32;
+                    for _ in 0..k {
+                        seeds.push((i, seed_m));
+                    }
+                    if wet && k >= 3 {
+                        events.push((Behavior::Masting, p.species));
+                    }
+                }
+            } else {
+                p.seeds -= seed_m;
+                seeds.push((i, seed_m));
+            }
         }
         let lava = !floats && env.lava_at(x);
         if p.age > g.lifespan || p.health <= 0.0 || p.matter < p.adult_matter * 0.004 || lava {
@@ -204,6 +274,10 @@ pub fn plants(w: &mut World, dt: f32) {
                 w.to_soil(x, depth, litter);
             }
         }
+    }
+    warn(w, &warnings, dt, &mut events);
+    for (b, sp) in events {
+        w.first(b, sp, None);
     }
     // Scatter seeds.
     for (i, m) in seeds {
@@ -234,6 +308,53 @@ pub fn plants(w: &mut World, dt: f32) {
     }
     rebuild_plant_grid(w);
     traps(w);
+}
+
+/// Plants being eaten give off a scent. Neighbours that pick it up arm
+/// themselves before the grazers reach them, their own kind most readily,
+/// and hunters that smell it know prey is about.
+fn warn(w: &mut World, warnings: &[(usize, f32)], dt: f32, events: &mut Vec<(Behavior, SpeciesId)>) {
+    let mut heard = Vec::new();
+    for &(i, strength) in warnings {
+        let (x, depth, alt, species) = {
+            let p = &w.plants[i];
+            (p.x, p.depth, p.alt, p.species)
+        };
+        let r = 0.03 + 0.08 * strength.min(1.0);
+        heard.clear();
+        w.pgrid.near([x, depth, alt], r, |j| {
+            if j != i {
+                heard.push(j);
+            }
+        });
+        let mut roused = 0;
+        for &j in &heard {
+            let q = &mut w.plants[j];
+            let d = dist3([x, depth, alt], [q.x, q.depth, q.alt]);
+            if d > r {
+                continue;
+            }
+            let own = if q.species == species { 1.0 } else { 0.5 };
+            let k = q.genome.listen * strength * (1.0 - d / r) * own * dt * 0.2;
+            if k > 0.002 {
+                q.alarm = (q.alarm + k * q.genome.induce.max(0.2) * (1.0 + 2.0 * q.primed)).min(1.0);
+                q.primed = (q.primed + k * 0.5).min(1.0);
+                roused += 1;
+            }
+        }
+        if roused >= 2 {
+            events.push((Behavior::PlantWarning, species));
+        }
+        let mut hunters = Vec::new();
+        w.cgrid.near([x, depth, 0.0], 0.15, |k| {
+            if w.creatures.get(k).is_some_and(|c| c.genome.diet > 0.5) {
+                hunters.push(k);
+            }
+        });
+        for k in hunters {
+            w.creatures[k].mind.hear(crate::mind::FOOD, 0.3 * strength.min(1.0), x);
+        }
+    }
 }
 
 /// Trap plants close on small animals that wander into them.

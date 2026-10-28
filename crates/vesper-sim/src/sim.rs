@@ -5,7 +5,7 @@ use crate::ecology;
 use crate::genome::{Founder, Genome};
 use crate::history::{CreatureId, Fact};
 use crate::life;
-use crate::mind::Mind;
+use crate::mind::{MEANINGS, Mind, SYMBOLS};
 use crate::plant::{PlantGenome, Seed, Seedling};
 use crate::rng::Rng;
 use crate::society;
@@ -138,7 +138,7 @@ impl Sim {
         for (kind, n, alt) in founders {
             let g = Arc::new(Genome::founder(kind, &mut w.rng));
             let species = w.species.found_creature(&g, 0.0, &mut w.history);
-            let voice = [w.rng.below(16) as u8, w.rng.below(16) as u8, w.rng.below(16) as u8, w.rng.below(16) as u8];
+            let voice: [u8; MEANINGS] = std::array::from_fn(|_| w.rng.below(SYMBOLS) as u8);
             for _ in 0..n {
                 let child = Arc::new(g.bud(&mut w.rng));
                 let x = w.rng.range(0.9, 2.5);
@@ -379,7 +379,7 @@ fn renew(w: &mut World) {
         let kind = *w.rng.pick(&kinds);
         let g = Arc::new(Genome::founder(kind, &mut w.rng));
         let species = w.species.found_creature(&g, w.time, &mut w.history);
-        let voice = [0, 1, 2, 3];
+        let voice: [u8; MEANINGS] = std::array::from_fn(|m| m as u8);
         let home = livable(w, &g);
         for _ in 0..20 {
             let child = Arc::new(g.bud(&mut w.rng));
