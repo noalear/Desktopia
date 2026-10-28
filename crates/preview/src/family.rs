@@ -65,7 +65,7 @@ pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
             });
             batch.clear();
             living::convert(&pose, |_| 0.0, &mut segs, &mut membranes);
-            add(&mut batch, &segs, &membranes, c.look, pose.z, 1.0, 0.0, c, c.id);
+            add(&mut batch, &segs, &membranes, c.look, pose.z, 1.0, 0.0, c, c.id, Some(pose.at));
             renderer.set_creatures(&mut batch);
             let world = view_at(args, [world_w * ppu, ppu], args.time);
             renderer.render(&mut out, &world, &view(&tex));
