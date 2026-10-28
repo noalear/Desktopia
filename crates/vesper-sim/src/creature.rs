@@ -186,6 +186,13 @@ impl Creature {
             && self.health > 0.6
     }
 
+    /// The coldest and hottest it can stand without harm.
+    pub fn bearable(&self) -> (f32, f32) {
+        let cold = -(0.35 + self.genome.cold_tolerance * 0.8 + self.pheno.frac(Tissue::Store) * 1.5);
+        let hot = 0.35 + self.genome.heat_tolerance * 0.8 + self.abil.armor * 0.5;
+        (cold, hot)
+    }
+
     pub fn on_ground(&self) -> bool {
         self.pos[2] <= 0.001
     }
