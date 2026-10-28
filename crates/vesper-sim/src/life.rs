@@ -7,7 +7,7 @@ use crate::creature::{Action, Creature, Tally, adult_matter};
 use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::history::{Behavior, CreatureId, DeathCause, Fact, SpeciesId, StrainId};
-use crate::mind::{self, Mind, creature_bin};
+use crate::mind::{self, Mind, PlaceKind, creature_bin};
 use crate::physics::{self, Rig};
 use crate::strain::{Infection, Strain};
 use crate::think::season_quarter;
@@ -52,6 +52,9 @@ pub fn new_creature(
     let adult = adult_matter(&genome, &body).max(1e-5);
     let maturity = (matter / adult).clamp(0.02, 1.0);
     let brain = Brain::new(&genome.brain);
+    let mut mind = mind;
+    // The social brain: bigger brains keep track of more others.
+    mind.capacity = (4 + genome.brain.hidden / 3).min(mind::KNOWN) as u8;
     let mut c = Creature {
         id,
         species,
@@ -94,6 +97,7 @@ pub fn new_creature(
         seed: None,
         seed_timer: 0.0,
         reward: 0.0,
+        shelter: 0.0,
         intake: 0.0,
         target: None,
         focus: None,
@@ -152,6 +156,14 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
     let kin = Genome::kinship(&att.genome.marker, &def.genome.marker) > 0.6;
     def.mind.feel(att.id, -0.4, false, now);
     att.mind.feel(def.id, -0.05, kin, now);
+    if att.species == def.species {
+        def.mind.fought(att.id, kin, now);
+        att.mind.fought(def.id, kin, now);
+    } else {
+        // Being bitten teaches what that kind of creature is, and where.
+        def.mind.learn_wary(creature_bin(&att.genome.look, att.length()), 1.0, 0.25);
+        def.mind.remember(PlaceKind::Danger, def.pos[0], def.pos[1], 0.6, now, false);
+    }
     // Hunters eat what they tear off.
     let eats = att.pheno.has(Tissue::Mouth) && att.genome.diet > 0.15;
     let eaten = if eats { (dmg * 0.8).min(def.matter * 0.5) } else { 0.0 };
@@ -215,7 +227,9 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         att.health -= hurt * 0.3;
         att.pain += hurt;
         let eff = 0.1 + 0.9 * att_diet;
-        digest_meat(w, ai, eaten, eff, bin, toxin * 1.5);
+        // Its own kind's flesh sits badly: a taste most learn to shun.
+        let kin_meat = if att_species == def_species { 0.4 } else { 0.0 };
+        digest_meat(w, ai, eaten, eff, bin, toxin * 1.5 + kin_meat);
     }
     if let Some((sub, m, body, scale, look, chunk_rig)) = chunk {
         let id = w.id();
@@ -303,7 +317,8 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
         return;
     }
     let sp = w.creatures[mi].species;
-    let own = w.creatures.iter().filter(|c| c.species == sp).count() + w.eggs.iter().filter(|e| e.species == sp).count();
+    let own =
+        w.creatures.iter().filter(|c| c.species == sp).count() + w.eggs.iter().filter(|e| e.species == sp).count();
     let crowd = (own as f32 + OTHERS_CROWD * (total - own) as f32) / (MAX_CREATURES as f32 * 0.85);
     if w.rng.chance(crowd.powi(4)) {
         return;
@@ -328,6 +343,8 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
     let mvoice = m.mind.voice;
     let mhome = m.mind.home;
     let mroute = m.mind.route_from;
+    let mwary = m.mind.wary.clone();
+    let mplaces = m.mind.places.clone();
     let brood = m.abil.brood;
     let live = g.live_birth > 0.5;
     let spores = g.invest < 0.03 && g.clutch > 8.0;
@@ -407,6 +424,8 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
                 voice: mvoice,
                 home: mhome,
                 route_from: mroute,
+                wary: mwary.clone(),
+                places: mplaces.clone(),
                 generation: mgen + 1,
                 pos,
                 matter: per,
@@ -609,9 +628,12 @@ pub fn metabolism(w: &mut World, dt: f32) {
         c.age += dt;
         let light = env.light(c.pos[0], c.pos[2]);
         let temp = env.temperature(c.pos[0], c.pos[2]);
-        // Moving is paid for by the muscles, in the physics.
+        // Moving is paid for by the muscles, in the physics. At rest the
+        // body idles down, deeper in the cold, like torpor.
         let glow_cost = c.flash * c.abil.upkeep * 0.3;
-        c.energy -= (c.abil.upkeep + glow_cost) * dt;
+        let resting = c.action == Action::Resting;
+        let idle = if resting { if temp < 0.0 { 0.5 } else { 0.7 } } else { 1.0 };
+        c.energy -= (c.abil.upkeep * idle + glow_cost) * dt;
         c.energy += c.abil.film * light * dt;
         let cap = c.abil.energy_cap;
         c.energy = c.energy.min(cap);
@@ -652,7 +674,7 @@ pub fn metabolism(w: &mut World, dt: f32) {
         }
         // Healing costs energy.
         if c.health < 1.0 && e01 > 0.4 {
-            let h = (0.004 * dt).min(1.0 - c.health);
+            let h = (0.004 * dt * if resting { 2.0 } else { 1.0 }).min(1.0 - c.health);
             c.health += h;
             c.energy -= h * c.abil.upkeep * 20.0;
         }
@@ -676,14 +698,16 @@ pub fn metabolism(w: &mut World, dt: f32) {
         } else {
             0.0
         };
+        // Cover and huddling take the edge off the cold.
+        let stress = if stress < 0.0 { stress * (1.0 - 0.6 * c.shelter) } else { stress };
         if stress != 0.0 {
             c.health -= stress.abs() * 0.025 * dt;
             c.pain += stress.abs() * 0.1 * dt;
             c.reward -= stress.abs() * 0.05;
         }
-        // Light film burns in the full sun of the day edge.
+        // Light film burns in the full sun of the day edge, less in shade.
         if light > 0.85 {
-            c.health -= c.pheno.frac(Tissue::LightFilm) * (light - 0.85) * 0.05 * dt;
+            c.health -= c.pheno.frac(Tissue::LightFilm) * (light - 0.85) * 0.05 * dt * (1.0 - 0.7 * c.shelter);
         }
         // Ageing.
         c.wear += dt / lifespan(&c.genome);
@@ -768,6 +792,7 @@ pub fn bury(w: &mut World) {
             s.hosts = s.hosts.saturating_sub(1);
         }
         w.record(Fact::Death { who: c.id, species: c.species, cause, life });
+        crate::act::bereave(w, &c, cause);
         w.species.died(c.species, w.time, &mut w.history);
         if c.matter <= 0.0 {
             continue;
@@ -871,11 +896,16 @@ pub fn eggs(w: &mut World, dt: f32) {
         if e.hatch_in <= 0.0 {
             let e = w.eggs.swap_remove(i);
             let id = CreatureId(w.id());
-            let mut mind = Mind::new(e.voice);
-            mind.home = e.home;
-            mind.route_from = e.route_from;
+            let mut mind = Mind::hatch(e.voice, e.home, e.route_from, &e.wary, &e.places);
             if let Some(m) = e.mother {
-                mind.known.push(mind::Acquaintance { id: m, bond: 0.6, kin: true, seen: now });
+                mind.known.push(mind::Acquaintance {
+                    id: m,
+                    bond: 0.6,
+                    kin: true,
+                    seen: now,
+                    trust: 0.8,
+                    fought: -1.0,
+                });
             }
             let heading = w.rng.signed() * std::f32::consts::PI;
             let c = new_creature(

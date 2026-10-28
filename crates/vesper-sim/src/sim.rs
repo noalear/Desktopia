@@ -5,7 +5,7 @@ use crate::ecology;
 use crate::genome::{Founder, Genome};
 use crate::history::{CreatureId, Fact};
 use crate::life;
-use crate::mind::Mind;
+use crate::mind::{MEANINGS, Mind, SYMBOLS};
 use crate::plant::{PlantGenome, Seed, Seedling};
 use crate::rng::Rng;
 use crate::society;
@@ -137,7 +137,7 @@ impl Sim {
         for (kind, n, alt) in founders {
             let g = Arc::new(Genome::founder(kind, &mut w.rng));
             let species = w.species.found_creature(&g, 0.0, &mut w.history);
-            let voice = [w.rng.below(16) as u8, w.rng.below(16) as u8, w.rng.below(16) as u8, w.rng.below(16) as u8];
+            let voice: [u8; MEANINGS] = std::array::from_fn(|_| w.rng.below(SYMBOLS) as u8);
             for _ in 0..n {
                 let child = Arc::new(g.wild(&mut w.rng));
                 let x = w.rng.range(0.9, 2.5);
@@ -333,21 +333,27 @@ thread_local! {
 /// Somewhere along the band, out of the lava, whose warmth sits well inside
 /// what a genome can stand.
 fn livable(w: &mut World, g: &Genome) -> f32 {
-    let cold = -(0.35 + g.cold_tolerance * 0.8);
-    let hot = 0.35 + g.heat_tolerance * 0.8;
     let mut best = (f32::MIN, WORLD_W * 0.5);
     for _ in 0..40 {
         let x = w.rng.range(0.1, WORLD_W - 0.1);
         if w.env.lava_at(x) {
             continue;
         }
-        let t = w.env.temperature(x, 0.0);
-        let margin = (hot - t).min(t - cold);
-        if margin > best.0 {
-            best = (margin, x);
+        let m = margin(w, g, x);
+        if m > best.0 {
+            best = (m, x);
         }
     }
     best.1
+}
+
+/// How far the ground temperature at `x` sits inside what these genes bear
+/// (before any fat or armour widens it).
+fn margin(w: &World, g: &Genome, x: f32) -> f32 {
+    let cold = -(0.35 + g.cold_tolerance * 0.8);
+    let hot = 0.35 + g.heat_tolerance * 0.8;
+    let t = w.env.temperature(x, 0.0);
+    (hot - t).min(t - cold)
 }
 
 /// Retires strains nobody carries any more.
@@ -379,11 +385,16 @@ fn renew(w: &mut World) {
         let kind = *w.rng.pick(&kinds);
         let g = Arc::new(Genome::founder(kind, &mut w.rng));
         let species = w.species.found_creature(&g, w.time, &mut w.history);
-        let voice = [0, 1, 2, 3];
+        let voice: [u8; MEANINGS] = std::array::from_fn(|m| m as u8);
         let home = livable(w, &g);
         for _ in 0..20 {
             let child = Arc::new(g.wild(&mut w.rng));
+            // Its own genes vary from the founder's, so it keeps to where it can bear.
             let x = (home + w.rng.normal() * 0.05).clamp(0.05, WORLD_W - 0.05);
+            let x = if margin(w, &child, x) > 0.0 { x } else { home };
+            if margin(w, &child, x) <= 0.0 {
+                continue;
+            }
             let pos = [x, w.rng.range(0.02, DEPTH - 0.02), 0.0];
             let body = crate::body::Body::develop(&child);
             let adult = crate::creature::adult_matter(&child, &body);

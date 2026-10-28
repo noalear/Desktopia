@@ -57,6 +57,7 @@ pub fn blank_life(id: CreatureId, species: SpeciesId) -> Life {
         x: 0.5,
         kindness: 0,
         scars: 0,
+        mind: None,
     }
 }
 

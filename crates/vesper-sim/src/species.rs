@@ -8,10 +8,10 @@
 
 use crate::body::{Body, Phenotype};
 use crate::creature::abilities;
+use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::history::{Fact, Kingdom, Locomotion, Reproduction, SpeciesId, Traits};
 use crate::plant::PlantGenome;
-use crate::genetics;
 use crate::rng::Rng;
 use crate::world::World;
 use serde::{Deserialize, Serialize};

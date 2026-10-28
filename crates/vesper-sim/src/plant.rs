@@ -57,6 +57,18 @@ pub struct PlantGenome {
     pub look: [f32; LOOK_GENES],
     /// Passed down the seed parent's line only, like chloroplasts.
     pub marker: [u8; 8],
+    /// How strongly being eaten raises its spines and poison for a while.
+    pub induce: f32,
+    /// How much it gives off a warning scent when eaten.
+    pub warn: f32,
+    /// How readily it takes up a neighbour's warning and arms itself in turn.
+    pub listen: f32,
+    /// How readily it shuts down to wait out heat, cold, drought or darkness.
+    pub dormancy: f32,
+    /// How far it can harden itself to the heat or cold it keeps meeting.
+    pub hardening: f32,
+    /// How much it holds its seed back to release all at once after rain.
+    pub mast: f32,
     /// The two sets of genes it carries, from its seed parent and its pollen
     /// parent, that the fields above express. Missing in species records.
     pub haplotypes: Option<Arc<[PlantGenome; 2]>>,
@@ -75,10 +87,10 @@ pub struct PlantGenome {
 }
 
 /// Quantitative plant loci, in chromosome order.
-const PLANT_LOCI: usize = 41;
-const PLANT_CHROMS: [usize; 5] = [0, 11, 18, 25, PLANT_LOCI];
+const PLANT_LOCI: usize = 47;
+const PLANT_CHROMS: [usize; 5] = [0, 11, 21, 31, PLANT_LOCI];
 /// Hue loci, which blend round the colour wheel.
-const PLANT_HUES: [usize; 2] = [25, 28];
+const PLANT_HUES: [usize; 2] = [31, 34];
 /// How far pollen carries on the wind, at the wind gene's full reach, and on animals.
 pub const POLLEN_WIND: f32 = 0.25;
 pub const POLLEN_ANIMAL: f32 = 0.6;
@@ -134,6 +146,12 @@ impl PlantGenome {
             mutation: 1.0,
             look,
             marker,
+            induce: rng.range(0.0, 0.4),
+            warn: rng.range(0.0, 0.3),
+            listen: rng.range(0.0, 0.4),
+            dormancy: rng.range(0.1, 0.5),
+            hardening: rng.range(0.1, 0.5),
+            mast: rng.range(0.0, 0.3),
             haplotypes: None,
             dominance: Vec::new(),
             load: 0,
@@ -379,6 +397,9 @@ impl PlantGenome {
             self.lifespan,
             self.mutation,
             self.seed_size,
+            self.dormancy,
+            self.hardening,
+            self.mast,
             self.selfing,
             self.spines,
             self.toxin,
@@ -387,6 +408,9 @@ impl PlantGenome {
             self.wind,
             self.glow,
             self.nectar,
+            self.induce,
+            self.warn,
+            self.listen,
             l[0],
             l[1],
             l[2],
@@ -428,6 +452,9 @@ impl PlantGenome {
             &mut self.lifespan,
             &mut self.mutation,
             &mut self.seed_size,
+            &mut self.dormancy,
+            &mut self.hardening,
+            &mut self.mast,
             &mut self.selfing,
             &mut self.spines,
             &mut self.toxin,
@@ -436,6 +463,9 @@ impl PlantGenome {
             &mut self.wind,
             &mut self.glow,
             &mut self.nectar,
+            &mut self.induce,
+            &mut self.warn,
+            &mut self.listen,
             l0,
             l1,
             l2,
@@ -485,6 +515,12 @@ impl PlantGenome {
         nudge(&mut self.lifespan, 150.0, 300.0, 20000.0, rng);
         nudge(&mut self.growth, 0.05, 0.3, 2.0, rng);
         nudge(&mut self.mutation, 0.05, 0.3, 2.5, rng);
+        nudge(&mut self.induce, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.warn, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.listen, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.dormancy, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.hardening, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.mast, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.selfing, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.nectar, 0.03, 0.0, 1.0, rng);
         for (i, v) in self.look.iter_mut().enumerate() {
@@ -625,6 +661,8 @@ impl PlantGenome {
             (self.floating, o.floating),
             (self.glow, o.glow),
             (self.leaf / 2.0, o.leaf / 2.0),
+            (self.induce * 0.5, o.induce * 0.5),
+            (self.mast * 0.5, o.mast * 0.5),
         ] {
             d += (a - b).abs() * 2.0;
         }
@@ -669,6 +707,17 @@ pub struct Plant {
     pub vigor: f32,
     pub born: f64,
     pub generation: u32,
+    /// Defences raised against grazing, 0..1, fading over minutes.
+    pub alarm: f32,
+    /// Memory of having been attacked, 0..1, fading over an hour: a primed
+    /// plant arms itself faster.
+    pub primed: f32,
+    /// How deeply it has shut down, 0 awake .. 1 dormant.
+    pub dormant: f32,
+    /// How bad things have been lately, smoothed, for deciding to shut down.
+    pub hardship: f32,
+    /// Tolerance it has hardened itself to: + more heat, - more cold.
+    pub acclim: f32,
 }
 
 impl Plant {
@@ -683,6 +732,16 @@ impl Plant {
 
     pub fn height(&self) -> f32 {
         self.body.extent * self.scale()
+    }
+
+    /// Spines with any raised against grazing.
+    pub fn spines(&self) -> f32 {
+        (self.genome.spines + self.alarm * self.genome.induce * 0.6).min(1.0)
+    }
+
+    /// Poison with any raised against grazing.
+    pub fn toxin(&self) -> f32 {
+        (self.genome.toxin + self.alarm * self.genome.induce * 0.8).min(1.0)
     }
 
     pub fn leaf_area(&self) -> f32 {

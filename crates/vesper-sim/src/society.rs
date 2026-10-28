@@ -223,7 +223,7 @@ pub fn regroup(w: &mut World) {
 }
 
 fn majority_voice<'a>(members: impl Iterator<Item = &'a Creature>) -> [u8; MEANINGS] {
-    let mut counts = [[0u16; 16]; MEANINGS];
+    let mut counts = [[0u16; crate::mind::SYMBOLS]; MEANINGS];
     for c in members {
         for m in 0..MEANINGS {
             counts[m][c.mind.voice[m] as usize % 16] += 1;
@@ -317,8 +317,8 @@ pub fn census(w: &World) -> Census {
             members: g.members.len() as u32,
             x_range: g.x_range,
             leader: g.leader,
-            dialect: u32::from_le_bytes(g.voice),
-            signals: g.voice,
+            dialect: g.voice.iter().fold(0x811c_9dc5u32, |h, &v| (h ^ v as u32).wrapping_mul(0x0100_0193)),
+            signals: [g.voice[0], g.voice[1], g.voice[2], g.voice[3]],
         })
         .collect();
     let strains = w

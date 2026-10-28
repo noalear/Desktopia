@@ -739,6 +739,11 @@ fn creature_page(ui: &mut Ui, nav: &mut Nav, h: &History, id: CreatureId) {
         tile(ui, &n.life.scars.to_string(), "wounds survived", BONE);
         tile(ui, &n.life.kindness.to_string(), "kindnesses", VIOLET);
         tile(ui, &n.life.generation.to_string(), "generation", AMBER);
+        if let Some(m) = &n.life.mind {
+            tile(ui, &m.friends.to_string(), "friends", TEAL);
+            tile(ui, &m.places.to_string(), "places known", ACID);
+            tile(ui, &m.fears.to_string(), "kinds feared", EMBER);
+        }
     });
     let children: Vec<_> = h.notables.values().filter(|c| c.life.parent == Some(id)).collect();
     if !children.is_empty() {
