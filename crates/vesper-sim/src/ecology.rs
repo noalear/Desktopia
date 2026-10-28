@@ -2,7 +2,8 @@
 //! fruiting and seeding, catching animals, and dying back into the ground.
 
 use crate::history::{Behavior, DeathCause, PlantId, SpeciesId};
-use crate::plant::{Plant, Seed};
+use crate::plant::{POLLEN_ANIMAL, POLLEN_WIND, Plant, PlantGenome, Seed};
+use crate::species::PLANT_SPLIT;
 use crate::world::{DEPTH, Dormant, MAX_MATS, MAX_PLANTS, World, col_of, dist3};
 
 /// Seeds lying dormant at most.
@@ -71,7 +72,7 @@ fn plant_seed(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: 
             return true;
         }
     }
-    let species = w.species.classify_plant(g, seed.species, w.time, &mut w.history);
+    let species = if waking { w.species.sprouting(seed.species, g, w.time, &mut w.history) } else { seed.species };
     w.species.born(species);
     let id = PlantId(w.id());
     w.plants.push(Plant {
@@ -192,11 +193,7 @@ pub fn plants(w: &mut World, dt: f32) {
         light *= 1.0 - 0.7 * p.coat;
         // Water: the river's banks, the ground's own (rain soaked in over the
         // past hours, gone in a drought), or for mats the damp of the air.
-        let water = if floats {
-            0.3 + 0.7 * env.humidity(p.x).min(1.0)
-        } else {
-            wet + env.moisture(p.x) * 0.9 + 0.05
-        };
+        let water = if floats { 0.3 + 0.7 * env.humidity(p.x).min(1.0) } else { wet + env.moisture(p.x) * 0.9 + 0.05 };
         let need = g.thirst * 0.8 + 0.1;
         let short = ((need - water) / need).clamp(0.0, 1.0);
         // A plant wilts over hours of drought and recovers faster once watered.
@@ -367,19 +364,30 @@ pub fn plants(w: &mut World, dt: f32) {
     for (b, sp) in events {
         w.first(b, sp, None);
     }
-    // Scatter seeds.
+    // Scatter seeds, each fertilised by pollen from a neighbour or, failing
+    // that, from the plant itself.
     for (i, m) in seeds {
         let p = &w.plants[i];
         let g = p.genome.clone();
         let (x, depth, alt, species, generation) = (p.x, p.depth, p.alt, p.species, p.generation);
-        let mut child = (*g).clone();
-        child.mutate(&mut w.rng);
+        let pollen = pollinate(w, i);
+        let child = g.cross(&pollen, &mut w.rng);
+        // Hybrids may set no good seed, and some seeds never sprout.
+        if !w.rng.chance(g.fertility() * child.viability()) {
+            if alt > 0.05 {
+                w.air[col_of(x)] += m;
+            } else {
+                w.to_soil(x, depth, m);
+            }
+            continue;
+        }
         let spread = 0.015 + g.wind * 0.25;
         let nx = x + w.rng.normal() * spread + env.wind_at(x, 0.1) * 20.0 * g.wind;
         let nd = depth + w.rng.normal() * 0.05;
         let seed = Seed { genome: Arc::new(child), species, generation: generation + 1 };
         sow(w, &seed, nx, nd, alt, m);
     }
+
     // Clear the dead, last first so indices stay valid.
     dead.sort_unstable();
     dead.dedup();
@@ -396,6 +404,44 @@ pub fn plants(w: &mut World, dt: f32) {
     }
     rebuild_plant_grid(w);
     traps(w);
+}
+
+/// The pollen that fertilises a plant's next seed. Wind carries it a little
+/// way, animals drawn to nectar much further; a flower takes only pollen
+/// close enough to its own kind to recognise. A plant that gets none, or
+/// that mostly pollinates itself, uses its own.
+fn pollinate(w: &mut World, i: usize) -> Arc<PlantGenome> {
+    let p = &w.plants[i];
+    let g = p.genome.clone();
+    if w.rng.chance(g.selfing) {
+        return g;
+    }
+    let at = [p.x, p.depth, p.alt];
+    let mut visitors = 0;
+    w.cgrid.near_any_alt(at, 0.12, |_| visitors += 1);
+    let reach = 0.03 + POLLEN_WIND * g.wind + POLLEN_ANIMAL * g.nectar * (visitors as f32 / 3.0).min(1.0);
+    // A few candidates, picked fairly from everything in reach.
+    let mut picked = [usize::MAX; 6];
+    let mut seen = 0usize;
+    let (plants, rng) = (&w.plants, &mut w.rng);
+    w.pgrid.near_any_alt(at, reach, |j| {
+        let q = &plants[j];
+        if j == i || q.growth01() < 0.5 || (q.x - at[0]).abs() > reach || (q.depth - at[1]).abs() > reach {
+            return;
+        }
+        seen += 1;
+        let k = if seen <= picked.len() { seen - 1 } else { rng.below(seen) };
+        if k < picked.len() {
+            picked[k] = j;
+        }
+    });
+    picked
+        .iter()
+        .filter(|&&j| j != usize::MAX)
+        .map(|&j| &w.plants[j].genome)
+        .find(|q| g.distance(q) < PLANT_SPLIT * 1.5)
+        .cloned()
+        .unwrap_or(g)
 }
 
 /// Plants being eaten give off a scent. Neighbours that pick it up arm

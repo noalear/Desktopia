@@ -255,11 +255,23 @@ pub fn census(w: &World) -> Census {
         x: f32,
         social: f32,
         sample: Option<usize>,
+        diversity: f32,
+        inbreeding: f32,
     }
     let mut acc: BTreeMap<u64, Acc> = BTreeMap::new();
     for (i, c) in w.creatures.iter().enumerate() {
-        let a = acc.entry(c.species.0).or_insert(Acc { count: 0, biomass: 0.0, x: 0.0, social: 0.0, sample: None });
+        let a = acc.entry(c.species.0).or_insert(Acc {
+            count: 0,
+            biomass: 0.0,
+            x: 0.0,
+            social: 0.0,
+            sample: None,
+            diversity: 0.0,
+            inbreeding: 0.0,
+        });
         a.count += 1;
+        a.diversity += crate::genetics::heterozygosity(&c.genome);
+        a.inbreeding += 1.0 - c.genome.vigor;
         a.biomass += c.matter;
         a.x += c.pos[0];
         a.social += c.group.is_some() as u8 as f32;
@@ -272,6 +284,8 @@ pub fn census(w: &World) -> Census {
         let c = &w.creatures[a.sample.unwrap()];
         let mut traits = creature_traits(&c.genome);
         traits.sociality = a.social / a.count as f32;
+        traits.diversity = a.diversity / a.count as f32;
+        traits.inbreeding = a.inbreeding / a.count as f32;
         traits.zone = (a.x / a.count as f32) / vesper_terrain::WORLD_W;
         species.push(SpeciesCensus {
             id: SpeciesId(*id),

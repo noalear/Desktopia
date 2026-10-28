@@ -182,7 +182,7 @@ pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn add(
+pub(crate) fn add(
     batch: &mut LifeBatch,
     segs: &[Seg],
     membranes: &[Membrane],
@@ -215,7 +215,7 @@ fn add(
     });
 }
 
-fn bounds(p: &Pose, lo: &mut [f32; 2], hi: &mut [f32; 2]) {
+pub(crate) fn bounds(p: &Pose, lo: &mut [f32; 2], hi: &mut [f32; 2]) {
     for s in &p.segs {
         for q in [s.a, s.b] {
             for i in 0..2 {

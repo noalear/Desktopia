@@ -15,6 +15,7 @@ pub mod climate;
 pub mod creature;
 mod ecology;
 pub mod frame;
+pub mod genetics;
 pub mod genome;
 mod grid;
 pub mod ground;

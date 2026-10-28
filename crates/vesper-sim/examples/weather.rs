@@ -63,7 +63,9 @@ fn main() {
                         "moisture" => a.moisture[i],
                         "snow" => a.snow[i] / 0.3,
                         "anom" => 0.5 + a.anom[i],
-                        "vapour" => a.vapour[i] / climate::saturation(climate::base(climate::col_x(i), w.env.band_shift)),
+                        "vapour" => {
+                            a.vapour[i] / climate::saturation(climate::base(climate::col_x(i), w.env.band_shift))
+                        }
                         "fog" => a.fog[i] * 12.0,
                         "dust" => a.dust[i],
                         "ash" => a.ash[i],

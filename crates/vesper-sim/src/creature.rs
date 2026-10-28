@@ -343,7 +343,8 @@ pub fn abilities(g: &Genome, body: &Body, p: &Phenotype, scale: f32, neurons: us
         sense: (0.04 + p.area[Tissue::Sense.index()].sqrt() * scale * 9.0).clamp(0.03, 0.3),
         glow: (0.03 + p.area[Tissue::Glow.index()].sqrt() * scale * 14.0).min(0.45),
         energy_cap: m * E_PER_MATTER * (1.0 + 5.0 * p.frac(Tissue::Store)),
-        upkeep: BASAL * m.powf(0.75) * upkeep_mix * (1.0 + tolerance + g.toxin * 0.3) + BRAIN_COST * neurons as f32,
+        upkeep: BASAL * m.powf(0.75) * upkeep_mix * (1.0 + tolerance + g.toxin * 0.3 + g.detox * 0.3)
+            + BRAIN_COST * neurons as f32,
         brood: p.frac(Tissue::Brood),
         legs: p.legs,
     }

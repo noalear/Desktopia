@@ -98,6 +98,15 @@ pub struct Traits {
     pub look: [f32; 4],
     /// Number of body segments (creatures) or branches (plants).
     pub segments: u16,
+    /// 0..1 how often its members' two copies of a gene differ: its genetic variety.
+    #[serde(default)]
+    pub diversity: f32,
+    /// 0..1 how much broken genes, exposed by inbreeding, weigh on it.
+    #[serde(default)]
+    pub inbreeding: f32,
+    /// 0..1 how much of its young come from one parent alone, by selfing or budding.
+    #[serde(default)]
+    pub selfing: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -195,6 +204,10 @@ pub enum Behavior {
     /// Sterile helpers raising a single breeder's young.
     Eusociality,
     SexualReproduction,
+    /// A hermaphrodite fertilising its own eggs.
+    Selfing,
+    /// Young born to parents of two different species.
+    Hybridization,
     /// A seasonal route shared by a group and learned by its young.
     Migration,
     /// A habit learned from elders that outlived the one who found it.

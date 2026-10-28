@@ -307,6 +307,10 @@ pub struct Counters {
     pub exposure: u64,
     pub plant_births: u64,
     pub plant_deaths: u64,
+    /// Embryos that died because their genes didn't work together.
+    pub miscarried: u64,
+    /// Young born to parents of two different species.
+    pub hybrids: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -490,7 +494,8 @@ fn habit_threshold(b: Behavior) -> (u32, usize) {
     use Behavior::*;
     match b {
         FoodSharing | Grooming | Signaling | Scavenging | Guarding => (40, 6),
-        Hunting | Cannibalism | Infanticide | SexualReproduction | Deception => (20, 4),
+        Hunting | Cannibalism | Infanticide | SexualReproduction | Deception | Selfing => (20, 4),
+        Hybridization => (6, 3),
         Parasitism | Symbiosis => (5, 3),
         Sacrifice | Matriphagy | War | Trapping => (4, 2),
         Dialect | Tradition | Migration | Eusociality | Overthrow => (2, 1),

@@ -3,8 +3,10 @@
 //! wiring of a brain and the genes for life history, looks and immunity.
 
 use crate::brain::{NI, NO};
+use crate::genetics::{self, COMPAT};
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub const LOOK_GENES: usize = 16;
 pub const MAX_PARTS: usize = 10;
@@ -69,6 +71,17 @@ impl Tissue {
             Tissue::Store => 1.3,
             Tissue::Mouth => 1.4,
             _ => 1.0,
+        }
+    }
+
+    /// How a part of this tissue narrows to its tip before genes reshape it:
+    /// tip thickness over base thickness.
+    pub fn taper(self) -> f32 {
+        match self {
+            Tissue::Spine | Tissue::Mouth => 0.25,
+            Tissue::Muscle => 0.7,
+            Tissue::Float => 0.85,
+            _ => 0.8,
         }
     }
 
@@ -163,6 +176,16 @@ pub struct PartGene {
     /// How many times it may repeat into itself, making chains like tails and trunks.
     pub recursion: u8,
     pub links: Vec<LinkGene>,
+    /// Which ancestral gene this one descends from. Copies of a part made by
+    /// duplication get a new origin, so two genomes can tell a shared
+    /// (homologous) gene from one that only sits in the same place.
+    pub origin: u32,
+    /// How strongly this copy is expressed over the other parent's copy,
+    /// 0..255; 128 is equal (codominant).
+    pub dom: u8,
+    /// Tip thickness over base thickness: below 1 it narrows to a point or
+    /// a tail, above 1 it swells into a club or bulb.
+    pub taper: f32,
 }
 
 /// The starting wiring of a brain and its learning rule. Weights are stored as
@@ -252,8 +275,37 @@ pub struct Genome {
     pub mutation: f32,
     /// Opaque appearance genes, drawn by the renderer. 0 hue, 1 value, 2 pattern, 3 glow hue.
     pub look: [f32; LOOK_GENES],
-    /// Neutral genes that drift; shared markers mean shared ancestry (kin scent).
+    /// Neutral genes passed down the mother's line only, like mitochondria,
+    /// that drift fast; shared markers mean a shared mother line (kin scent).
     pub marker: [u8; 8],
+    /// The two sets of genes it carries, one from each parent, that the
+    /// fields above express together. Missing in species records.
+    pub haplotypes: Option<Arc<[Genome; 2]>>,
+    /// In a haplotype: how strongly each of its alleles is expressed over the
+    /// other copy's, in `loci` order; 128 is equal.
+    pub dominance: Vec<u8>,
+    /// In a haplotype: genes broken by harmful mutations, one bit each. They
+    /// are mostly recessive, so they hurt when both copies are broken, which
+    /// inbreeding makes likely.
+    pub load: u64,
+    /// In a haplotype: alleles of genes that must work with each other.
+    /// Lineages apart for long fix alleles that clash in their hybrids.
+    pub compat: [u8; COMPAT],
+    /// The other parent's immune allele. Both are expressed, so a host with
+    /// two different ones resists more strains.
+    pub immune_b: [f32; 4],
+    /// How fit its genes leave it, 1 sound .. 0, from its broken genes.
+    pub vigor: f32,
+    /// Leaning toward mates whose immune genes differ from its own (+) or match them (-).
+    pub mhc_pref: f32,
+    /// Chance a hermaphrodite with no mate fertilises its own eggs.
+    pub selfing: f32,
+    /// How closely its body follows its genes, 0 loosely .. 1 exactly. No two
+    /// bodies grow quite alike; poorly buffered ones, and inbred ones, vary most.
+    pub canalization: f32,
+    /// Poison it can break down, 0..1, at a cost to keep up. Eaters and the
+    /// poisonous things they eat push each other up, round after round.
+    pub detox: f32,
 }
 
 fn w(rng: &mut Rng, spread: f32) -> i8 {
@@ -448,6 +500,9 @@ impl PartGene {
             width: rng.range(0.15, 0.7),
             recursion: if rng.chance(0.7) { 0 } else { 1 + rng.below(4) as u8 },
             links: Vec::new(),
+            origin: rng.next_u64() as u32,
+            dom: 128,
+            taper: tissue.taper(),
         };
         for _ in 0..rng.below(3) {
             p.links.push(LinkGene::random(rng, parts));
@@ -472,7 +527,7 @@ pub enum Founder {
 impl Genome {
     /// A founder genome: a working body plan with random details and a random brain.
     /// A founder exactly as designed, before the variety every founder gets.
-    pub(crate) fn founder_plan(kind: Founder, rng: &mut Rng) -> Self {
+    pub fn founder_plan(kind: Founder, rng: &mut Rng) -> Self {
         use Tissue::*;
         let link = |to: u8, angle: f32, along: f32, scale: f32, pair: bool| LinkGene {
             to,
@@ -491,7 +546,16 @@ impl Genome {
             motor: Motor { amp, phase, pair, lift: 0.0 },
             ..l
         };
-        let part = |tissue, length, width, recursion, links| PartGene { tissue, length, width, recursion, links };
+        let part = |tissue, length, width, recursion, links| PartGene {
+            tissue,
+            length,
+            width,
+            recursion,
+            links,
+            origin: 0,
+            dom: 128,
+            taper: Tissue::taper(tissue),
+        };
         let (parts, scale, diet, hidden) = match kind {
             Founder::Drifter => (
                 vec![
@@ -623,7 +687,20 @@ impl Genome {
             mutation: rng.range(0.8, 1.2),
             look,
             marker,
+            haplotypes: None,
+            dominance: Vec::new(),
+            load: 0,
+            compat: [0; COMPAT],
+            immune_b: [0.0; 4],
+            vigor: 1.0,
+            mhc_pref: rng.range(0.0, 0.3),
+            selfing: rng.range(0.0, 0.3),
+            canalization: rng.range(0.4, 0.8),
+            detox: rng.range(0.0, 0.1),
         };
+        for p in g.parts.iter_mut() {
+            p.origin = rng.next_u64() as u32;
+        }
         g.mate_pref.copy_from_slice(&g.look[..4]);
         // Each plan's gait was tuned at about this rhythm.
         g.gait_hz = match kind {
@@ -635,96 +712,87 @@ impl Genome {
         g
     }
 
+    /// A founder: a working body plan with random details, carrying two
+    /// slightly different sets of genes, and a brain to learn with.
     pub fn founder(kind: Founder, rng: &mut Rng) -> Self {
         let mut g = Self::founder_plan(kind, rng);
         // Founders are already a little varied.
         for _ in 0..3 {
             g.mutate(rng, 1.0);
         }
-        g
+        genetics::found(g, rng)
     }
 
-    /// Offspring genome from one parent.
+    /// One member of a founding population: drawn from the founder's genes
+    /// with the variety a wild population carries, so the first generations
+    /// have something for selection to work on.
+    pub fn wild(&self, rng: &mut Rng) -> Self {
+        let [a, b] = genetics::haplotypes(self);
+        let mut gametes = [genetics::recombine(&a, &b, rng), genetics::recombine(&a, &b, rng)];
+        for h in gametes.iter_mut() {
+            for _ in 0..2 {
+                h.mutate_genes(rng, self.mutation);
+            }
+            genetics::mutate_haplotype(h, rng, self.mutation);
+        }
+        let mut brain = self.brain.clone();
+        brain.mutate(rng, self.mutation);
+        genetics::express(gametes, brain, genetics::mother_line(&self.marker, rng), rng)
+    }
+
+    /// Offspring of one parent without sex: both of its gene sets are copied
+    /// (with copying errors), so nothing is shuffled and harmful mutations
+    /// can only pile up.
     pub fn bud(&self, rng: &mut Rng) -> Self {
-        let mut g = self.clone();
         let rate = self.mutation;
-        g.mutate(rng, rate);
-        g
+        let mut hs = genetics::clone_haplotypes(self, rng);
+        for h in hs.iter_mut() {
+            genetics::mutate_haplotype(h, rng, rate);
+        }
+        let mut brain = self.brain.clone();
+        brain.mutate(rng, rate);
+        genetics::express(hs, brain, genetics::mother_line(&self.marker, rng), rng)
     }
 
-    /// Offspring genome from two parents.
+    /// Offspring of two parents (or one fertilising itself): each gives one
+    /// gamete, a set of genes shuffled from its own two by crossing over.
     pub fn mate(&self, other: &Self, rng: &mut Rng) -> Self {
-        let mut g = self.clone();
-        // Body graphs mix part by part where both have the part.
-        for (i, p) in g.parts.iter_mut().enumerate() {
-            if let Some(q) = other.parts.get(i)
-                && rng.chance(0.5)
-            {
-                *p = q.clone();
-            }
-        }
-        // Fix any links that now point past the end.
-        let n = g.parts.len() as u8;
-        for p in &mut g.parts {
-            for l in &mut p.links {
-                l.to %= n;
-            }
-        }
-        g.brain = self.brain.cross(&other.brain, rng);
-        macro_rules! mix {
-            ($($f:ident),*) => {$( if rng.chance(0.5) { g.$f = other.$f; } )*};
-        }
-        mix!(
-            adult_scale,
-            gait_hz,
-            growth_time,
-            aging,
-            diet,
-            sexual,
-            clutch,
-            invest,
-            live_birth,
-            helpers,
-            matriphagy,
-            heat_tolerance,
-            cold_tolerance,
-            toxin,
-            choosiness,
-            mate_pref,
-            immune,
-            imitation,
-            innovation,
-            curiosity,
-            boldness,
-            sociality,
-            mutation
-        );
-        for i in 0..LOOK_GENES {
-            if rng.chance(0.5) {
-                g.look[i] = other.look[i];
-            }
-        }
-        for i in 0..8 {
-            if rng.chance(0.5) {
-                g.marker[i] = other.marker[i];
-            }
-        }
-        let rate = g.mutation;
-        g.mutate(rng, rate);
-        g
+        let mut eggs = genetics::gamete(self, rng);
+        let mut sperm = genetics::gamete(other, rng);
+        genetics::mutate_haplotype(&mut eggs, rng, self.mutation);
+        genetics::mutate_haplotype(&mut sperm, rng, other.mutation);
+        // The brain's wiring is inherited as one linked block from each parent.
+        let mut brain = self.brain.cross(&other.brain, rng);
+        brain.mutate(rng, (self.mutation + other.mutation) * 0.5);
+        genetics::express([eggs, sperm], brain, genetics::mother_line(&self.marker, rng), rng)
     }
 
+    /// Mutates the expressed genes directly, as tools and tests do; living
+    /// lineages mutate through their gametes instead.
     pub fn mutate(&mut self, rng: &mut Rng, rate: f32) {
+        self.brain.mutate(rng, rate.clamp(0.2, 3.0));
+        self.mutate_genes(rng, rate);
+    }
+
+    /// Copying errors in everything but the brain's wiring and the mother
+    /// line, as when a gamete is made. Most changes are small; a few are large.
+    pub(crate) fn mutate_genes(&mut self, rng: &mut Rng, rate: f32) {
         let r = rate.clamp(0.2, 3.0);
         let nudge = |v: &mut f32, sd: f32, lo: f32, hi: f32, rng: &mut Rng| {
             if rng.chance(0.15 * r) {
-                *v = (*v + rng.normal() * sd).clamp(lo, hi);
+                *v = (*v + genetics::effect(rng) * sd).clamp(lo, hi);
+            }
+        };
+        // Hues go round the colour wheel rather than stopping at an end.
+        let turn = |v: &mut f32, sd: f32, rng: &mut Rng| {
+            if rng.chance(0.15 * r) {
+                *v = (*v + genetics::effect(rng) * sd).rem_euclid(1.0);
             }
         };
         nudge(&mut self.adult_scale, 0.0006, 0.002, 0.035, rng);
         nudge(&mut self.gait_hz, 0.15, 0.2, 6.0, rng);
         if rng.chance(0.15 * r) {
-            self.growth_time = (self.growth_time * (1.0 + rng.normal() * 0.1)).clamp(20.0, 30000.0);
+            self.growth_time = (self.growth_time * (1.0 + genetics::effect(rng) * 0.1)).clamp(20.0, 30000.0);
         }
         nudge(&mut self.aging, 0.06, 0.2, 3.0, rng);
         nudge(&mut self.diet, 0.04, 0.0, 1.0, rng);
@@ -744,19 +812,25 @@ impl Genome {
         nudge(&mut self.boldness, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.sociality, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.mutation, 0.05, 0.3, 2.5, rng);
+        nudge(&mut self.mhc_pref, 0.05, -1.0, 1.0, rng);
+        nudge(&mut self.selfing, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.canalization, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.detox, 0.03, 0.0, 1.0, rng);
         for i in 0..4 {
-            nudge(&mut self.mate_pref[i], 0.05, 0.0, 1.0, rng);
+            if i == 0 || i == 3 {
+                turn(&mut self.mate_pref[i], 0.05, rng);
+            } else {
+                nudge(&mut self.mate_pref[i], 0.05, 0.0, 1.0, rng);
+            }
             nudge(&mut self.immune[i], 0.05, 0.0, 1.0, rng);
         }
-        for v in self.look.iter_mut() {
-            nudge(v, 0.04, 0.0, 1.0, rng);
-        }
-        for m in self.marker.iter_mut() {
-            if rng.chance(0.03) {
-                *m = rng.below(256) as u8;
+        for (i, v) in self.look.iter_mut().enumerate() {
+            if i == 0 || i == 3 {
+                turn(v, 0.04, rng);
+            } else {
+                nudge(v, 0.04, 0.0, 1.0, rng);
             }
         }
-        self.brain.mutate(rng, r);
         self.mutate_body(rng, r);
     }
 
@@ -764,10 +838,16 @@ impl Genome {
         let n = self.parts.len();
         for p in &mut self.parts {
             if rng.chance(0.08 * r) {
-                p.length = (p.length * (1.0 + rng.normal() * 0.12)).clamp(0.2, 3.0);
+                p.length = (p.length * (1.0 + genetics::effect(rng) * 0.12)).clamp(0.2, 3.0);
             }
             if rng.chance(0.08 * r) {
-                p.width = (p.width * (1.0 + rng.normal() * 0.12)).clamp(0.08, 1.5);
+                p.width = (p.width * (1.0 + genetics::effect(rng) * 0.12)).clamp(0.08, 1.5);
+            }
+            if rng.chance(0.03 * r) {
+                p.dom = (p.dom as f32 + rng.normal() * 24.0).clamp(1.0, 255.0) as u8;
+            }
+            if rng.chance(0.05 * r) {
+                p.taper = (p.taper + genetics::effect(rng) * 0.06).clamp(0.12, 1.5);
             }
             if rng.chance(0.01 * r) {
                 p.tissue = *rng.pick(&Tissue::ALL);
@@ -777,7 +857,7 @@ impl Genome {
             }
             for l in &mut p.links {
                 if rng.chance(0.06 * r) {
-                    l.angle += rng.normal() * 0.2;
+                    l.angle += genetics::effect(rng) * 0.2;
                 }
                 if rng.chance(0.04 * r) {
                     l.along = (l.along + rng.normal() * 0.1).clamp(0.0, 1.0);
@@ -805,7 +885,9 @@ impl Genome {
                 }
                 l.motor.mutate(rng, r);
             }
-            if rng.chance(0.008 * r) && !p.links.is_empty() {
+            // Losing a link is as likely as gaining one, so bodies don't
+            // grow ever more complex for no reason but chance.
+            if rng.chance(0.012 * r) && !p.links.is_empty() {
                 let i = rng.below(p.links.len());
                 p.links.remove(i);
             }
@@ -813,20 +895,30 @@ impl Genome {
                 p.links.push(LinkGene::random(rng, n));
             }
         }
-        // Duplicate a part: the classic route to new organs.
-        if rng.chance(0.01 * r) && n < MAX_PARTS {
-            let src = rng.below(n);
-            let mut copy = self.parts[src].clone();
-            if rng.chance(0.5) {
-                copy.tissue = *rng.pick(&Tissue::ALL);
-            }
-            self.parts.push(copy);
-            let new = (self.parts.len() - 1) as u8;
-            let host = rng.below(n);
-            if self.parts[host].links.len() < MAX_LINKS {
-                let mut l = LinkGene::random(rng, n + 1);
-                l.to = new;
-                self.parts[host].links.push(l);
+        // Duplicate a part: the classic route to new organs. The copy starts
+        // out as a twin of its source, links and all (serial homology), and
+        // drifts or takes on a new tissue from there. When the genome is full,
+        // it lands on a gene nothing grows any more.
+        if rng.chance(0.01 * r) {
+            let slot = if n < MAX_PARTS { Some(n) } else { (1..n).find(|&i| !self.grows(i)) };
+            if let Some(slot) = slot {
+                let src = rng.below(n);
+                let mut copy = self.parts[src].clone();
+                copy.origin = rng.next_u64() as u32;
+                if rng.chance(0.25) {
+                    copy.tissue = *rng.pick(&Tissue::ALL);
+                }
+                if slot == n {
+                    self.parts.push(copy);
+                } else {
+                    self.parts[slot] = copy;
+                }
+                let host = rng.below(n);
+                if self.parts[host].links.len() < MAX_LINKS {
+                    let mut l = LinkGene::random(rng, self.parts.len());
+                    l.to = slot as u8;
+                    self.parts[host].links.push(l);
+                }
             }
         }
         // Brand new part.
@@ -840,6 +932,17 @@ impl Genome {
                 self.parts[host].links.push(l);
             }
         }
+    }
+
+    /// Whether any link still grows part `i`; the others are silent genes
+    /// that drift freely until a new link wakes them.
+    pub fn grows(&self, i: usize) -> bool {
+        i == 0 || self.parts.iter().any(|p| p.links.iter().any(|l| l.to as usize % self.parts.len() == i))
+    }
+
+    /// How much of a dose of poison still harms it.
+    pub fn felt(&self, toxin: f32) -> f32 {
+        (toxin - self.detox * 0.8).max(0.0)
     }
 
     /// How much two genomes share their neutral markers, 0..1.

@@ -33,6 +33,9 @@ pub fn seed_traits(seed: u64) -> Traits {
         clutch: 4.0,
         look: [(seed % 12) as f32 / 12.0, 0.5, 0.5, 0.5],
         segments: 4,
+        diversity: 0.4,
+        inbreeding: 0.05,
+        selfing: 0.3,
     }
 }
 

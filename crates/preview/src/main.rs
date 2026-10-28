@@ -5,7 +5,8 @@
 //!                [--band SHIFT] [--band-speed S] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
-//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--world FILE] [--out DIR]
+//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES]
+//!                [--world FILE] [--out DIR]
 //!                [--weather HOURS] [--until storm|rain|snow|dust|cold|erupt|drought|flood]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
@@ -24,15 +25,19 @@
 //! creatures act out every behaviour the animator knows, `--frames` frames
 //! at 15 a second, one sheet per creature (see acts.rs).
 //!
+//! `--family` grows a world, then draws grown members of its commonest
+//! species side by side, a row per species (see family.rs).
+//!
 //! `--weather` runs a real world's weather alone for that many hours and
 //! draws the sky it makes over the stand-in life; `--until` then waits for a
 //! kind of weather (see weather.rs). Later frames step it on by `--step`.
 
 mod acts;
-mod weather;
+mod family;
 #[path = "../../desktopia/src/living.rs"]
 #[allow(dead_code)]
 mod living;
+mod weather;
 
 use vesper_forms::Menagerie;
 use vesper_render::{LifeBatch, OutputConfig, OutputMode, Renderer, WorldView};
@@ -60,6 +65,7 @@ struct Args {
     lineup: bool,
     sim: Option<f64>,
     acts: Option<f64>,
+    family: Option<f64>,
     crop: Option<[f32; 4]>,
     /// With --sim: frame one walking creature instead of the whole world.
     follow: bool,
@@ -90,6 +96,7 @@ fn parse_args() -> Args {
         lineup: false,
         sim: None,
         acts: None,
+        family: None,
         crop: None,
         follow: false,
         world: None,
@@ -125,6 +132,7 @@ fn parse_args() -> Args {
             "--lineup" => a.lineup = true,
             "--sim" => a.sim = Some(val().parse().unwrap()),
             "--acts" => a.acts = Some(val().parse().unwrap()),
+            "--family" => a.family = Some(val().parse().unwrap()),
             "--follow" => a.follow = true,
             "--crop" => {
                 let mut c = [0.0; 4];
@@ -154,6 +162,9 @@ fn main() {
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut renderer = Renderer::new(device, queue);
 
+    if let Some(minutes) = args.family {
+        return family::render(&mut renderer, &args, minutes);
+    }
     if let Some(minutes) = args.acts {
         return acts::render(&mut renderer, &args, minutes);
     }

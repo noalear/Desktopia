@@ -120,6 +120,14 @@ impl Strain {
         (1.0 - d * 4.0).clamp(0.0, 1.0)
     }
 
+    /// How well it takes hold in a host. Both of the host's immune alleles
+    /// are on watch, so a strain suited to one is half checked by a
+    /// different other one; a host with two copies of the same allele gets
+    /// no such help.
+    pub fn takes(&self, g: &crate::genome::Genome) -> f32 {
+        (self.fit(&g.immune) + self.fit(&g.immune_b)) * 0.5
+    }
+
     /// A partner rather than a burden.
     pub fn is_symbiont(&self) -> bool {
         self.virulence < 0.0 || self.photosynthetic > 0.4 && self.virulence < 0.05

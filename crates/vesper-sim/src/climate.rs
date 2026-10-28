@@ -596,7 +596,9 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
         let room = 1.0 - a.moisture[i];
         a.moisture[i] += soak.min(room);
         if x > 1.3 {
-            runoff += (rain * a.moisture[i] * a.moisture[i] + (soak - room).max(0.0) / dt.max(1e-6) * 500.0 + a.melt[i] * 400.0)
+            runoff += (rain * a.moisture[i] * a.moisture[i]
+                + (soak - room).max(0.0) / dt.max(1e-6) * 500.0
+                + a.melt[i] * 400.0)
                 / (N as f32 * 0.63);
         }
         // Drying: faster under the sun, in warm dry wind, slowed by snow.
@@ -610,19 +612,15 @@ pub fn step(a: &mut Atmos, rng: &mut Rng, g: &Ground, dt: f32, out: &mut Vec<Hap
         a.snow[i] -= a.snow[i] * (1.0 - rh) * dt / 40_000.0;
     }
     a.dry_for = {
-        let twilight: f32 = (0..N)
-            .filter(|&i| (0.9..2.2).contains(&col_x(i)))
-            .map(|i| a.moisture[i])
-            .sum::<f32>()
+        let twilight: f32 = (0..N).filter(|&i| (0.9..2.2).contains(&col_x(i))).map(|i| a.moisture[i]).sum::<f32>()
             / (0..N).filter(|&i| (0.9..2.2).contains(&col_x(i))).count() as f32;
         if twilight < 0.15 {
             a.dry_for + dt
         } else if twilight > 0.3 {
             if a.told.drought {
                 a.told.drought = false;
-                let (i, wettest) = (0..N)
-                    .map(|i| (i, a.precip[i]))
-                    .fold((0, 0.0), |b, c| if c.1 > b.1 { c } else { b });
+                let (i, wettest) =
+                    (0..N).map(|i| (i, a.precip[i])).fold((0, 0.0), |b, c| if c.1 > b.1 { c } else { b });
                 out.push(Happening::DroughtBreaks { x: col_x(i), strength: (0.5 + wettest).min(1.0) });
             }
             0.0

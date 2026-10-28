@@ -552,7 +552,13 @@ impl Renderer {
         }
     }
 
-    fn create_bloom(&self, params: &wgpu::Buffer, sky: &wgpu::Buffer, scene: &wgpu::TextureView, size: [u32; 2]) -> Bloom {
+    fn create_bloom(
+        &self,
+        params: &wgpu::Buffer,
+        sky: &wgpu::Buffer,
+        scene: &wgpu::TextureView,
+        size: [u32; 2],
+    ) -> Bloom {
         let device = &self.device;
         let make = |div: u32| {
             device.create_texture(&wgpu::TextureDescriptor {

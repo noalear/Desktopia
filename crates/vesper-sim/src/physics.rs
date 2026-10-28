@@ -73,9 +73,7 @@ pub struct Part {
     /// Friction on the ground; spines grip backward and slide forward.
     grip: f32,
     spiny: bool,
-    #[serde(skip)]
     prev: [f32; 3],
-    #[serde(skip)]
     prev_rot: [f32; 2],
 }
 
@@ -140,7 +138,8 @@ pub struct Joint {
     /// what its muscle swings it through, so a knee can be forced backward,
     /// but not folded flat through its own limb.
     range: f32,
-    #[serde(skip)]
+    /// Where the muscle last aimed it; saved, since a resting body wakes
+    /// when its aim moves.
     target: f32,
 }
 

@@ -4,6 +4,7 @@
 use crate::body::Body;
 use crate::brain::Brain;
 use crate::creature::{Action, Creature, Tally, adult_matter};
+use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::history::{Behavior, CreatureId, DeathCause, Fact, SpeciesId, StrainId};
 use crate::mind::{self, Mind, PlaceKind, creature_bin};
@@ -15,6 +16,9 @@ use crate::world::{
 };
 use std::sync::Arc;
 use vesper_terrain::WORLD_W;
+
+/// How much a creature of another species crowds a breeder, compared with one of its own.
+const OTHERS_CROWD: f32 = 0.3;
 
 /// Seconds of life for a creature of adult scale 0.01 and ageing 1.
 pub const LIFESPAN_K: f32 = 1200.0;
@@ -218,7 +222,8 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         def.rank -= 0.02;
     }
     if eaten > 0.0 {
-        // Poison in the flesh.
+        // Poison in the flesh, less what the hunter's body can break down.
+        let toxin = att.genome.felt(toxin);
         let hurt = toxin * eaten * 4.0 / att.matter.max(1e-4);
         att.health -= hurt * 0.3;
         att.pain += hurt;
@@ -296,13 +301,27 @@ fn digest_meat(w: &mut World, ci: usize, m: f32, eff: f32, bin: usize, harm: f32
     crate::act::digest(w, ci, m, E_MEAT, eff, bin, harm);
 }
 
-/// Breeding. With a father, each young mixes both genomes; without, it is a
-/// mutated copy. Young are born live, budded, laid as eggs, or scattered as spores.
+/// Breeding. With a father, each young gets one gamete from each parent; a
+/// hermaphrodite that is its own father makes both. Without one, young are
+/// copies with copying errors. Embryos whose genes don't work together die
+/// before they are born; hybrids that live may be sterile. Young are born
+/// live, budded, laid as eggs, or scattered as spores.
 pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
     // Crowding: breeding gets harder well before the hard ceiling, so the
-    // population settles below it rather than pressing against it.
-    let full = (w.creatures.len() + w.eggs.len()) as f32 / MAX_CREATURES as f32;
-    if full >= 1.0 || w.rng.chance(full.powi(6)) {
+    // population settles below it rather than pressing against it. It falls
+    // hardest on a creature's own kind, which shares its food, its enemies
+    // and its diseases; other kinds press on it far less. That is what lets
+    // several species live side by side instead of the fastest breeder
+    // filling the world.
+    let total = w.creatures.len() + w.eggs.len();
+    if total >= MAX_CREATURES {
+        return;
+    }
+    let sp = w.creatures[mi].species;
+    let own =
+        w.creatures.iter().filter(|c| c.species == sp).count() + w.eggs.iter().filter(|e| e.species == sp).count();
+    let crowd = (own as f32 + OTHERS_CROWD * (total - own) as f32) / (MAX_CREATURES as f32 * 0.85);
+    if w.rng.chance(crowd.powi(4)) {
         return;
     }
     let now = w.time;
@@ -318,7 +337,9 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
     if n <= 0 {
         return;
     }
-    let father = fi.map(|f| (w.creatures[f].genome.clone(), w.creatures[f].id));
+    let father = fi.map(|f| (w.creatures[f].genome.clone(), w.creatures[f].species));
+    let selfed = fi == Some(mi);
+    let fi = fi.filter(|&f| f != mi);
     let (mpos, mid, mspecies, mgen, mheading) = (m.pos, m.id, m.species, m.generation, m.heading);
     let mvoice = m.mind.voice;
     let mhome = m.mind.home;
@@ -342,6 +363,15 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
         fc.reward += 0.5;
         w.first(Behavior::SexualReproduction, mspecies, Some(mid));
     }
+    if selfed {
+        w.first(Behavior::Selfing, mspecies, Some(mid));
+    }
+    if let Some((_, fs)) = father
+        && fs != mspecies
+    {
+        w.counters.hybrids += n as u64;
+        w.first(Behavior::Hybridization, mspecies, Some(mid));
+    }
     w.creatures[mi].reward += 0.5;
     let mut first_child = None;
     for k in 0..n {
@@ -349,9 +379,17 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
             Some((fg, _)) => g.mate(fg, &mut w.rng),
             None => g.bud(&mut w.rng),
         });
-        let species = w.species.classify_creature(&child, mspecies, now, &mut w.history);
+        // Young take their mother's species; whether they turn out to be
+        // something new is for the species census to see.
+        let species = mspecies;
+        if !w.rng.chance(genetics::viability(&child)) {
+            // Dies as an embryo; its matter goes back to the ground.
+            w.counters.miscarried += 1;
+            w.to_soil(mpos[0], mpos[1], per);
+            continue;
+        }
         w.species.born(species);
-        let sterile = w.rng.chance(g.helpers);
+        let sterile = w.rng.chance(g.helpers) || !w.rng.chance(genetics::fertility(&child));
         let jitter = [w.rng.normal() * 0.006, w.rng.normal() * 0.006];
         let mut pos = [mpos[0] + jitter[0], (mpos[1] + jitter[1]).clamp(0.005, DEPTH - 0.005), mpos[2]];
         w.counters.births += 1;
@@ -415,7 +453,7 @@ pub fn contact(w: &mut World, a: usize, b: usize, dt: f32) {
         for k in 0..n {
             let inf = w.creatures[from].infections[k].clone();
             let s = &w.strains[inf.slot as usize];
-            let p = s.contagion * inf.load * dt * s.fit(&w.creatures[to].genome.immune);
+            let p = s.contagion * inf.load * dt * s.takes(&w.creatures[to].genome);
             if w.rng.chance(p) {
                 infect(w, to, inf.slot as usize);
             }
@@ -426,7 +464,7 @@ pub fn contact(w: &mut World, a: usize, b: usize, dt: f32) {
 pub fn infect_by_eating(w: &mut World, ci: usize, strain: StrainId) {
     if let Some(slot) = w.strain_slot(strain) {
         let s = &w.strains[slot];
-        if !s.gone && w.rng.chance(s.ingestion * s.fit(&w.creatures[ci].genome.immune)) {
+        if !s.gone && w.rng.chance(s.ingestion * s.takes(&w.creatures[ci].genome)) {
             infect(w, ci, slot);
         }
     }
@@ -488,7 +526,7 @@ pub fn disease(w: &mut World, dt: f32) {
             let slot = w.creatures[ci].infections[k].slot as usize;
             let s = w.strains[slot].clone();
             let c = &mut w.creatures[ci];
-            let fit = s.fit(&c.genome.immune);
+            let fit = s.takes(&c.genome);
             let inf = &mut c.infections[k];
             inf.load += s.growth * dt * (0.2 + fit) * (1.0 - inf.load);
             inf.load -= 0.006 * dt * (1.1 - fit) * c.health;
@@ -560,7 +598,7 @@ pub fn disease(w: &mut World, dt: f32) {
                 }
             });
             for j in hit {
-                let p = sp.strength * 0.05 * dt * w.strains[slot].fit(&w.creatures[j].genome.immune);
+                let p = sp.strength * 0.05 * dt * w.strains[slot].takes(&w.creatures[j].genome);
                 if w.rng.chance(p) {
                     infect(w, j, slot);
                 }

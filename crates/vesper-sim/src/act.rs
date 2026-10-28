@@ -4,6 +4,7 @@
 use crate::brain::o;
 use crate::creature::{Action, Creature};
 use crate::frame::Moment;
+use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::ground::Ground;
 use crate::history::{Behavior, CreatureId, DeathCause};
@@ -15,6 +16,9 @@ use crate::world::{
     ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, Env, TICK, World, col_of, dist3, pair_mut, wrap_angle,
 };
 use vesper_terrain::WORLD_W;
+
+/// Above this a creature will mate when it can, even if it also breeds alone.
+const FACULTATIVE: f32 = 0.25;
 
 fn unit(from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -206,7 +210,9 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         // Its rhythm run whichever way has carried it further.
         let way = if c.back > c.stride { -1.0 } else { 1.0 };
         // Chilled bodies stiffen and slow; parched or choking ones flag.
-        let torpor = 1.0 - 0.5 * c.exposure.chill.min(1.0) - 0.25 * (c.exposure.thirst - 0.5).clamp(0.0, 1.0)
+        let torpor = 1.0
+            - 0.5 * c.exposure.chill.min(1.0)
+            - 0.25 * (c.exposure.thirst - 0.5).clamp(0.0, 1.0)
             - 0.25 * (c.exposure.grit - 0.4).clamp(0.0, 1.0);
         let power = effort * way * (0.5 + 0.5 * c.health) * weary * torpor * if guarding { 0.3 } else { 1.0 };
         c.drive = [power, (out[o::RISE] + dir[2]).clamp(-1.0, 1.0) * if resting { 0.2 } else { 1.0 }];
@@ -471,17 +477,27 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
             continue;
         }
 
-        // Mating.
+        // Mating. Obligate breeders (sexual above 0.5) must mate; between
+        // 0.25 and 0.5 a creature buds alone but mates when it meets a willing
+        // partner, as aphids and water fleas do.
         if out[o::MATE] > 0.3
             && let Some(j) = other
-            && w.creatures[ci].genome.sexual > 0.5
+            && w.creatures[ci].genome.sexual > FACULTATIVE
             && w.creatures[j].brain.out[o::MATE] > 0.3
         {
             let (a, b) = (&w.creatures[ci], &w.creatures[j]);
+            // Each judges the other by looks, by scent for immune genes unlike
+            // (or like) its own, and, the choosier it is, by how healthy and
+            // well fed the other looks, which only good genes can keep up.
+            // Nothing but taste keeps species apart.
             let accept = |x: &Creature, y: &Creature| {
-                Genome::look_distance(&x.genome.mate_pref, &y.genome.look) < 1.0 - x.genome.choosiness * 0.85
+                let looks = Genome::look_distance(&x.genome.mate_pref, &y.genome.look);
+                let scent = (genetics::immune_likeness(&x.genome, &y.genome) - 0.5) * x.genome.mhc_pref * 0.3;
+                let condition = (y.health * y.energy / y.abil.energy_cap.max(1e-9)).clamp(0.0, 1.0);
+                let poor = (1.0 - condition) * x.genome.choosiness * 0.4;
+                looks + scent + poor < 1.0 - x.genome.choosiness * 0.85
             };
-            if a.ready() && b.ready() && a.species == b.species && accept(a, b) && accept(b, a) {
+            if a.ready() && b.ready() && b.genome.sexual > FACULTATIVE && accept(a, b) && accept(b, a) {
                 let (mother, father) = if a.energy >= b.energy { (ci, j) } else { (j, ci) };
                 let before = w.creatures[mother].tally.offspring;
                 life::breed(w, mother, Some(father));
@@ -493,10 +509,16 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
             }
         }
 
-        // Breeding alone.
-        if out[o::LAY] > 0.3 && w.creatures[ci].genome.sexual <= 0.5 && w.creatures[ci].ready() {
+        // Breeding alone, or for a mating kind with no mate about, now and
+        // then fertilising its own eggs.
+        if out[o::LAY] > 0.3 && w.creatures[ci].ready() {
+            let g = &w.creatures[ci].genome;
             let before = w.creatures[ci].tally.offspring;
-            life::breed(w, ci, None);
+            if g.sexual <= 0.5 {
+                life::breed(w, ci, None);
+            } else if w.rng.chance(g.selfing * 0.01) {
+                life::breed(w, ci, Some(ci));
+            }
             if w.creatures[ci].tally.offspring > before {
                 w.creatures[ci].action = Action::Laying;
             }
@@ -797,6 +819,7 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             }
             let eff = 0.15 + 0.85 * (1.0 - diet);
             let c = &mut w.creatures[ci];
+            let toxin = c.genome.felt(toxin);
             let harm = spines * 0.6 * (from_body / m) + toxin * 1.5;
             let hurt = (spines * from_body * 3.0 + toxin * m * 4.0) / c.matter.max(1e-4);
             c.health -= hurt * 0.3;
@@ -834,6 +857,7 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             let eff = (0.1 + 0.9 * diet) * (1.0 - rot) + 0.5 * rot;
             let e = E_MEAT * (1.0 - rot * 0.6);
             let c = &mut w.creatures[ci];
+            let toxin = c.genome.felt(toxin);
             let hurt = toxin * m * 4.0 / c.matter.max(1e-4);
             c.health -= hurt * 0.3;
             c.pain += hurt;

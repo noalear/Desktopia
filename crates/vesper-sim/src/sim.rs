@@ -9,7 +9,7 @@ use crate::mind::{MEANINGS, Mind, SYMBOLS};
 use crate::plant::{PlantGenome, Seed, Seedling};
 use crate::rng::Rng;
 use crate::society;
-use crate::species::Registry;
+use crate::species::{self, Registry};
 use crate::think::{self, Percept};
 use crate::world::{self, COLS, DEPTH, Env, PLANT_EVERY, ROWS, TICK, World};
 use std::sync::Arc;
@@ -95,8 +95,7 @@ impl Sim {
             let g = Arc::new(PlantGenome::founder(kind, &mut w.rng));
             let species = w.species.found_plant(&g, 0.0, &mut w.history);
             for _ in 0..n {
-                let mut child = (*g).clone();
-                child.mutate(&mut w.rng);
+                let child = g.wild(&mut w.rng);
                 let x = match kind {
                     Seedling::VentCrust => {
                         let v = terrain::VENTS[w.rng.below(terrain::VENTS.len())];
@@ -141,7 +140,7 @@ impl Sim {
             let species = w.species.found_creature(&g, 0.0, &mut w.history);
             let voice: [u8; MEANINGS] = std::array::from_fn(|_| w.rng.below(SYMBOLS) as u8);
             for _ in 0..n {
-                let child = Arc::new(g.bud(&mut w.rng));
+                let child = Arc::new(g.wild(&mut w.rng));
                 let x = w.rng.range(0.9, 2.5);
                 let depth = w.rng.range(0.02, DEPTH - 0.02);
                 let pos = [x, depth, if alt > 0.0 { alt + w.rng.range(0.0, 0.2) } else { 0.0 }];
@@ -228,6 +227,10 @@ impl Sim {
         w.tick += 1;
         w.time += TICK as f64;
         index_creatures(w);
+        // Floating plants drift and animals drop seeds between rebuilds, so
+        // the plant grid is made afresh each tick: a loaded world then finds
+        // the same neighbours as one that never stopped.
+        ecology::rebuild_plant_grid(w);
         w.ground.refresh(w.env.river);
         let dt_slow = TICK * PLANT_EVERY as f32;
         if w.tick % PLANT_EVERY == 0 {
@@ -261,6 +264,7 @@ impl Sim {
             society::regroup(w);
         }
         if w.tick % 300 == 0 {
+            species::speciate(w);
             let census = society::census(w);
             w.record(Fact::Census(census));
             sweep_strains(w);
@@ -334,21 +338,27 @@ thread_local! {
 /// Somewhere along the band, out of the lava, whose warmth sits well inside
 /// what a genome can stand.
 fn livable(w: &mut World, g: &Genome) -> f32 {
-    let cold = -(0.35 + g.cold_tolerance * 0.8);
-    let hot = 0.35 + g.heat_tolerance * 0.8;
     let mut best = (f32::MIN, WORLD_W * 0.5);
     for _ in 0..40 {
         let x = w.rng.range(0.1, WORLD_W - 0.1);
         if w.env.lava_at(x) {
             continue;
         }
-        let t = w.env.temperature(x, 0.0);
-        let margin = (hot - t).min(t - cold);
-        if margin > best.0 {
-            best = (margin, x);
+        let m = margin(w, g, x);
+        if m > best.0 {
+            best = (m, x);
         }
     }
     best.1
+}
+
+/// How far the ground temperature at `x` sits inside what these genes bear
+/// (before any fat or armour widens it).
+fn margin(w: &World, g: &Genome, x: f32) -> f32 {
+    let cold = -(0.35 + g.cold_tolerance * 0.8);
+    let hot = 0.35 + g.heat_tolerance * 0.8;
+    let t = w.env.temperature(x, 0.0);
+    (hot - t).min(t - cold)
 }
 
 /// Retires strains nobody carries any more.
@@ -383,8 +393,13 @@ fn renew(w: &mut World) {
         let voice: [u8; MEANINGS] = std::array::from_fn(|m| m as u8);
         let home = livable(w, &g);
         for _ in 0..20 {
-            let child = Arc::new(g.bud(&mut w.rng));
+            let child = Arc::new(g.wild(&mut w.rng));
+            // Its own genes vary from the founder's, so it keeps to where it can bear.
             let x = (home + w.rng.normal() * 0.05).clamp(0.05, WORLD_W - 0.05);
+            let x = if margin(w, &child, x) > 0.0 { x } else { home };
+            if margin(w, &child, x) <= 0.0 {
+                continue;
+            }
             let pos = [x, w.rng.range(0.02, DEPTH - 0.02), 0.0];
             let body = crate::body::Body::develop(&child);
             let adult = crate::creature::adult_matter(&child, &body);
@@ -403,7 +418,7 @@ fn renew(w: &mut World) {
         for _ in 0..20 {
             let x = w.rng.range(0.6, 3.0);
             let d = w.rng.range(0.0, DEPTH);
-            let seed = Seed { genome: g.clone(), species, generation: 0 };
+            let seed = Seed { genome: Arc::new(g.wild(&mut w.rng)), species, generation: 0 };
             ecology::sow(w, &seed, x, d, 0.2, 0.0);
         }
     }
