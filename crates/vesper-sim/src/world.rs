@@ -263,9 +263,12 @@ pub struct Egg {
     pub species: SpeciesId,
     pub genome: Arc<Genome>,
     pub mother: Option<CreatureId>,
-    pub voice: [u8; 4],
+    pub voice: [u8; crate::mind::MEANINGS],
     pub home: [f32; 4],
     pub route_from: Option<CreatureId>,
+    /// What the mother feared, and the places she knew, passed on faintly.
+    pub wary: Vec<i8>,
+    pub places: Vec<crate::mind::Place>,
     pub generation: u32,
     pub pos: [f32; 3],
     pub matter: f32,
@@ -491,6 +494,10 @@ fn habit_threshold(b: Behavior) -> (u32, usize) {
         Parasitism | Symbiosis => (5, 3),
         Sacrifice | Matriphagy | War | Trapping => (4, 2),
         Dialect | Tradition | Migration | Eusociality | Overthrow => (2, 1),
+        Play | Sleep | Huddling | Mourning | Ritual => (30, 5),
+        Teaching | Reconciliation | AlarmCalls | Recruitment | LearnedFear => (8, 3),
+        Mobbing | PackHunting | Deterrence => (6, 3),
+        PlantWarning | Masting | Dormancy => (10, 1),
     }
 }
 

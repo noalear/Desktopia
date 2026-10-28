@@ -185,6 +185,20 @@ pub struct BrainGenes {
     pub plasticity: [f32; 5],
     /// How quickly the eligibility trace fades, 0..1 per brain step.
     pub trace_keep: f32,
+    /// The same rule for the input-to-hidden weights, so what a brain
+    /// notices can change with experience as well as what it does.
+    pub plasticity_h: [f32; 5],
+    /// The critic's inborn expectations: weights on hidden neurons and on inputs.
+    pub critic_h: Vec<i8>,
+    pub critic_i: Vec<i8>,
+    /// How far ahead the critic looks, per brain step (0.2 s), 0..1.
+    pub gamma: f32,
+    /// How fast the critic corrects its expectations.
+    pub critic_rate: f32,
+    /// How fast fresh learning is made lasting, per second at rest.
+    pub consolidate: f32,
+    /// How much the outputs wander on their own, which is how a brain tries things.
+    pub explore: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -227,6 +241,13 @@ pub struct Genome {
     pub imitation: f32,
     /// Chance per signal learned of inventing a new one instead.
     pub innovation: f32,
+    /// Temperament, 0..1. Curiosity: how rewarding new ground and new things
+    /// are, and how much it tries.
+    pub curiosity: f32,
+    /// Boldness: how slowly fear builds and how quickly it passes.
+    pub boldness: f32,
+    /// Sociality: how much it needs company, and how closely it keeps to it.
+    pub sociality: f32,
     /// How strongly the genome mutates in offspring.
     pub mutation: f32,
     /// Opaque appearance genes, drawn by the renderer. 0 hue, 1 value, 2 pattern, 3 glow hue.
@@ -251,6 +272,13 @@ impl BrainGenes {
             b_o: (0..NO).map(|_| w(rng, 0.2)).collect(),
             plasticity: [rng.signed() * 0.5, rng.signed() * 0.1, rng.signed() * 0.1, 0.0, rng.range(0.0, 0.05)],
             trace_keep: rng.range(0.5, 0.95),
+            plasticity_h: [rng.signed() * 0.3, rng.signed() * 0.05, rng.signed() * 0.05, 0.0, rng.range(0.0, 0.01)],
+            critic_h: (0..hidden).map(|_| w(rng, 0.2)).collect(),
+            critic_i: (0..NI).map(|_| w(rng, 0.1)).collect(),
+            gamma: rng.range(0.93, 0.99),
+            critic_rate: rng.range(0.02, 0.1),
+            consolidate: rng.range(0.0, 0.03),
+            explore: rng.range(0.1, 0.3),
         };
         // A few reflexes to start from: seek food when hungry, flee pain.
         crate::brain::seed_reflexes(&mut b);
@@ -259,7 +287,16 @@ impl BrainGenes {
 
     fn mutate(&mut self, rng: &mut Rng, rate: f32) {
         let p = 0.04 * rate;
-        for m in [&mut self.w_ih, &mut self.w_hh, &mut self.w_ho, &mut self.w_io, &mut self.b_h, &mut self.b_o] {
+        for m in [
+            &mut self.w_ih,
+            &mut self.w_hh,
+            &mut self.w_ho,
+            &mut self.w_io,
+            &mut self.b_h,
+            &mut self.b_o,
+            &mut self.critic_h,
+            &mut self.critic_i,
+        ] {
             for v in m.iter_mut() {
                 if rng.chance(p) {
                     *v = (*v as f32 + rng.normal() * 10.0).clamp(-127.0, 127.0) as i8;
@@ -272,9 +309,24 @@ impl BrainGenes {
             }
         }
         self.plasticity[4] = self.plasticity[4].clamp(0.0, 0.3);
+        for v in self.plasticity_h.iter_mut() {
+            if rng.chance(0.1 * rate) {
+                *v += rng.normal() * 0.02;
+            }
+        }
+        self.plasticity_h[4] = self.plasticity_h[4].clamp(0.0, 0.1);
         if rng.chance(0.1 * rate) {
             self.trace_keep = (self.trace_keep + rng.normal() * 0.05).clamp(0.0, 0.99);
         }
+        let mut nudge = |v: &mut f32, sd: f32, lo: f32, hi: f32| {
+            if rng.chance(0.1 * rate) {
+                *v = (*v + rng.normal() * sd).clamp(lo, hi);
+            }
+        };
+        nudge(&mut self.gamma, 0.01, 0.5, 0.995);
+        nudge(&mut self.critic_rate, 0.01, 0.0, 0.3);
+        nudge(&mut self.consolidate, 0.004, 0.0, 0.1);
+        nudge(&mut self.explore, 0.03, 0.0, 0.8);
         if rng.chance(0.03 * rate) {
             let h = if rng.chance(0.5) { self.hidden + 1 } else { self.hidden.saturating_sub(1) };
             self.resize(h.clamp(2, MAX_HIDDEN), rng);
@@ -308,6 +360,8 @@ impl BrainGenes {
         }
         let mut b_h: Vec<i8> = self.b_h.iter().copied().take(keep).collect();
         b_h.resize_with(hidden, || 0);
+        self.critic_h.truncate(keep);
+        self.critic_h.resize_with(hidden, || 0);
         self.w_ih = w_ih;
         self.w_hh = w_hh;
         self.w_ho = w_ho;
@@ -331,6 +385,12 @@ impl BrainGenes {
                     c.w_ho[n * NO + o] = other.w_ho[n * NO + o];
                 }
                 c.b_h[n] = other.b_h[n];
+                c.critic_h[n] = other.critic_h[n];
+            }
+        }
+        for i in 0..NI {
+            if rng.chance(0.5) {
+                c.critic_i[i] = other.critic_i[i];
             }
         }
         for o in 0..NO {
@@ -344,6 +404,19 @@ impl BrainGenes {
         if rng.chance(0.5) {
             c.plasticity = other.plasticity;
             c.trace_keep = other.trace_keep;
+        }
+        if rng.chance(0.5) {
+            c.plasticity_h = other.plasticity_h;
+        }
+        if rng.chance(0.5) {
+            c.gamma = other.gamma;
+            c.critic_rate = other.critic_rate;
+        }
+        if rng.chance(0.5) {
+            c.consolidate = other.consolidate;
+        }
+        if rng.chance(0.5) {
+            c.explore = other.explore;
         }
         c
     }
@@ -544,6 +617,9 @@ impl Genome {
             immune: [rng.f32(), rng.f32(), rng.f32(), rng.f32()],
             imitation: rng.range(0.0, 0.5),
             innovation: rng.range(0.005, 0.03),
+            curiosity: rng.range(0.2, 0.6),
+            boldness: rng.range(0.3, 0.7),
+            sociality: rng.range(0.2, 0.6),
             mutation: rng.range(0.8, 1.2),
             look,
             marker,
@@ -618,6 +694,9 @@ impl Genome {
             immune,
             imitation,
             innovation,
+            curiosity,
+            boldness,
+            sociality,
             mutation
         );
         for i in 0..LOOK_GENES {
@@ -661,6 +740,9 @@ impl Genome {
         nudge(&mut self.choosiness, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.imitation, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.innovation, 0.004, 0.0, 0.2, rng);
+        nudge(&mut self.curiosity, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.boldness, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.sociality, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.mutation, 0.05, 0.3, 2.5, rng);
         for i in 0..4 {
             nudge(&mut self.mate_pref[i], 0.05, 0.0, 1.0, rng);

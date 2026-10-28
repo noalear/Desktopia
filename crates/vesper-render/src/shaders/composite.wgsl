@@ -106,13 +106,21 @@ fn air_light(p: vec2f) -> vec3f {
     return sky_base(vec2f(p.x, 0.6)) * 0.7 + sun_glow(p) * 0.25 + vec3f(0.012, 0.014, 0.026);
 }
 
+// How far a layer has fallen, wrapped every WRAP cells of height `cell` so
+// it stays small enough to keep full precision however long the clock runs;
+// the cells' hashes wrap with it, so the wrap never shows.
+const WRAP = 512.0;
+
+fn fall_offset(vy: f32, cell: f32) -> f32 {
+    return (vy * P.time) % (cell * WRAP);
+}
+
 // One layer of streaks, 0..1 at p. Drops move along (s * vy, -vy), so in
 // coordinates (x - s y, y + vy t) each one stands still; cells there are
 // tall and thin, one drop in some of them.
 fn streaks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, width: f32, seed: f32) -> f32 {
-    let u = vec2f(p.x - s * p.y, p.y + vy * P.time);
-    let g = u / vec2f(scale, scale * 9.0);
-    let cell = floor(g);
+    let g = vec2f(p.x - s * p.y, p.y + fall_offset(vy, scale * 9.0)) / vec2f(scale, scale * 9.0);
+    let cell = vec2f(floor(g.x), floor(g.y) % WRAP);
     let h = pcg2(cell + seed);
     if (h.x > density) {
         return 0.0;
@@ -128,9 +136,8 @@ fn streaks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, width: f32, seed
 
 // One layer of drifting specks (snow, ash), each wobbling on its way down.
 fn specks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, size: f32, seed: f32) -> f32 {
-    let u = vec2f(p.x - s * p.y, p.y + vy * P.time);
-    let g = u / scale;
-    let cell = floor(g);
+    let g = vec2f(p.x - s * p.y, p.y + fall_offset(vy, scale)) / scale;
+    let cell = vec2f(floor(g.x), floor(g.y) % WRAP);
     let h = pcg2(cell + seed);
     if (h.x > density) {
         return 0.0;

@@ -154,8 +154,13 @@ pub struct PlantView {
     pub trap_shut: bool,
     pub floating: bool,
     pub glow: f32,
+    /// Spines and poison, including any raised against grazing.
     pub spines: f32,
     pub toxin: f32,
+    /// 0..1 how roused it is against grazers.
+    pub alarm: f32,
+    /// 0..1 how shut down it is, waiting out bad weather.
+    pub dormant: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -298,8 +303,10 @@ impl Frame {
                 trap_shut: p.trap_shut > 0.0,
                 floating: p.genome.floats(),
                 glow: p.genome.glow,
-                spines: p.genome.spines,
-                toxin: p.genome.toxin,
+                spines: p.spines(),
+                toxin: p.toxin(),
+                alarm: p.alarm,
+                dormant: p.dormant,
             })
             .collect();
         let remains = w

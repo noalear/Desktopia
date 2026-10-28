@@ -74,6 +74,8 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Sim, LoadError> {
     // Bodies aren't saved; they grow again from the genomes exactly as before.
     for c in &mut w.creatures {
         c.body = Arc::new(Body::develop(&c.genome));
+        // Brains keep only what was learned; instincts come from the genome.
+        c.brain.attach(&c.genome.brain);
     }
     for p in &mut w.plants {
         p.body = Arc::new(p.genome.develop());

@@ -1276,6 +1276,47 @@ impl History {
             }
             Behavior::War => format!("Two groups of {} fought as groups, for ground.", sps(species)),
             Behavior::Overthrow => format!("{actor} fought its group's leader and took its place."),
+            Behavior::Play => {
+                format!("Young {} wrestled and chased each other, fighting without harm. They play.", sps(species))
+            }
+            Behavior::Teaching => {
+                format!("{actor} learned what to eat by watching its parent, and ate it. Knowledge now passes down.")
+            }
+            Behavior::Mourning => {
+                format!("{actor} stayed by the body of one it had known, and would not leave it for a while.")
+            }
+            Behavior::Mobbing => {
+                format!("{} turned on a hunter together and drove it off. Prey fight back now.", sps(species))
+            }
+            Behavior::PackHunting => format!("{} hunted together, closing on their prey as one.", sps(species)),
+            Behavior::Reconciliation => {
+                format!("{actor} groomed one it had fought with only moments before. Quarrels can be mended.")
+            }
+            Behavior::Ritual => {
+                format!(
+                    "Two {} squared up, and one backed down. Rivals settle it by display now, not blood.",
+                    sps(species)
+                )
+            }
+            Behavior::Deterrence => {
+                format!("{actor} reared up at a hunter and the hunter turned away. It will remember that kind.")
+            }
+            Behavior::Sleep => format!("{} slept pressed together, each guarding the rest.", sps(species)),
+            Behavior::Huddling => format!("{} pressed together against the cold, sharing their warmth.", sps(species)),
+            Behavior::AlarmCalls => {
+                format!("{} have a separate cry for danger from above. Their signals now name things.", sps(species))
+            }
+            Behavior::Recruitment => format!("{actor} flashed a call, and others of its kind came to it."),
+            Behavior::LearnedFear => {
+                format!("{actor} saw one of its own killed, and learned to fear the killer's kind on sight.")
+            }
+            Behavior::PlantWarning => {
+                format!("{} under attack gave off a scent, and their neighbours armed themselves.", asp(species))
+            }
+            Behavior::Masting => {
+                format!("{} held back their seed, then all let it go together after the rain.", asp(species))
+            }
+            Behavior::Dormancy => format!("{} shut down to wait out hard weather, and lived.", asp(species)),
         };
         let mut refs = vec![Ref::Species(species)];
         refs.extend(who.filter(|c| self.names.contains_key(c)).map(Ref::Creature));
@@ -1768,6 +1809,9 @@ impl History {
             }
             s.push_str(". ");
         }
+        if let Some(m) = &l.mind {
+            s.push_str(&temperament(m));
+        }
         match (n.died, n.cause) {
             (Some(_), Some(cause)) => s.push_str(&format!(
                 "It {} at the age of {}.",
@@ -1778,6 +1822,71 @@ impl History {
         }
         s
     }
+}
+
+/// A sentence or two on what a creature was like and what it knew.
+fn temperament(m: &MindSketch) -> String {
+    let pick = |v: f32, low: &'static str, high: &'static str| {
+        if v > 0.65 {
+            Some(high)
+        } else if v < 0.3 {
+            Some(low)
+        } else {
+            None
+        }
+    };
+    let traits: Vec<&str> = [
+        pick(m.curiosity, "incurious", "curious"),
+        pick(m.boldness, "timid", "bold"),
+        pick(m.sociality, "solitary", "sociable"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut s = String::new();
+    if !traits.is_empty() {
+        let last = traits[traits.len() - 1];
+        let list = if traits.len() == 1 {
+            last.to_string()
+        } else {
+            format!("{} and {last}", traits[..traits.len() - 1].join(", "))
+        };
+        s.push_str(&format!("By nature it was {list}. "));
+    }
+    let mut knew = Vec::new();
+    if m.known > 0 {
+        let mut k = format!("knew {} others", m.known);
+        if m.friends > 0 && m.foes > 0 {
+            k.push_str(&format!(", {} of them friends and {} foes", m.friends, m.foes));
+        } else if m.friends > 0 {
+            k.push_str(&format!(" and counted {} of them friends", m.friends));
+        } else if m.foes > 0 {
+            k.push_str(&format!(" and held {} of them enemies", m.foes));
+        }
+        knew.push(k);
+    }
+    if m.places > 0 {
+        knew.push(format!("remembered {} places", m.places));
+    }
+    if m.fears > 0 {
+        knew.push(if m.fears == 1 {
+            "had learned to fear one kind of thing on sight".to_string()
+        } else {
+            format!("had learned to fear {} kinds of thing on sight", m.fears)
+        });
+    }
+    if !knew.is_empty() {
+        let last = knew.pop().unwrap();
+        if knew.is_empty() {
+            s.push_str(&format!("It {last}. "));
+        } else {
+            s.push_str(&format!("It {} and {last}. ", knew.join(", ")));
+        }
+    }
+    if m.learned > 0.6 {
+        s.push_str("Life had changed it far from the instincts it was born with. ");
+    }
+    s
 }
 
 /// Routine deaths counted together: how many of each species died of each
@@ -1871,6 +1980,22 @@ fn behavior_word(b: Behavior) -> &'static str {
         Behavior::Trapping => "hunting plant",
         Behavior::War => "war",
         Behavior::Overthrow => "overthrow",
+        Behavior::Play => "play",
+        Behavior::Teaching => "lesson",
+        Behavior::Mourning => "mourning",
+        Behavior::Mobbing => "mob",
+        Behavior::PackHunting => "pack hunt",
+        Behavior::Reconciliation => "reconciliation",
+        Behavior::Ritual => "ritual contest",
+        Behavior::Deterrence => "hunter faced down",
+        Behavior::Sleep => "shared sleep",
+        Behavior::Huddling => "huddle",
+        Behavior::AlarmCalls => "named danger",
+        Behavior::Recruitment => "rallying call",
+        Behavior::LearnedFear => "learned fear",
+        Behavior::PlantWarning => "plant warning",
+        Behavior::Masting => "mast year",
+        Behavior::Dormancy => "dormancy",
     }
 }
 
