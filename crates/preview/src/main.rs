@@ -6,6 +6,7 @@
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
 //!                [--follow] [--crop X Y W H] [--acts MINUTES] [--world FILE] [--out DIR]
+//!                [--weather HOURS] [--until storm|rain|snow|dust|cold|erupt|drought|flood]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
 //! its size, in monitor heights) at full 4K density times `--scale`, for
@@ -22,8 +23,13 @@
 //! `--acts` grows a world for that many sim minutes, then has a few of its
 //! creatures act out every behaviour the animator knows, `--frames` frames
 //! at 15 a second, one sheet per creature (see acts.rs).
+//!
+//! `--weather` runs a real world's weather alone for that many hours and
+//! draws the sky it makes over the stand-in life; `--until` then waits for a
+//! kind of weather (see weather.rs). Later frames step it on by `--step`.
 
 mod acts;
+mod weather;
 #[path = "../../desktopia/src/living.rs"]
 #[allow(dead_code)]
 mod living;
@@ -59,6 +65,8 @@ struct Args {
     follow: bool,
     /// With --sim: where to keep the grown world between runs.
     world: Option<std::path::PathBuf>,
+    weather: Option<f64>,
+    until: Option<String>,
     out: std::path::PathBuf,
 }
 
@@ -85,6 +93,8 @@ fn parse_args() -> Args {
         crop: None,
         follow: false,
         world: None,
+        weather: None,
+        until: None,
         out: "preview-out".into(),
     };
     let mut it = std::env::args().skip(1);
@@ -125,6 +135,8 @@ fn parse_args() -> Args {
             }
             "--world" => a.world = Some(val().into()),
             "--out" => a.out = val().into(),
+            "--weather" => a.weather = Some(val().parse().unwrap()),
+            "--until" => a.until = Some(val()),
             other => panic!("unknown flag {other}"),
         }
     }
@@ -160,8 +172,9 @@ fn main() {
         renderer.set_plants(&mut batch);
     }
 
+    let mut sky = args.weather.map(|h| weather::Weather::grow(args.seed, h, args.until.as_deref()));
     if let Some(crop) = args.crop {
-        return render_crop(&mut renderer, &mut world, &mut batch, &args, crop);
+        return render_crop(&mut renderer, &mut world, &mut batch, &mut sky, &args, crop);
     }
 
     let w = (MONITOR[0] as f32 * args.scale) as u32;
@@ -202,7 +215,7 @@ fn main() {
             world.creatures_batch(&mut batch);
             renderer.set_creatures(&mut batch);
         }
-        let world = view_at(&args, world_size, t);
+        let world = frame_view(&args, &mut sky, world_size, t, f);
         renderer.render(&mut left, &world, &view(&left_tex));
         renderer.render(&mut right, &world, &view(&right_tex));
         renderer.render(&mut right_hdr, &world, &view(&hdr_tex));
@@ -327,10 +340,34 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
     }
 }
 
+/// Frame `f`'s world at `t` seconds: the stand-in weather, or with
+/// `--weather` the real weather stepped on to this frame.
+fn frame_view(args: &Args, sky: &mut Option<weather::Weather>, world_size_px: [f32; 2], t: f64, f: u32) -> WorldView {
+    match sky {
+        Some(sky) => {
+            if f > 0 {
+                sky.step(args.step);
+            }
+            let mut v = WorldView::at(world_size_px, t, 1.0);
+            sky.fill(&mut v);
+            pin(args, v)
+        }
+        None => view_at(args, world_size_px, t),
+    }
+}
+
 /// The world at `t` seconds, with any weather the flags pin down.
 fn view_at(args: &Args, world_size_px: [f32; 2], t: f64) -> WorldView {
     let mut w = WorldView::at(world_size_px, t, 1.0);
     w.band_shift = args.band.unwrap_or(0.0) + args.band_speed * (t - args.time) as f32;
+    pin(args, w)
+}
+
+/// `w` with any weather the flags pin down.
+fn pin(args: &Args, mut w: WorldView) -> WorldView {
+    if let Some(b) = args.band {
+        w.band_shift = b;
+    }
     if let Some([x, s]) = args.storm {
         w.storm_x = x;
         w.lightning_x = x;
@@ -368,7 +405,14 @@ fn step_world(world: &mut Menagerie, secs: f64) {
     }
 }
 
-fn render_crop(renderer: &mut Renderer, world: &mut Menagerie, batch: &mut LifeBatch, args: &Args, crop: [f32; 4]) {
+fn render_crop(
+    renderer: &mut Renderer,
+    world: &mut Menagerie,
+    batch: &mut LifeBatch,
+    sky: &mut Option<weather::Weather>,
+    args: &Args,
+    crop: [f32; 4],
+) {
     let ppu = MONITOR[1] as f32 * args.scale;
     let [x0, y0, cw, ch] = crop;
     let w = (cw * ppu) as u32;
@@ -391,7 +435,7 @@ fn render_crop(renderer: &mut Renderer, world: &mut Menagerie, batch: &mut LifeB
             world.creatures_batch(batch);
             renderer.set_creatures(batch);
         }
-        let view_world = view_at(args, [world_w * ppu, ppu], t);
+        let view_world = frame_view(args, sky, [world_w * ppu, ppu], t, f);
         renderer.render(&mut out, &view_world, &view(&tex));
         let px = read_rgba8(renderer, &tex, w, h);
         let img = image::RgbaImage::from_fn(w, h, |x, y| {

@@ -146,6 +146,10 @@ pub enum DeathCause {
     Lightning,
     /// Swept away by a flood.
     Flood,
+    /// Dried out in heat and drought with no water to be had.
+    Thirst,
+    /// Lungs and gills clogged by ash or dust.
+    Choked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +161,15 @@ pub enum NatureKind {
     ColdFall,
     DustStorm,
     Lightning,
+    Hailstorm,
+    /// The twilight's ground has been parched for hours.
+    Drought,
+    /// Rain that ends a drought.
+    Rains,
+    Heatwave,
+    Blizzard,
+    /// A great eruption's ash veils the sky and cools the world for days.
+    AshWinter,
 }
 
 /// A behavior seen for the first time anywhere in the world.

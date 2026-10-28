@@ -35,6 +35,9 @@ pub struct EnvView {
     /// Wind along x near the ground and up high, world units per second.
     pub wind_low: f32,
     pub wind_high: f32,
+    /// The weather column by column, laid out as `vesper_terrain::SKY_ROWS`
+    /// describes.
+    pub sky: Vec<[f32; 4]>,
 }
 
 #[derive(Clone, Debug)]
@@ -240,6 +243,7 @@ impl Frame {
             dust_x: e.dust_x,
             wind_low: e.wind(0.0),
             wind_high: e.wind(0.5),
+            sky: e.atmos.sky(if e.cold > 0.0 { -0.0012 } else { 0.0 }, e.dust_v),
         };
         let leaders: Vec<u64> = w.society.groups.iter().filter_map(|g| g.leader.map(|l| l.0)).collect();
         let creatures = w

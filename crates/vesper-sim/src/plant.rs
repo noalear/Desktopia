@@ -402,6 +402,16 @@ pub struct Plant {
     pub hardship: f32,
     /// Tolerance it has hardened itself to: + more heat, - more cold.
     pub acclim: f32,
+    /// Weather worn into it, each 0..1: wilting from thirst, frost-bitten
+    /// and sun-scorched leaves, and a coat of ash or dust over them.
+    #[serde(default)]
+    pub wilt: f32,
+    #[serde(default)]
+    pub frost: f32,
+    #[serde(default)]
+    pub burn: f32,
+    #[serde(default)]
+    pub coat: f32,
 }
 
 impl Plant {

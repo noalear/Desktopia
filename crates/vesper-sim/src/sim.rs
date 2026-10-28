@@ -44,6 +44,7 @@ impl Sim {
             remains: Vec::new(),
             eggs: Vec::new(),
             spores: Vec::new(),
+            seedbank: Vec::new(),
             strains: Vec::new(),
             species: Registry::default(),
             society: Default::default(),

@@ -22,6 +22,24 @@ pub const GLACIER_X: f32 = 3.02;
 /// flank; the others glow in the dark near the glacier.
 pub const VENTS: [(f32, f32); 3] = [(VOLCANO_X + 0.09, 1.0), (2.86, 0.7), (3.24, 0.9)];
 
+/// Columns of air the simulation steps its weather in, and the renderer
+/// reads it by.
+pub const SKY_COLS: usize = 64;
+/// Rows of the weather the simulation hands the renderer, each four floats:
+///
+/// - `0..SKY_COLS`, per column: cloud cover, what is falling (0..1), the
+///   share of it that is snow, fog.
+/// - `SKY_COLS..2*SKY_COLS`: ground wetness, lying snow, ash in the air,
+///   dust in the air.
+/// - `2*SKY_COLS..3*SKY_COLS`: ash lying on the ground, hail, gusts (0 calm
+///   .. about 3 a gale), cold snap (how far below usual, 0..1.5).
+/// - then [`SKY_CELLS`] storm cells: x, power (0..1.3), the power it can reach, and a seed
+///   for its shape (whole part) plus its age through its life (fraction).
+/// - then one row: the ash veil, the dust front's speed, the cold fall's
+///   front speed, unused.
+pub const SKY_CELLS: usize = 5;
+pub const SKY_ROWS: usize = SKY_COLS * 3 + SKY_CELLS + 1;
+
 /// Length of one seasonal wobble of the twilight band, in days.
 pub const SEASON_DAYS: f64 = 4.0;
 /// How far the band slides each way, in world units.

@@ -139,6 +139,7 @@ impl Living {
         view.dust_x = e.dust_x;
         view.wind_low = e.wind_low;
         view.wind_high = e.wind_high;
+        view.sky = vesper_render::Sky::from_rows(&e.sky);
         let now = Instant::now();
         let (drift, last) = self.cloud.unwrap_or((view.cloud_drift, now));
         let drift = (drift + e.wind_high * 0.5 * (now - last).as_secs_f32().min(1.0)) % 4096.0;
