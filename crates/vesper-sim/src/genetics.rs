@@ -332,8 +332,9 @@ pub(crate) fn found(plan: Genome, rng: &mut Rng) -> Genome {
     for d in b.dominance.iter_mut() {
         *d = (128.0 + rng.normal() * 20.0).clamp(1.0, 255.0) as u8;
     }
+    // A second immune allele, kin to the first.
     for v in b.immune.iter_mut() {
-        *v = rng.f32();
+        *v = (*v + rng.normal() * 0.08).clamp(0.0, 1.0);
     }
     let brain = plan.brain.clone();
     let marker = plan.marker;

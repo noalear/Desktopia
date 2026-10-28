@@ -121,9 +121,11 @@ impl Strain {
     }
 
     /// How well it takes hold in a host. Both of the host's immune alleles
-    /// are on watch, so it must slip past the one that knows it best.
+    /// are on watch, so a strain suited to one is half checked by a
+    /// different other one; a host with two copies of the same allele gets
+    /// no such help.
     pub fn takes(&self, g: &crate::genome::Genome) -> f32 {
-        self.fit(&g.immune).min(self.fit(&g.immune_b))
+        (self.fit(&g.immune) + self.fit(&g.immune_b)) * 0.5
     }
 
     /// A partner rather than a burden.
