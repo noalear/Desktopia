@@ -511,6 +511,9 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         }
     }
 
+    if (!is_mat(m, 1.0)) {
+        col *= 1.0 - 0.5 * cloud_shade(p) * day;
+    }
     col += crater_glow(p);
 
     if (is_mat(m, 0.0)) {

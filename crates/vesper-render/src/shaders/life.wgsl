@@ -318,7 +318,9 @@ fn light_dir(p: vec2f) -> vec3f {
 
 fn haze(p: vec2f, col: vec3f, z: f32) -> vec3f {
     let hz = sky_base(vec2f(p.x, 0.36)) + sun_glow(vec2f(p.x, 0.36)) * 0.4;
-    return mix(col, hz * 0.7, clamp(z * z * 0.55, 0.0, 0.6));
+    // Passing cloud shades bodies as it does the ground under them.
+    let shaded = col * (1.0 - 0.5 * cloud_shade(p) * daylight(p.x));
+    return mix(shaded, hz * 0.7, clamp(z * z * 0.55, 0.0, 0.6));
 }
 
 // How much of the accent colour shows at pattern coordinate q (scaled units).

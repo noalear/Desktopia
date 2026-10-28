@@ -533,9 +533,6 @@ pub fn weather(w: &mut World, dt: f32) {
                 / 24.0
         })
         .collect();
-    if std::env::var_os("WATERDBG").is_some() && w.tick < 2 {
-        eprintln!("{:?}", water.iter().map(|v| (v * 100.0).round() as i32).collect::<Vec<_>>());
-    }
     let mut happened = Vec::new();
     let rng = &mut w.rng;
     let e = &mut w.env;

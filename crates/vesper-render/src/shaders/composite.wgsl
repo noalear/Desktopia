@@ -120,7 +120,10 @@ fn streaks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, width: f32, seed
     let f = fract(g);
     let along = smoothstep(0.0, 0.35, f.y) * smoothstep(1.0, 0.75, f.y);
     let d = abs(f.x - 0.2 - 0.6 * h.y) * scale;
-    return smoothstep(width, width * 0.2, d) * along * (0.5 + 0.5 * fract(h.x * 91.0));
+    // Never thinner than a pixel and a bit, or the drops shimmer into moire;
+    // a drop thinner than that is drawn fainter instead.
+    let wd = max(width, 1.3 / P.world_size.y);
+    return smoothstep(wd, wd * 0.2, d) * along * (0.5 + 0.5 * fract(h.x * 91.0)) * width / wd;
 }
 
 // One layer of drifting specks (snow, ash), each wobbling on its way down.
@@ -135,7 +138,8 @@ fn specks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, size: f32, seed: 
     let wob = vec2f(sin(P.time * (0.7 + h.y) + h.x * 40.0), cos(P.time * (0.5 + h.x) + h.y * 30.0)) * 0.18;
     let d = length((fract(g) - 0.25 - 0.5 * pcg2(cell + seed + 9.0) - wob) * scale);
     let r = size * (0.5 + h.y);
-    return exp(-d * d / (r * r));
+    let rd = max(r, 0.8 / P.world_size.y);
+    return exp(-d * d / (rd * rd)) * r * r / (rd * rd);
 }
 
 fn falling(p: vec2f, base: vec3f) -> vec3f {

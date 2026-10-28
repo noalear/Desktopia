@@ -41,3 +41,20 @@ fn sky_cell(k: i32) -> vec4f {
 fn sky_misc() -> vec4f {
     return SKY.rows[3 * SKY_COLS + SKY_CELLS];
 }
+
+// How much cloud shades the land at screen point p from the low sun, 0 in
+// sunlight .. 1 in deep shade: patches drifting with the clouds, joining up
+// as the sky closes over.
+fn cloud_shade(p: vec2f) -> f32 {
+    let cover = sky_air(p.x).x;
+    if (cover < 0.04) {
+        return 0.0;
+    }
+    var q = vec2f(p.x * 1.4 - P.cloud_drift * 1.4, p.y * 7.0);
+    if (p.y < ground_top(p.x)) {
+        let w = plain_point(p);
+        q = vec2f(w.x * 0.0025 - P.cloud_drift * 2.0, w.y * 0.0012);
+    }
+    let lo = mix(0.75, 0.15, cover);
+    return smoothstep(lo, lo + 0.25, fbm(q, 4)) * mix(0.6, 1.0, cover);
+}
