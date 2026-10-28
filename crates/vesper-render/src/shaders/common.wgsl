@@ -133,9 +133,17 @@ const SUN_R = 0.085;
 const VOLCANO_X = 1.27;
 const VOLCANO_TOP = 0.53;
 
-// Top of the foreground ground plane.
+// Typical distance in metres to the back of the ground plane life walks on.
+const BACK_Z = 1300.0;
+
+// Distance in metres to the back edge of the ground plane.
+fn back_z(x: f32) -> f32 {
+    return BACK_Z * (1.0 + 0.3 * (fbm(vec2f(x * 4.0, 2.7), 4) - 0.5));
+}
+
+// Top of the foreground ground plane (its back edge) in screen h.
 fn ground_top(x: f32) -> f32 {
-    return 0.165 + 0.02 * (fbm(vec2f(x * 4.0, 2.7), 4) - 0.5);
+    return HORIZON - CAM_H * FOCAL / back_z(x);
 }
 
 // ---------------------------------------------------------------- camera

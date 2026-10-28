@@ -61,7 +61,7 @@ impl Pose {
 /// Screen position, perspective shrink and draw depth of a point given as x,
 /// depth on the ground plane 0..1, and altitude above it.
 pub fn project(pos: [f32; 3]) -> ([f32; 2], f32, f32) {
-    let shrink = 1.0 - 0.35 * pos[1];
+    let shrink = terrain::shrink(pos[0], pos[1]);
     let h = terrain::floor_h(pos[0], pos[1]) + pos[2] * shrink;
     ([pos[0], h], shrink, pos[1])
 }
