@@ -3,7 +3,7 @@
 use crate::act;
 use crate::ecology;
 use crate::genome::{Founder, Genome};
-use crate::history::{CreatureId, Fact};
+use crate::history::{CreatureId, Fact, SpeciesId};
 use crate::life;
 use crate::mind::{MEANINGS, Mind, SYMBOLS};
 use crate::plant::{PlantGenome, Seed, Seedling};
@@ -11,7 +11,7 @@ use crate::rng::Rng;
 use crate::society;
 use crate::species::{self, Registry};
 use crate::think::{self, Percept};
-use crate::world::{self, COLS, DEPTH, Env, PLANT_EVERY, ROWS, TICK, World};
+use crate::world::{self, COLS, DEPTH, Env, MAX_CREATURES, PLANT_EVERY, ROWS, TICK, World};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vesper_terrain::{self as terrain, WORLD_W};
@@ -129,32 +129,16 @@ impl Sim {
             }
             // The founders are not "born" as a fact of history beyond SpeciesArose.
         }
-        let founders = [
-            (Founder::Drifter, 30, 0.15),
-            (Founder::Grazer, 25, 0.0),
-            (Founder::Swimmer, 25, 0.08),
-            (Founder::Crawler, 20, 0.0),
-        ];
-        for (kind, n, alt) in founders {
-            let g = Arc::new(founder(w, kind));
-            let species = w.species.found_creature(&g, 0.0, &mut w.history);
-            let voice: [u8; MEANINGS] = std::array::from_fn(|_| w.rng.below(SYMBOLS) as u8);
-            for _ in 0..n {
-                let child = Arc::new(g.wild(&mut w.rng));
-                let x = w.rng.range(0.9, 2.5);
-                let depth = w.rng.range(0.02, DEPTH - 0.02);
-                let pos = [x, depth, if alt > 0.0 { alt + w.rng.range(0.0, 0.2) } else { 0.0 }];
-                let body = crate::body::Body::develop(&child);
-                let adult = crate::creature::adult_matter(&child, &body);
-                let share = w.rng.range(0.4, 1.0);
-                let m = w.take_soil(x, depth, adult * share);
-                let id = CreatureId(w.id());
-                let heading = w.rng.signed() * std::f32::consts::PI;
-                let mut c =
-                    life::new_creature(id, child, species, pos, m, None, Mind::new(voice), 0, false, 0.0, heading);
-                c.age = w.rng.range(0.0, 200.0);
-                w.species.born(species);
-                w.creatures.push(c);
+        // Several lineages of each kind, each drifted apart from the others
+        // and settled in its own stretch of land, so the world opens with a
+        // spread of distinct species rather than one of each.
+        let founders = [(Founder::Drifter, 3), (Founder::Grazer, 3), (Founder::Swimmer, 2), (Founder::Crawler, 2)];
+        for (kind, lineages) in founders {
+            for _ in 0..lineages {
+                let rounds = w.rng.below(4) as u32;
+                let g = Genome::founder_diverged(kind, rounds, &mut w.rng);
+                let home = settle(w, &g);
+                found_lineage(w, g, kind, 12, home, 0.0);
             }
         }
         // A couple of microbes to begin with.
@@ -337,15 +321,69 @@ thread_local! {
 
 /// Somewhere along the band, out of the lava, whose warmth sits well inside
 /// what a genome can stand.
-/// A founding lineage, its gut tuned to one of the plants about.
-fn founder(w: &mut World, kind: Founder) -> Genome {
-    let mut g = Genome::founder(kind, &mut w.rng);
+/// Settles a founding lineage of `n` around `home`: its gut tuned to one of
+/// the plants about, each member drawn with a wild population's variety and
+/// kept to ground its own genes can bear. Founders at the world's start
+/// (`now` 0) come at all ages.
+fn found_lineage(w: &mut World, mut g: Genome, kind: Founder, n: usize, home: f32, now: f64) -> SpeciesId {
     if !w.plants.is_empty() {
         let j = w.rng.below(w.plants.len());
         let chem = w.plants[j].genome.look[0];
         g.tune(chem);
     }
-    g
+    let g = Arc::new(g);
+    let species = w.species.found_creature(&g, now, &mut w.history);
+    let voice: [u8; MEANINGS] = std::array::from_fn(|_| w.rng.below(SYMBOLS) as u8);
+    let alt = match kind {
+        Founder::Drifter => 0.15,
+        Founder::Swimmer => 0.08,
+        _ => 0.0,
+    };
+    for _ in 0..n {
+        let child = Arc::new(g.wild(&mut w.rng));
+        let z = if alt > 0.0 { alt + w.rng.range(0.0, 0.2) } else { 0.0 };
+        let x = (home + w.rng.normal() * 0.08).clamp(0.05, WORLD_W - 0.05);
+        let x = if margin_at(w, &child, x, z) > 0.0 { x } else { home };
+        if margin_at(w, &child, x, z) <= 0.0 {
+            continue;
+        }
+        let depth = w.rng.range(0.02, DEPTH - 0.02);
+        let pos = [x, depth, z];
+        let body = crate::body::Body::develop(&child);
+        let adult = crate::creature::adult_matter(&child, &body);
+        let share = if now == 0.0 { w.rng.range(0.4, 1.0) } else { 0.5 };
+        let m = w.take_soil(x, depth, adult * share);
+        let id = CreatureId(w.id());
+        let heading = w.rng.signed() * std::f32::consts::PI;
+        let mut c = life::new_creature(id, child, species, pos, m, None, Mind::new(voice), 0, false, now, heading);
+        if now == 0.0 {
+            c.age = w.rng.range(0.0, 200.0);
+        }
+        w.species.born(species);
+        w.creatures.push(c);
+    }
+    species
+}
+
+/// Somewhere in the habitable middle of the world that suits these genes,
+/// taken from a fair sample rather than always the very best spot, so
+/// lineages spread out.
+fn settle(w: &mut World, g: &Genome) -> f32 {
+    let mut best = (f32::MIN, WORLD_W * 0.5);
+    for _ in 0..30 {
+        let x = w.rng.range(0.7, 2.7);
+        if w.env.lava_at(x) {
+            continue;
+        }
+        let m = margin(w, g, x);
+        if m > 0.1 {
+            return x;
+        }
+        if m > best.0 {
+            best = (m, x);
+        }
+    }
+    best.1
 }
 
 fn livable(w: &mut World, g: &Genome) -> f32 {
@@ -366,9 +404,14 @@ fn livable(w: &mut World, g: &Genome) -> f32 {
 /// How far the ground temperature at `x` sits inside what these genes bear
 /// (before any fat or armour widens it).
 fn margin(w: &World, g: &Genome, x: f32) -> f32 {
+    margin_at(w, g, x, 0.0)
+}
+
+/// The same, at altitude `alt`.
+fn margin_at(w: &World, g: &Genome, x: f32, alt: f32) -> f32 {
     let cold = -(0.35 + g.cold_tolerance * 0.8);
     let hot = 0.35 + g.heat_tolerance * 0.8;
-    let t = w.env.temperature(x, 0.0);
+    let t = w.env.temperature(x, alt);
     (hot - t).min(t - cold)
 }
 
@@ -396,30 +439,25 @@ fn sweep_strains(w: &mut World) {
 /// it can stand the warmth, rather than having to cross the day or night
 /// side to get there.
 fn renew(w: &mut World) {
-    if w.creatures.len() + w.eggs.len() < 30 && w.rng.chance(0.2) {
-        let kinds = [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler];
+    let kinds = [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler];
+    let total = w.creatures.len() + w.eggs.len();
+    if total < 30 && w.rng.chance(0.2) {
         let kind = *w.rng.pick(&kinds);
-        let g = Arc::new(founder(w, kind));
-        let species = w.species.found_creature(&g, w.time, &mut w.history);
-        let voice: [u8; MEANINGS] = std::array::from_fn(|m| m as u8);
+        let g = Genome::founder(kind, &mut w.rng);
         let home = livable(w, &g);
-        for _ in 0..20 {
-            let child = Arc::new(g.wild(&mut w.rng));
-            // Its own genes vary from the founder's, so it keeps to where it can bear.
-            let x = (home + w.rng.normal() * 0.05).clamp(0.05, WORLD_W - 0.05);
-            let x = if margin(w, &child, x) > 0.0 { x } else { home };
-            if margin(w, &child, x) <= 0.0 {
-                continue;
-            }
-            let pos = [x, w.rng.range(0.02, DEPTH - 0.02), 0.0];
-            let body = crate::body::Body::develop(&child);
-            let adult = crate::creature::adult_matter(&child, &body);
-            let m = w.take_soil(pos[0], pos[1], adult * 0.5);
-            let id = CreatureId(w.id());
-            let heading = w.rng.signed() * 3.0;
-            let c = life::new_creature(id, child, species, pos, m, None, Mind::new(voice), 0, false, w.time, heading);
-            w.species.born(species);
-            w.creatures.push(c);
+        found_lineage(w, g, kind, 20, home, w.time);
+    } else if total + 24 < MAX_CREATURES && w.rng.chance(0.1) {
+        // When few kinds are left, wanderers from beyond the known land now
+        // and then settle, so a world that has thinned out fills again.
+        let mut kinds_alive: Vec<_> = w.creatures.iter().map(|c| c.species).collect();
+        kinds_alive.sort_unstable();
+        kinds_alive.dedup();
+        if kinds_alive.len() < 4 {
+            let kind = *w.rng.pick(&kinds);
+            let rounds = w.rng.below(4) as u32;
+            let g = Genome::founder_diverged(kind, rounds, &mut w.rng);
+            let home = settle(w, &g);
+            found_lineage(w, g, kind, 12, home, w.time);
         }
     }
     if w.plants.len() < 30 && w.rng.chance(0.2) {

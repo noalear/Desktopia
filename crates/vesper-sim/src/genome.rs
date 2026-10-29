@@ -814,10 +814,16 @@ impl Genome {
     /// A founder: a working body plan with random details, carrying two
     /// slightly different sets of genes, and a brain to learn with.
     pub fn founder(kind: Founder, rng: &mut Rng) -> Self {
+        Self::founder_diverged(kind, 0, rng)
+    }
+
+    /// A founding lineage that has drifted `rounds` further from its kind's
+    /// plan, as if it had evolved apart somewhere else.
+    pub fn founder_diverged(kind: Founder, rounds: u32, rng: &mut Rng) -> Self {
         let mut g = Self::founder_plan(kind, rng);
         g.dress(kind, rng);
         // Founders are already a little varied.
-        for _ in 0..3 {
+        for _ in 0..3 + rounds {
             g.mutate(rng, 1.0);
         }
         genetics::found(g, rng)
