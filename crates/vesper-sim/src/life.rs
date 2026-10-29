@@ -20,6 +20,11 @@ use vesper_terrain::WORLD_W;
 /// How much a creature of another species crowds a breeder, compared with one of its own.
 const OTHERS_CROWD: f32 = 0.3;
 
+/// The share of the world one species can fill on its own before its own
+/// crowding stops it, leaving room for others to hold on and newcomers to
+/// settle.
+const OWN_SHARE: f32 = 0.55;
+
 /// Body segments a creature of ordinary size has; one with more takes up
 /// proportionally more room.
 const ROOM_SEGMENTS: f32 = 12.0;
@@ -336,7 +341,8 @@ pub fn breed(w: &mut World, mi: usize, fi: Option<usize>) {
     for e in &w.eggs {
         if e.species == sp { own += 1.0 } else { others += 1.0 }
     }
-    let crowd = (own + OTHERS_CROWD * others) / (MAX_CREATURES as f32 * 0.85);
+    let room_for = MAX_CREATURES as f32 * 0.85;
+    let crowd = own / (room_for * OWN_SHARE) + OTHERS_CROWD * others / room_for;
     if w.rng.chance(crowd.powi(4)) {
         return;
     }

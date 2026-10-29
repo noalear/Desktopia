@@ -38,7 +38,7 @@ pub const E_DETRITUS: f32 = 35.0;
 /// Upkeep per unit of matter^0.75 per second.
 pub const BASAL: f32 = 0.06;
 pub const BRAIN_COST: f32 = 0.0006;
-pub const MAX_CREATURES: usize = 150;
+pub const MAX_CREATURES: usize = 200;
 pub const MAX_PLANTS: usize = 2600;
 /// Floating mats among them; each is drawn afresh every frame.
 pub const MAX_MATS: usize = 400;
