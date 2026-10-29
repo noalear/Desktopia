@@ -44,6 +44,7 @@ mod app {
     use crate::living::Living;
     use crate::wallpaper::{Gpu, Presented, Wallpaper};
     use crate::{logger, system};
+    use std::sync::mpsc::{self, Receiver, TryRecvError};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use vesper_render::{LifeBatch, WorldView};
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -91,6 +92,7 @@ mod app {
             cfg,
             host,
             gpu: None,
+            gpu_opening: None,
             wallpaper: None,
             governor: Governor::new(),
             rebuild_at: Some(Instant::now()),
@@ -134,6 +136,8 @@ mod app {
         // The wallpaper's swap chains must go before the GPU.
         wallpaper: Option<Wallpaper>,
         gpu: Option<Gpu>,
+        /// The GPU being opened on its own thread, so the tray answers meanwhile.
+        gpu_opening: Option<Receiver<Result<Gpu, String>>>,
         governor: Governor,
         rebuild_at: Option<Instant>,
         failures: u32,
@@ -267,10 +271,10 @@ mod app {
                     self.schedule_rebuild();
                 }
             }
-            if self.rebuild_at.is_some_and(|t| now >= t) {
+            if self.rebuild_at.is_some_and(|t| now >= t) && self.gpu_ready(now) {
                 self.rebuild_at = None;
                 self.wallpaper = None;
-                match Wallpaper::build(&mut self.gpu, &self.cfg) {
+                match Wallpaper::build(self.gpu.as_ref().unwrap(), &self.cfg) {
                     Ok(w) => {
                         self.wallpaper = Some(w);
                         self.failures = 0;
@@ -293,6 +297,53 @@ mod app {
                 if let (Some(w), Some(gpu)) = (self.wallpaper.as_mut(), self.gpu.as_ref()) {
                     w.refresh_modes(gpu, &self.cfg);
                 }
+            }
+        }
+
+        /// Whether the GPU is open, opening it on another thread the first time.
+        /// Compiling the shaders takes seconds and the tray must answer meanwhile.
+        fn gpu_ready(&mut self, now: Instant) -> bool {
+            if self.gpu.is_none() {
+                let opening = self.gpu_opening.get_or_insert_with(|| {
+                    let (tx, rx) = mpsc::channel();
+                    std::thread::Builder::new()
+                        .name("gpu-open".into())
+                        .spawn(move || {
+                            let _ = tx.send(Gpu::open());
+                        })
+                        .expect("can't start the GPU thread");
+                    rx
+                });
+                match opening.try_recv() {
+                    Err(TryRecvError::Empty) => {
+                        self.set_tip("Desktopia: waking up…");
+                        return false;
+                    }
+                    Ok(Ok(gpu)) => self.gpu = Some(gpu),
+                    Ok(Err(e)) => {
+                        self.gpu_opening = None;
+                        self.failures += 1;
+                        let delay = Duration::from_secs(2u64.pow(self.failures.min(5)));
+                        log::error!("can't open the GPU ({e}); retrying in {delay:?}");
+                        self.rebuild_at = Some(now + delay);
+                        return false;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        self.gpu_opening = None;
+                        log::error!("the GPU thread died");
+                        self.rebuild_at = Some(now + Duration::from_secs(30));
+                        return false;
+                    }
+                }
+                self.gpu_opening = None;
+            }
+            true
+        }
+
+        fn set_tip(&mut self, tip: &str) {
+            if tip != self.last_tip {
+                self.host.set_tooltip(tip);
+                self.last_tip = tip.to_string();
             }
         }
 
