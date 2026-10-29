@@ -4,7 +4,7 @@
 //! Usage: preview [--scale S] [--time SECONDS] [--frames N] [--step SECONDS]
 //!                [--band SHIFT] [--band-speed S] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
-//!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
+//!                [--seed N] [--no-life] [--lineup] [--progressive] [--sim MINUTES]
 //!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES]
 //!                [--world FILE] [--out DIR]
 //!                [--weather HOURS] [--until storm|rain|snow|dust|cold|erupt|drought|flood]
@@ -63,6 +63,8 @@ struct Args {
     seed: u64,
     life: bool,
     lineup: bool,
+    /// Bake the way the wallpaper does, without waiting for the extra samples.
+    progressive: bool,
     sim: Option<f64>,
     acts: Option<f64>,
     family: Option<f64>,
@@ -94,6 +96,7 @@ fn parse_args() -> Args {
         seed: 7,
         life: true,
         lineup: false,
+        progressive: false,
         sim: None,
         acts: None,
         family: None,
@@ -130,6 +133,7 @@ fn parse_args() -> Args {
             "--ash" => a.ash = Some(val().parse().unwrap()),
             "--no-life" => a.life = false,
             "--lineup" => a.lineup = true,
+            "--progressive" => a.progressive = true,
             "--sim" => a.sim = Some(val().parse().unwrap()),
             "--acts" => a.acts = Some(val().parse().unwrap()),
             "--family" => a.family = Some(val().parse().unwrap()),
@@ -161,6 +165,7 @@ fn main() {
     eprintln!("adapter: {:?}", adapter.get_info().name);
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut renderer = Renderer::new(device, queue);
+    renderer.set_instant_bake(!args.progressive);
 
     if let Some(minutes) = args.family {
         return family::render(&mut renderer, &args, minutes);

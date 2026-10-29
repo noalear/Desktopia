@@ -148,7 +148,7 @@ pub(crate) enum Group {
     Shadow = 0,
     /// Skin, shell, limbs: writes depth.
     Body = 1,
-    /// Organs glimpsed through translucent skin.
+    /// Eggs laid on their own (organs inside a body don't show).
     Inner = 2,
     Membrane = 3,
     /// Additive halos around glow cells.
@@ -159,6 +159,19 @@ pub(crate) const GROUPS: usize = 5;
 
 /// Shader code for a shadow prim, past the tissue codes.
 const SHADOW: f32 = 12.0;
+
+/// What the outside of a body is like, the surface texture life.wgsl draws
+/// (its SKIN_ codes). Plants' stems are always bark.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Skin {
+    Scales = 0,
+    Pebbled = 1,
+    Wrinkled = 2,
+    Chitin = 3,
+    Slick = 4,
+    Fur = 5,
+    Bark = 6,
+}
 
 /// A frame's worth of organisms, ready to upload.
 #[derive(Default)]
@@ -183,6 +196,7 @@ struct Palette {
     countershade: f32,
     iridescence: f32,
     freckles: f32,
+    skin: Skin,
 }
 
 impl Look {
@@ -218,8 +232,24 @@ impl Look {
             countershade: g[11],
             iridescence: (g[12] - 0.55).max(0.0) * 2.2,
             freckles: (g[13] - 0.5).max(0.0) * 2.0,
+            skin: skin(g),
         }
     }
+}
+
+/// Shaggy bodies are furred; the rest take their skin from a blend of shell
+/// and colour genes, so it is inherited and drifts as they mutate. Glossy
+/// lineages lean to scales, shell and slick skin, matte ones to beaded and
+/// wrinkled hide.
+fn skin(g: &[f32; 16]) -> Skin {
+    if g[8] > 0.62 {
+        return Skin::Fur;
+    }
+    let x = (g[11] * 3.1 + g[14] * 1.7 + g[4] * 0.9).fract();
+    let glossy = [Skin::Scales, Skin::Chitin, Skin::Slick, Skin::Scales];
+    let matte = [Skin::Pebbled, Skin::Wrinkled, Skin::Pebbled, Skin::Scales];
+    let set = if g[7] > 0.5 { glossy } else { matte };
+    set[((x * 4.0) as usize).min(3)]
 }
 
 fn glow_color(g: f32) -> [f32; 3] {
@@ -287,6 +317,8 @@ impl LifeBatch {
             pal.freckles = pal.freckles.max(0.6 * alarm);
         }
         let seed = (o.seed % 9973) as f32 * 0.137;
+        // Only plants bend in the wind.
+        let plant = o.segs.iter().any(|s| s.sway != 0.0);
         let rmax = o.segs.iter().fold(0.0f32, |m, s| m.max(s.ra).max(s.rb)).max(1e-4);
         let clip = o.clip_y.unwrap_or(-10.0);
         let alive = o.alive.clamp(0.0, 1.0);
@@ -323,7 +355,7 @@ impl LifeBatch {
                     (mix3(scale3(pal.base, 0.8), pal.armor, 0.35), pal.translucency * 0.5, 0.2 + 0.5 * pal.sheen)
                 }
                 Tissue::LightFilm => (pal.film, 0.55 + 0.35 * pal.translucency, 0.3),
-                Tissue::Float => (mix3(pal.base, [0.5, 0.5, 0.55], 0.3), 0.8, 0.9),
+                Tissue::Float => (mix3(pal.base, [0.5, 0.5, 0.55], 0.12), 0.6, 0.5),
                 Tissue::Sense => ([0.01, 0.008, 0.012], 0.0, 1.0),
                 Tissue::Glow => (pal.glow, 0.3, 0.4),
                 Tissue::Gut => ([0.38, 0.03, 0.04], 0.0, 0.0),
@@ -367,10 +399,15 @@ impl LifeBatch {
             }
         }
 
+        // Bodies are opaque, so organs inside them never show; an egg laid
+        // on its own is nothing but organ.
+        let only_inner = o.segs.iter().all(|s| s.tissue.is_inner());
+        let skin = if plant { Skin::Bark } else { pal.skin };
         for (i, s) in o.segs.iter().enumerate() {
             let mut p = common(s.tissue, s.damage, s.side);
             p.a = s.a;
             p.b = s.b;
+            p.c = [skin as u8 as f32, 0.0];
             p.r = [s.ra.max(0.0), s.rb.max(0.0)];
             p.sway[0] = sway_a[i];
             p.sway[1] = s.sway;
@@ -383,10 +420,8 @@ impl LifeBatch {
                 p.look[2] = 0.0;
             }
             if s.tissue.is_inner() {
-                // Organs only show through bodies you can see into.
-                if pal.translucency > 0.08 && alive > 0.3 {
-                    p.color[3] = (pal.translucency * 1.3).min(0.9);
-                    p.zinfo[1] = rmax * 1.02;
+                if only_inner && alive > 0.3 {
+                    p.color[3] = 1.0;
                     self.groups[Group::Inner as usize].push((z, p));
                 }
                 continue;
@@ -417,7 +452,7 @@ impl LifeBatch {
             p.sway[1] = sway_at(m.b);
             p.sway[2] = sway_at(m.c);
             if m.tissue != Tissue::LightFilm {
-                p.color = [pal.base[0], pal.base[1], pal.base[2], 0.6 + 0.3 * pal.translucency];
+                p.color = [pal.base[0], pal.base[1], pal.base[2], pal.translucency];
             }
             self.groups[Group::Membrane as usize].push((z, p));
         }

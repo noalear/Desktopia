@@ -1034,7 +1034,7 @@ fn ground(p: vec2f, gt: f32) -> vec4f {
 
 @fragment
 fn fs_bake(in: VOut) -> @location(0) vec4f {
-    let p = world_pos(in.uv);
+    let p = world_pos(in.uv + P.bake_jitter / P.view_size);
     let gt = ground_top(p.x);
     if (p.y < gt) {
         return ground(p, gt);

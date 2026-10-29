@@ -16,9 +16,6 @@ const T_STORE = 9;
 const T_BROOD = 10;
 const T_MOUTH = 11;
 
-@group(0) @binding(1) var baked: texture_2d<f32>;
-@group(0) @binding(2) var samp: sampler;
-
 // Depth units per world unit of body thickness. Small enough that an
 // organism's own layers never reach the next organism's z.
 const THICK = 0.0004;
@@ -382,6 +379,211 @@ fn clipped(i: LOut, p: vec2f) -> bool {
     return p.y < i.sway.w;
 }
 
+// ---------------------------------------------------------------- skin
+
+// What the outside of a body is like (life.rs Skin). Each is drawn as relief
+// on the round of the tube: a height and its slope, which tilt the normal so
+// light catches every scale and fold, plus a little colour of its own.
+const SKIN_SCALES = 0;
+const SKIN_PEBBLED = 1;
+const SKIN_WRINKLED = 2;
+const SKIN_CHITIN = 3;
+const SKIN_SLICK = 4;
+const SKIN_FUR = 5;
+const SKIN_BARK = 6;
+
+struct Skin {
+    h: f32,        // relief, 0 in the cracks .. 1 on top
+    slope: vec2f,  // its slope along the body and around it
+    tint: f32,     // brightness, 1 unchanged
+    accent: f32,   // how much of the accent colour shows (bead tips, scale rims)
+    gloss: f32,    // multiplies the sheen
+    hair: f32,     // 0..1 how much it lights like fur
+};
+
+// How much of a feature `period` world units across can be drawn when one
+// pixel spans `foot` of it. Detail fades to its average before it would
+// alias, the way a mipmap would, and it is judged per direction, so scales
+// foreshortened toward a body's edge blur across but stay crisp along it:
+// anisotropic filtering for textures that are made rather than sampled.
+fn keep(period: f32, foot: f32) -> f32 {
+    return 1.0 - smoothstep(0.25, 0.7, foot / max(period, 1e-7));
+}
+
+// Overlapping scales in staggered rows, the nearer row lying over the next.
+// q in scale units; returns the visible scale's height, slope, and id.
+fn scale_cell(q: vec2f, seed: f32) -> vec4f {
+    var best = 1e9;
+    var out = vec4f(0.0, 0.0, 0.0, 0.0);
+    let rad = 0.78;
+    for (var j = -1; j <= 1; j++) {
+        let row = floor(q.y) + f32(j);
+        let off = 0.5 * (row - 2.0 * floor(row * 0.5));
+        for (var i = -1; i <= 1; i++) {
+            let col = floor(q.x - off) + f32(i);
+            let c = vec2f(col + off + 0.5, row + 0.5);
+            let d = q - c;
+            let rr = rad * (0.9 + 0.2 * hash21(c + seed));
+            let k = dot(d, d) / (rr * rr);
+            // The scale nearest the head that covers q is on top.
+            if (k < 1.0 && c.x < best) {
+                best = c.x;
+                // Each scale is a shallow dome lifting toward its free edge.
+                out = vec4f(1.0 - k, -2.0 * d / (rr * rr) + vec2f(0.6, 0.0), hash21(c + seed + 5.3));
+            }
+        }
+    }
+    return out;
+}
+
+fn skin(kind: i32, s: vec2f, r: f32, foot: vec2f, seed: f32) -> Skin {
+    var k: Skin;
+    k.h = 0.5;
+    k.slope = vec2f(0.0);
+    k.tint = 1.0;
+    k.accent = 0.0;
+    k.gloss = 1.0;
+    k.hair = 0.0;
+    let fmax = max(foot.x, foot.y);
+    switch kind {
+        case 0: {
+            // Scales, sized to the body, a little wider than long.
+            let cs = r * 0.3;
+            let q = s / cs * vec2f(1.0, 0.8);
+            let sc = scale_cell(q, seed);
+            let fade = keep(cs, fmax);
+            // A dark line where each scale's edge sits over the next.
+            let w = clamp(fmax / cs * 1.5, 0.05, 0.5);
+            let rim = smoothstep(0.0, w, sc.x);
+            k.h = mix(0.6, sc.x * 0.7 + 0.3 * rim, fade);
+            k.slope = sc.yz * vec2f(1.0, 0.8) * 0.22 * fade;
+            k.tint = mix(1.0, (0.55 + 0.45 * rim) * (0.88 + 0.24 * sc.w), fade);
+            k.accent = smoothstep(0.35, 0.0, sc.x) * rim * 0.35 * fade;
+            k.gloss = 1.2;
+        }
+        case 1: {
+            // Beaded hide: round beads packed in a net of creases, some
+            // beads in the accent colour.
+            let cs = r * 0.22;
+            let q = s / cs;
+            let cell = floor(q);
+            let f = fract(q);
+            var d1 = 9.0;
+            var d2 = 9.0;
+            var c1 = vec2f(0.0);
+            var id = 0.0;
+            for (var j = -1; j <= 1; j++) {
+                for (var i = -1; i <= 1; i++) {
+                    let o = vec2f(f32(i), f32(j));
+                    let c = o + 0.2 + 0.6 * hash22(cell + o + seed);
+                    let d = length(f - c);
+                    if (d < d1) {
+                        d2 = d1;
+                        d1 = d;
+                        c1 = c;
+                        id = hash21(cell + o + seed + 9.1);
+                    } else if (d < d2) {
+                        d2 = d;
+                    }
+                }
+            }
+            let fade = keep(cs, fmax);
+            let w = clamp(fmax / cs * 1.5, 0.04, 0.4);
+            let crease = smoothstep(0.0, 0.08 + w, d2 - d1);
+            let dome = sqrt(max(1.0 - d1 * d1 * 2.2, 0.0));
+            k.h = mix(0.6, dome * crease, fade);
+            k.slope = -(f - c1) * 0.6 * crease * fade;
+            k.tint = mix(1.0, (0.45 + 0.55 * crease) * (0.85 + 0.3 * id), fade);
+            k.accent = step(0.72, id) * crease * 0.8 * fade;
+            k.gloss = 0.5;
+        }
+        case 2: {
+            // Thick wrinkled hide: creases running mostly around the body,
+            // finer ones crossing them.
+            let cs = r * 0.5;
+            let a = noised(vec2f(s.x / cs * 2.2, s.y / cs * 0.6) + seed);
+            let b = noised(vec2f(s.x / cs * 0.9, s.y / cs * 2.4) + seed + 19.0);
+            let ca = 1.0 - abs(2.0 * a.x - 1.0);
+            let cb = 1.0 - abs(2.0 * b.x - 1.0);
+            let fa = keep(cs * 0.45, foot.x);
+            let fb = keep(cs * 0.45, foot.y);
+            let crease = max(smoothstep(0.72, 0.96, ca) * fa, smoothstep(0.8, 0.97, cb) * fb * 0.7);
+            k.h = 1.0 - crease;
+            k.slope = (a.yz * sign(0.5 - a.x) * vec2f(2.2, 0.6) * fa + b.yz * sign(0.5 - b.x) * vec2f(0.9, 2.4) * fb * 0.5) * 0.4;
+            k.tint = (1.0 - 0.6 * crease) * (0.9 + 0.2 * a.x);
+            k.gloss = 0.35;
+        }
+        case 3: {
+            // Shell: rings of plate with sutures between them, a seam down
+            // the back, and fine pitting all over.
+            let ring = r * 0.75;
+            let t = fract(s.x / ring + seed);
+            let fr = keep(ring, foot.x);
+            let w = clamp(foot.x / ring * 1.5, 0.03, 0.3);
+            let suture = (1.0 - smoothstep(0.0, w, t) * smoothstep(1.0, 1.0 - w * 2.0, t)) * fr;
+            let seam = smoothstep(r * 0.06 + foot.y, 0.0, abs(s.y - r * 0.9)) * keep(r * 0.1, foot.y);
+            let pq = s / (r * 0.07);
+            let pc = floor(pq);
+            let pit = step(0.55, hash21(pc + seed)) * smoothstep(0.32, 0.12, length(fract(pq) - 0.5)) * keep(r * 0.07, fmax);
+            k.h = 1.0 - max(suture, seam) - pit * 0.4;
+            // Each plate bulges a little, its back edge raised over the next.
+            k.slope = vec2f((t - 0.5) * 0.35 * fr, 0.0);
+            k.tint = (1.0 - 0.55 * max(suture, seam)) * (1.0 - 0.3 * pit);
+            k.gloss = 1.4 * (1.0 - 0.6 * pit);
+        }
+        case 4: {
+            // Slick skin: smooth, with scattered glands standing up from it.
+            let cs = r * 0.16;
+            let q = s / cs;
+            let c = floor(q);
+            let o = 0.25 + 0.5 * hash22(c + seed);
+            let d = (fract(q) - o) / (0.18 + 0.12 * hash21(c + seed + 3.0));
+            let has = step(0.45, hash21(c + seed + 7.0)) * keep(cs, fmax);
+            let g = max(1.0 - dot(d, d), 0.0) * has;
+            let m = smoothstep(0.3, 0.75, fbm(s / (r * 0.5) + seed, 3));
+            k.h = 0.5 + 0.5 * g;
+            k.slope = -d * g * 0.9;
+            k.tint = 0.75 + 0.4 * m + 0.2 * g;
+            k.accent = g * 0.5;
+            k.gloss = 1.6;
+        }
+        case 5: {
+            // Fur: fine strands laid back along the body, in clumps.
+            let cs = r * 0.08;
+            let clump = vnoise(vec2f(s.x / (r * 0.3), s.y / (r * 0.15)) + seed);
+            let lay = s.y + (clump - 0.5) * r * 0.3;
+            let fs = keep(cs, foot.y);
+            let strand = vnoise(vec2f(s.x / (cs * 6.0), lay / cs) + seed * 3.0);
+            let fine = vnoise(vec2f(s.x / (cs * 3.0), lay / (cs * 0.4)) + seed * 7.0);
+            let fine_k = keep(cs * 0.4, foot.y);
+            let tuft = smoothstep(0.25, 0.75, clump);
+            k.h = mix(0.5, strand, fs) * (0.4 + 0.6 * tuft);
+            k.slope = vec2f(0.0, ((strand - 0.5) * fs + (fine - 0.5) * fine_k * 0.6) * 0.8);
+            k.tint = mix(0.9, 0.5 + 0.8 * strand, fs) * mix(1.0, 0.7 + 0.6 * fine, fine_k) * (0.8 + 0.3 * tuft);
+            k.gloss = 0.25;
+            k.hair = 1.0;
+        }
+        default: {
+            // Bark: ridges and furrows running up the stem, split into
+            // plates, with pale breathing pores across them.
+            let cs = r * 0.4;
+            let wob = (vnoise(vec2f(s.x / (r * 1.5), s.y / cs) + seed) - 0.5) * 1.2;
+            let ridge = 0.5 + 0.5 * sin(s.y / cs * 6.283 + wob * 3.0);
+            let fa = keep(cs, foot.y);
+            let split = smoothstep(0.72, 0.82, vnoise(vec2f(s.x / (r * 0.8), s.y / cs * 2.0) + seed + 4.0)) * keep(r * 0.4, fmax);
+            let lq = vec2f(s.x / (r * 0.18), s.y / (r * 0.5));
+            let lc = floor(lq);
+            let lenticel = step(0.8, hash21(lc + seed)) * smoothstep(0.2, 0.05, abs(fract(lq.x) - 0.5)) * smoothstep(0.45, 0.2, abs(fract(lq.y) - 0.5)) * keep(r * 0.18, foot.x);
+            let furrow = mix(0.5, ridge, fa);
+            k.h = furrow * (1.0 - split * 0.6);
+            k.slope = vec2f(0.0, cos(s.y / cs * 6.283 + wob * 3.0) * 0.35 * fa);
+            k.tint = (0.55 + 0.5 * furrow) * (1.0 - split * 0.35) + lenticel * 0.35;
+            k.gloss = 0.15;
+        }
+    }
+    return k;
+}
+
 // ---------------------------------------------------------------- body
 
 // One of sixteen light signals: four shapes on the skin, each flashed in one
@@ -470,10 +672,22 @@ fn fs_body(i: LOut) -> FOut {
     let v = clamp(tb.v, -1.0, 1.0);
     // Leaves are near-flat sheets, folded a little along the midrib.
     let nz = select(sqrt(max(1.0 - v * v, 0.0)), sqrt(max(1.0 - v * v * 0.3, 0.0)), leaf);
+    // The skin's own texture, laid on the round of the tube: `arc` runs
+    // around it, so the texture crowds toward the silhouette as it would on
+    // a real limb. One pixel spans more of it there (`foot`), and keep()
+    // fades what is too fine to draw.
+    let arc = asin(v) * tb.r;
+    let foot = vec2f(px, px / max(nz, 0.08));
+    var sk = Skin(0.5, vec2f(0.0), 1.0, 0.0, 1.0, 0.0);
+    if (tissue == T_MUSCLE || tissue == T_FRAME) {
+        sk = skin(i32(i.cr.x + 0.5), vec2f(ul, arc), tb.r, foot, seed);
+    } else if (tissue == T_FLOAT) {
+        sk = skin(SKIN_SLICK, vec2f(ul, arc), tb.r, foot, seed);
+    }
     // Skin grain: wrinkles across the body and fine pores, as normal wobble.
     let gq = vec2f(ul, v * tb.r) / max(tb.r * 0.35, px * 3.0);
     let grain = vec2f(vnoise(gq * vec2f(0.6, 2.2) + seed), vnoise(gq * 1.7 + seed + 9.0)) - 0.5;
-    var bump = vec2f(grain.x, grain.y) * 0.22 * nz;
+    var bump = vec2f(grain.x, grain.y) * 0.12 * nz;
     // Soft folds ringing fleshy bodies, deep on some kinds and all but gone
     // on others, spaced by the body's own pattern scale.
     if (tissue == T_MUSCLE || tissue == T_GUT || (tissue == T_FRAME && max(i.cr.z, i.cr.w) > 0.45 * i.sway.z)) {
@@ -485,7 +699,9 @@ fn fs_body(i: LOut) -> FOut {
         let deep = smoothstep(0.25, 0.75, vnoise(vec2f(fq * 0.37, seed)));
         bump += along_dir * fold * 0.22 * deep * ridged * nz * smoothstep(px * 2.0, px * 6.0, tb.r);
     }
-    let n = normalize(vec3f(tb.nrm * v + bump, nz));
+    let along3 = vec3f(tb.nrm.y, -tb.nrm.x, 0.0);
+    let round3 = vec3f(tb.nrm * nz, -v);
+    let n = normalize(vec3f(tb.nrm * v + bump, nz) - along3 * sk.slope.x - round3 * sk.slope.y);
     let L = light_dir(p);
 
     // ---- albedo and pattern
@@ -494,11 +710,15 @@ fn fs_body(i: LOut) -> FOut {
     let q = vec2f(u, v * tb.r) / max(i.look.x, 1e-4);
     let patterned = tissue == T_MUSCLE || (tissue == T_FRAME && max(i.cr.z, i.cr.w) > 0.45 * i.sway.z);
     if (patterned) {
-        albedo = mix(albedo, i.accent.rgb, pattern(kind, q, seed) * i.look.w);
+        // Markings too fine for the pixels fade to an even tint, not fizz.
+        let marks = mix(0.3, pattern(kind, q, seed), keep(i.look.x * 0.4, max(foot.x, foot.y)));
+        albedo = mix(albedo, i.accent.rgb, marks * i.look.w);
         // Dark backs, pale bellies.
         let up = n.y * 0.5 + 0.5;
         albedo *= mix(1.0, mix(1.5, 0.55, up), i.extra.x);
     }
+    // The skin's texture lies over its markings.
+    albedo = mix(albedo, i.accent.rgb, sk.accent * (0.3 + 0.7 * i.look.w)) * sk.tint;
     if (tissue == T_ARMOR) {
         // Overlapping plates with dark seams and a mineral grain.
         let plate = fract(ul / max(tb.r * 1.3, 1e-4) + seed);
@@ -528,6 +748,9 @@ fn fs_body(i: LOut) -> FOut {
         albedo *= mix(0.6, 1.2, smoothstep(0.0, 0.85, tb.h));
         albedo = mix(albedo, i.accent.rgb, smoothstep(0.75, 0.97, abs(v)) * 0.55 * i.look.w);
         albedo *= 0.8 + 0.4 * vnoise(vec2f(ul, v * tb.r) / max(tb.r * 0.6, 1e-4) + seed * 3.0);
+        // The fine grain of its cells, where there are pixels enough to show it.
+        let cell = tb.r * 0.07;
+        albedo *= 1.0 + (vnoise(vec2f(ul, arc) / cell + seed * 5.0) - 0.5) * 0.35 * keep(cell, max(foot.x, foot.y));
         albedo = mix(albedo, albedo * 0.35, veins * 0.75);
     }
 
@@ -581,8 +804,8 @@ fn fs_body(i: LOut) -> FOut {
     let amb = mix(bounce_light(p.x), sky_light(p.x), n.y * 0.5 + 0.5);
     // Key from the sun, plus the twilight sky wrapped around the front.
     let fill = sky_light(p.x) * (0.6 + 0.9 * nz) + sun * 0.12;
-    // Joints sit in their own shadow.
-    let ao = 1.0 - 0.3 * (smoothstep(0.2, 0.0, tb.h) + smoothstep(0.8, 1.0, tb.h)) * nz;
+    // Joints sit in their own shadow, and so do the skin's cracks.
+    let ao = (1.0 - 0.3 * (smoothstep(0.2, 0.0, tb.h) + smoothstep(0.8, 1.0, tb.h)) * nz) * (0.55 + 0.45 * sk.h);
     var col = albedo * (sun * diffuse * (0.45 + 0.55 * day) + amb * 1.3 + fill * 0.8) * ao;
     col += albedo * sun * scatter * vec3f(1.0, 0.35, 0.25) * 0.5;
 
@@ -591,18 +814,21 @@ fn fs_body(i: LOut) -> FOut {
     let toward = max(dot(normalize(tb.nrm * sign(v + 1e-6)), normalize(L.xy)), 0.0);
     col += edge * toward * sun * (0.6 + 0.6 * day) * mix(vec3f(1.0), albedo * 3.0 + 0.3, 0.35);
     col += edge * max(n.y, 0.0) * vec3f(0.06, 0.14, 0.34) * night * 1.4;
+    // Fur catches the light in a soft halo around its outline.
+    col += sk.hair * pow(1.0 - nz, 1.5) * albedo * (sun * (0.3 + 0.4 * day) + sky_light(p.x)) * 0.9;
 
     // Lacquer and wet sheen.
-    let sheen = i.look.y;
+    let sheen = i.look.y * sk.gloss;
     if (sheen > 0.0) {
         let H = normalize(L + vec3f(0.0, 0.0, 1.0));
         let spec = pow(max(dot(n, H), 0.0), 12.0 + sheen * 90.0) * sheen;
         col += spec * (sun * 0.9 + sky_light(p.x) * 2.0);
     }
 
-    // Light glowing through thin flesh.
+    // Light glowing through thin flesh, mostly toward the edges where it is
+    // thinnest. The flesh itself is solid: nothing behind shows through.
     let trans = i.color.a;
-    col += albedo * sun * trans * (1.0 - nz * 0.5) * (0.4 + 0.6 * day) * 0.9 * (1.0 - veins * 0.6);
+    col += albedo * sun * trans * (0.25 + 0.75 * (1.0 - nz)) * (0.4 + 0.6 * day) * 0.7 * (1.0 - veins * 0.6);
 
     // Oil-film colour shifting across the curve.
     if (i.extra.y > 0.0) {
@@ -652,21 +878,7 @@ fn fs_body(i: LOut) -> FOut {
         col += vec3f(0.3, 1.2, 0.4) * mold * night * 0.5;
     }
 
-    // ---- hair
-    // Thin flesh shows the land behind it, bent a little by the curve and
-    // tinted by the body. Bodies stay opaque so overlapping limbs don't double up.
-    var see = trans * pow(nz, 1.4) * 0.85;
-    if (tissue == T_FLOAT) {
-        see = 0.55 + 0.4 * nz;
-    }
-    if (see > 0.0) {
-        let uv = (i.pos.xy + n.xy * tb.r * P.world_size.y * 0.35) / P.view_size;
-        let bg = textureSampleLevel(baked, samp, uv, 0.0).rgb;
-        let tint = mix(vec3f(1.0), albedo / max(max(albedo.r, max(albedo.g, albedo.b)), 1e-3), 0.6);
-        col = mix(col, bg * tint * 0.9 + col * 0.15, see);
-    }
-    // Marks on and in the body go over the see-through, so they show on
-    // glassy creatures too. Sores: angry dark rims around pale weeping centres.
+    // Sores: angry dark rims around pale weeping centres.
     if (sores > 0.0) {
         let lit = sun * diffuse * 0.6 + amb * 1.3;
         col = mix(col, mix(vec3f(0.16, 0.02, 0.03), vec3f(0.75, 0.66, 0.38), sore_core) * lit, sores * 0.9);
@@ -806,17 +1018,34 @@ fn fs_membrane(i: LOut) -> FOut {
     let cross = smoothstep(0.06, 0.0, abs(fract(from_free * 9.0 + along * 2.0) - 0.5) - 0.44) * 0.5;
     let rim = smoothstep(scallop + 0.06, scallop, from_free);
 
-    var albedo = i.color.rgb;
+    // The sheet's own texture: fine striations fanning out along the ribs,
+    // creased like skin between them, or on a leaf film the grain of its
+    // cells. Each fades as it gets too fine for the pixels it covers.
+    let fq = vec2f(along * ribs * 14.0, from_free * 6.0);
+    let striae = abs(fract(fq.x) - 0.5) * 2.0;
+    let sfade = 1.0 - smoothstep(0.25, 0.7, fwidth(fq.x));
+    let wq = vec2f(along * ribs * 5.0, from_free * 9.0) + seed;
+    let wrinkle = vnoise(wq);
+    let wfade = 1.0 - smoothstep(0.25, 0.7, max(fwidth(wq.x), fwidth(wq.y)));
+    var texture = 1.0;
+    if (tissue == T_FILM) {
+        let cq = vec2f(along * ribs * 22.0, from_free * 30.0) + seed;
+        let cfade = 1.0 - smoothstep(0.25, 0.7, max(fwidth(cq.x), fwidth(cq.y)));
+        texture = 1.0 + (vnoise(cq) - 0.5) * 0.4 * cfade + (wrinkle - 0.5) * 0.2 * wfade;
+    } else {
+        texture = 1.0 - 0.3 * smoothstep(0.5, 1.0, striae) * sfade + (wrinkle - 0.5) * 0.35 * wfade;
+    }
+
+    var albedo = i.color.rgb * texture;
     let night = nightness(p.x);
     let day = daylight(p.x);
     let sun = sun_light(p.x);
-    // Sheets are lit mostly from behind: sunlight soaks through them.
-    var col = albedo * (sun * (0.55 + 0.6 * day) + sky_light(p.x) * 1.5);
+    // Sheets are solid, but thin: lit from the front, and from behind as far
+    // as sunlight soaks through them.
+    let soak = i.color.a;
+    var col = albedo * (sun * (0.35 + 0.4 * day) * (1.0 + soak) + sky_light(p.x) * 1.5);
     col *= 1.0 - 0.55 * max(vein, cross);
-    col += sun * rim * 0.25;
-    if (tissue == T_FILM) {
-        col += albedo * sun * 0.5 * (1.0 - vein);
-    }
+    col += albedo * sun * rim * 0.4;
     // Night: veins carry a trace of glow.
     col += i.glow.rgb * vein * night * 0.25 * i.mat.w;
 
@@ -824,7 +1053,7 @@ fn fs_membrane(i: LOut) -> FOut {
     if (decay > 0.0 && vnoise(p * 900.0 + seed) < decay * 1.2 - 0.3 && vein < 0.5) {
         discard;
     }
-    var alpha = cover * clamp(i.color.a + 0.35 * max(vein, rim), 0.0, 0.95);
+    let alpha = cover;
     col = haze(p, col, i.zinfo.x);
     var o: FOut;
     o.color = vec4f(col * alpha, alpha);
