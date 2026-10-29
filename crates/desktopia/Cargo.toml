@@ -20,6 +20,8 @@ toml = { version = "0.9", default-features = false, features = ["parse", "serde"
 
 [target.'cfg(windows)'.dependencies]
 chronicle-view = { path = "../chronicle-view" }
+# DXC compiles the shaders in seconds; Windows' built-in FXC takes over a minute.
+wgpu = { workspace = true, features = ["static-dxc"] }
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"

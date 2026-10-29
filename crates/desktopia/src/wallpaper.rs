@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::desktop::{self, Monitor, WallpaperWindow};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle};
 use std::num::NonZeroIsize;
+use std::time::Instant;
 use vesper_render::{Output, OutputConfig, OutputMode, Renderer, WorldView};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -38,9 +39,53 @@ pub enum Presented {
     Lost,
 }
 
+impl Gpu {
+    /// Opens the GPU and compiles the renderer's shaders. That takes seconds,
+    /// so it runs off the window thread. DXC first; Windows' own FXC is the
+    /// fallback, which works everywhere but needs over a minute for our shaders.
+    pub fn open() -> Result<Self, String> {
+        Self::open_with(wgpu::Dx12Compiler::StaticDxc).or_else(|e| {
+            log::warn!("can't use DXC ({e}); falling back to FXC");
+            Self::open_with(wgpu::Dx12Compiler::Fxc)
+        })
+    }
+
+    pub fn open_with(compiler: wgpu::Dx12Compiler) -> Result<Self, String> {
+        let start = Instant::now();
+        let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        desc.backends = wgpu::Backends::DX12;
+        desc.backend_options.dx12.shader_compiler = compiler.clone();
+        let instance = wgpu::Instance::new(desc);
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .map_err(|e| format!("no GPU adapter: {e}"))?;
+        let info = adapter.get_info();
+        log::info!("GPU: {} ({:?}, driver {})", info.name, info.backend, info.driver_info);
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("desktopia"),
+            memory_hints: wgpu::MemoryHints::MemoryUsage,
+            ..Default::default()
+        }))
+        .map_err(|e| format!("no GPU device: {e}"))?;
+        // A shader the compiler rejects shows up here rather than as a blank wallpaper.
+        let invalid = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let renderer = Renderer::new(device.clone(), queue);
+        let internal = pollster::block_on(internal.pop());
+        if let Some(e) = pollster::block_on(invalid.pop()).or(internal) {
+            return Err(format!("shaders didn't compile: {e}"));
+        }
+        device.on_uncaptured_error(std::sync::Arc::new(|e| log::error!("GPU error: {e}")));
+        log::info!("GPU ready in {:.1} s ({compiler:?})", start.elapsed().as_secs_f32());
+        Ok(Gpu { instance, adapter, renderer })
+    }
+}
+
 impl Wallpaper {
-    /// Creates the windows and swap chains, and the GPU itself the first time.
-    pub fn build(gpu: &mut Option<Gpu>, cfg: &Config) -> Result<Self, String> {
+    /// Creates the windows and swap chains.
+    pub fn build(gpu: &Gpu, cfg: &Config) -> Result<Self, String> {
         let layer = desktop::wallpaper_layer().ok_or("no desktop window found")?;
         let monitors = desktop::monitors();
         if monitors.is_empty() {
@@ -56,40 +101,15 @@ impl Wallpaper {
             span.top
         );
 
-        let instance = match gpu {
-            Some(g) => g.instance.clone(),
-            None => wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends: wgpu::Backends::DX12,
-                ..wgpu::InstanceDescriptor::new_without_display_handle_from_env()
-            }),
-        };
-
         let mut windows_and_surfaces = Vec::new();
         for m in &monitors {
             let window = WallpaperWindow::create(layer, *m).map_err(|e| format!("window: {e}"))?;
-            let surface = create_surface(&instance, window.hwnd)?;
+            let surface = create_surface(&gpu.instance, window.hwnd)?;
+            if !gpu.adapter.is_surface_supported(&surface) {
+                return Err("the GPU can't draw to this monitor".into());
+            }
             windows_and_surfaces.push((window, surface));
         }
-
-        if gpu.is_none() {
-            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: windows_and_surfaces.first().map(|(_, s)| s),
-                ..Default::default()
-            }))
-            .map_err(|e| format!("no GPU adapter: {e}"))?;
-            let info = adapter.get_info();
-            log::info!("GPU: {} ({:?}, driver {})", info.name, info.backend, info.driver_info);
-            let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("desktopia"),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                ..Default::default()
-            }))
-            .map_err(|e| format!("no GPU device: {e}"))?;
-            device.on_uncaptured_error(std::sync::Arc::new(|e| log::error!("GPU error: {e}")));
-            *gpu = Some(Gpu { instance, adapter, renderer: Renderer::new(device, queue) });
-        }
-        let gpu = gpu.as_ref().unwrap();
 
         let screens = windows_and_surfaces
             .into_iter()
@@ -250,4 +270,24 @@ fn choose_config(
         view_formats: vec![],
     };
     (config, mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Every shader compiles with DXC, in seconds. The build machine has no GPU,
+    /// so this runs on Windows' software renderer; there DXC took 8 s and FXC 41 s.
+    #[test]
+    fn shaders_compile_quickly() {
+        let start = Instant::now();
+        match Gpu::open_with(wgpu::Dx12Compiler::StaticDxc) {
+            Ok(_) => {}
+            Err(e) if e.starts_with("no GPU") => return eprintln!("skipped: {e}"),
+            Err(e) => panic!("{e}"),
+        }
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(30), "the shaders took {took:?} to compile");
+    }
 }

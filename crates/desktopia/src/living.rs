@@ -87,9 +87,14 @@ impl Living {
                 (sim, behind)
             }
             other => {
-                match other {
+                match &other {
                     Some(Err(e)) => log::warn!("no saved world ({e}); a new one begins"),
                     _ => log::info!("a new world begins"),
+                }
+                // A world from another version of Desktopia is kept for that
+                // version, rather than overwritten by the first save.
+                if let (Some(Err(save::LoadError::Version(_))), Some(p)) = (&other, &save_path) {
+                    archive_save(p);
                 }
                 let seed = now as u64 ^ 0x5eed_7e57;
                 let sim = Sim::new(seed, now);
