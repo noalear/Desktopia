@@ -5,7 +5,7 @@
 //!                [--band SHIFT] [--band-speed S] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--sim MINUTES]
-//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES]
+//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES] [--forms]
 //!                [--world FILE] [--out DIR]
 //!                [--weather HOURS] [--until storm|rain|snow|dust|cold|erupt|drought|flood]
 //!
@@ -28,12 +28,16 @@
 //! `--family` grows a world, then draws grown members of its commonest
 //! species side by side, a row per species (see family.rs).
 //!
+//! `--forms` draws a gallery of founders and seedlings, each dressed in
+//! different part forms, and lineages mutated for many generations (see forms.rs).
+//!
 //! `--weather` runs a real world's weather alone for that many hours and
 //! draws the sky it makes over the stand-in life; `--until` then waits for a
 //! kind of weather (see weather.rs). Later frames step it on by `--step`.
 
 mod acts;
 mod family;
+mod forms;
 #[path = "../../desktopia/src/living.rs"]
 #[allow(dead_code)]
 mod living;
@@ -66,6 +70,7 @@ struct Args {
     sim: Option<f64>,
     acts: Option<f64>,
     family: Option<f64>,
+    forms: bool,
     crop: Option<[f32; 4]>,
     /// With --sim: frame one walking creature instead of the whole world.
     follow: bool,
@@ -97,6 +102,7 @@ fn parse_args() -> Args {
         sim: None,
         acts: None,
         family: None,
+        forms: false,
         crop: None,
         follow: false,
         world: None,
@@ -133,6 +139,7 @@ fn parse_args() -> Args {
             "--sim" => a.sim = Some(val().parse().unwrap()),
             "--acts" => a.acts = Some(val().parse().unwrap()),
             "--family" => a.family = Some(val().parse().unwrap()),
+            "--forms" => a.forms = true,
             "--follow" => a.follow = true,
             "--crop" => {
                 let mut c = [0.0; 4];
@@ -162,6 +169,9 @@ fn main() {
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
     let mut renderer = Renderer::new(device, queue);
 
+    if args.forms {
+        return forms::render(&mut renderer, &args);
+    }
     if let Some(minutes) = args.family {
         return family::render(&mut renderer, &args, minutes);
     }

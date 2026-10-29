@@ -14,6 +14,7 @@ pub mod brain;
 pub mod climate;
 pub mod creature;
 mod ecology;
+mod forms;
 pub mod frame;
 pub mod genetics;
 pub mod genome;
@@ -35,5 +36,5 @@ pub mod strain;
 mod think;
 pub mod world;
 
-pub use genome::Tissue;
+pub use genome::{Form, Tissue};
 pub use sim::{PHASE_NAMES, PHASES, Sim};

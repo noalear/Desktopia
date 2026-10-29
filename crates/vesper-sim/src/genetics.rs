@@ -480,6 +480,8 @@ fn develop_noise(g: &mut Genome, rng: &mut Rng) {
         p.length = (p.length * (1.0 + rng.normal() * sd)).max(0.05);
         p.width = (p.width * (1.0 + rng.normal() * sd)).max(0.02);
         p.taper = (p.taper * (1.0 + rng.normal() * sd)).clamp(0.1, 1.6);
+        p.curl += rng.normal() * sd * 0.5;
+        p.detail = (p.detail + rng.normal() * sd * 0.5).clamp(0.0, 1.0);
         for l in p.links.iter_mut() {
             l.angle += rng.normal() * sd * 0.6;
             l.scale = (l.scale * (1.0 + rng.normal() * sd)).max(0.1);
@@ -491,7 +493,7 @@ fn develop_noise(g: &mut Genome, rng: &mut Rng) {
 }
 
 /// The body plan two haplotypes make. Part genes that descend from the same
-/// ancestral gene blend, the stronger copy deciding the tissue and wiring;
+/// ancestral gene blend, the stronger copy deciding the tissue, form and wiring;
 /// where the two differ in kind, the stronger one wins outright.
 fn express_parts(a: &[PartGene], b: &[PartGene]) -> Vec<PartGene> {
     let n = a.len().max(b.len());
@@ -515,6 +517,8 @@ fn blend_part(p: &PartGene, q: &PartGene) -> PartGene {
     out.length = mix(d.length, r.length);
     out.width = mix(d.width, r.width);
     out.taper = mix(d.taper, r.taper);
+    out.curl = mix(d.curl, r.curl);
+    out.detail = mix(d.detail, r.detail);
     for (k, l) in out.links.iter_mut().enumerate() {
         if let Some(m) = r.links.get(k).filter(|m| m.to == l.to) {
             l.angle = mix(l.angle, m.angle);
@@ -702,6 +706,30 @@ mod tests {
         b.dominance[i] = 250;
         let dominant = express([a, b], g.brain.clone(), g.marker, &mut rng).toxin;
         assert!(dominant > 0.95, "{dominant}");
+    }
+
+    #[test]
+    fn part_forms_follow_the_stronger_copy() {
+        let (g, mut rng) = founder(12, Founder::Crawler);
+        let [mut a, mut b] = haplotypes(&g);
+        a.parts[1].form = crate::genome::Form::Plates;
+        b.parts[1].form = crate::genome::Form::Coil;
+        (a.parts[1].curl, b.parts[1].curl) = (0.0, 1.0);
+        (a.parts[1].dom, b.parts[1].dom) = (200, 60);
+        let child = express([a.clone(), b.clone()], g.brain.clone(), g.marker, &mut rng);
+        assert_eq!(child.parts[1].form, crate::genome::Form::Plates);
+        assert!(child.parts[1].curl > 0.0 && child.parts[1].curl < 0.5, "curl blends toward the stronger copy");
+        // Carried quietly, the weaker form comes back in a quarter of selfed young.
+        let n = 2000;
+        let parent = express([a, b], g.brain.clone(), g.marker, &mut rng);
+        let coils = (0..n)
+            .filter(|_| {
+                let [x, y] = [gamete(&parent, &mut rng), gamete(&parent, &mut rng)];
+                express([x, y], g.brain.clone(), g.marker, &mut rng).parts[1].form == crate::genome::Form::Coil
+            })
+            .count() as f32
+            / n as f32;
+        assert!((coils - 0.25).abs() < 0.05, "{coils}");
     }
 
     #[test]

@@ -310,7 +310,7 @@ impl Rig {
             let m = (area * density).max(1e-9);
             let len = s.length * scale;
             let w = s.width * scale;
-            let mut drag = len * (w + if s.membrane { s.length * scale * 0.8 } else { 0.0 });
+            let mut drag = len * (w + if s.membrane || s.form.flat() { s.length * scale * 0.8 } else { 0.0 });
             if s.tissue == Tissue::LightFilm {
                 drag += len * len * 0.3;
             }

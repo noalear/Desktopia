@@ -3,7 +3,7 @@
 use crate::body::{Body, Phenotype};
 use crate::brain::{Brain, NO};
 use crate::frame::Moment;
-use crate::genome::{Genome, Tissue};
+use crate::genome::{Form, Genome, Tissue};
 use crate::history::{CreatureId, DeathCause, GroupId, Life, Locomotion, MindSketch, SpeciesId};
 use crate::mind::Mind;
 use crate::physics::Rig;
@@ -226,7 +226,9 @@ impl Creature {
 
     /// The coldest and hottest it can stand without harm.
     pub fn bearable(&self) -> (f32, f32) {
-        let cold = -(0.35 + self.genome.cold_tolerance * 0.8 + self.pheno.frac(Tissue::Store) * 1.5);
+        // Fat, and a coat of hair or feathery plumes, keep the cold out.
+        let coat = self.pheno.form_frac(Form::Tuft) + self.pheno.form_frac(Form::Frond) * 0.4;
+        let cold = -(0.35 + self.genome.cold_tolerance * 0.8 + self.pheno.frac(Tissue::Store) * 1.5 + coat * 0.8);
         let hot = 0.35 + self.genome.heat_tolerance * 0.8 + self.abil.armor * 0.5;
         (cold, hot)
     }
@@ -316,12 +318,18 @@ pub fn abilities(g: &Genome, body: &Body, p: &Phenotype, scale: f32, neurons: us
         Some(Locomotion::Swim) => bls += 0.6 * (p.tail / p.total_area).min(0.5) + 0.8 * flat.min(0.4),
         Some(Locomotion::Glide) => bls += 0.4,
         Some(Locomotion::Drift) => bls *= 0.5,
-        Some(Locomotion::Crawl) | Some(Locomotion::Burrow) => bls *= 0.5,
+        // A ringed body crawls by waves of squeezing, as worms do.
+        Some(Locomotion::Crawl) | Some(Locomotion::Burrow) => bls *= 0.5 + 0.8 * p.form_frac(Form::Beads).min(0.5),
         _ => {}
     }
     bls *= 1.0 - armor * 0.6;
     let speed = (bls * length).clamp(0.002, 0.09);
     let mouth = p.area[Tissue::Mouth.index()] * s2 * MATTER_DENSITY;
+    // Talons and pincers wound whatever they are made of, though less than jaws.
+    let claws = (p.form[Form::Hook.index()] * 0.3 + p.form[Form::Pincer.index()] * 0.5) * s2 * MATTER_DENSITY;
+    // Overlapping plates turn blows even when they aren't shell.
+    let plates = p.form_frac(Form::Plates) * 0.4;
+    let prongs = (p.form_frac(Form::Fork) + p.form_frac(Form::Hook) * 0.5) * 1.5;
     let gut = p.area[Tissue::Gut.index()] * s2 * MATTER_DENSITY;
     let film = p.area[Tissue::LightFilm.index()] * s2 * MATTER_DENSITY;
     let upkeep_mix: f32 = Tissue::ALL.iter().map(|t| p.area[t.index()] * t.density() * t.upkeep()).sum::<f32>() / mass;
@@ -334,11 +342,11 @@ pub fn abilities(g: &Genome, body: &Body, p: &Phenotype, scale: f32, neurons: us
         locomotion,
         buoyancy,
         speed,
-        bite: mouth * (0.6 + muscle * 2.0) * 0.8,
+        bite: (mouth + claws) * (0.6 + muscle * 2.0) * 0.8,
         gut: (gut * 0.3 + m * 0.002) * (0.5 + p.frac(Tissue::Gut)),
         filter: gut > 0.0 && buoyancy >= 0.55,
-        armor: (armor * 1.2).min(0.8),
-        spines: p.frac(Tissue::Spine) * 3.0,
+        armor: ((armor + plates) * 1.2).min(0.8),
+        spines: p.frac(Tissue::Spine) * 3.0 + prongs,
         film: film * 4.0,
         sense: (0.04 + p.area[Tissue::Sense.index()].sqrt() * scale * 9.0).clamp(0.03, 0.3),
         glow: (0.03 + p.area[Tissue::Glow.index()].sqrt() * scale * 14.0).min(0.45),

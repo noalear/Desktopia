@@ -181,7 +181,8 @@ pub fn plants(w: &mut World, dt: f32) {
         let leaf = p.leaf_area();
         let mut light = env.light(p.x, p.alt + height * 0.5);
         if !floats {
-            let others = (canopy - leaf).max(0.0) * (1.0 - (height * 3.0).min(0.7));
+            // Tendrils climb over the neighbours' leaves toward the light.
+            let others = (canopy - leaf).max(0.0) * (1.0 - (height * 3.0).min(0.7)) * (1.0 - 0.5 * g.tendrils);
             light /= 1.0 + others / (0.0005 + leaf * 2.0);
             // Low plants vanish under lying snow.
             light *= 1.0 - 0.9 * env.snow_cover(p.x) * terrain::smoothstep(0.03, 0.005, height);
@@ -197,7 +198,8 @@ pub fn plants(w: &mut World, dt: f32) {
         let need = g.thirst * 0.8 + 0.1;
         let short = ((need - water) / need).clamp(0.0, 1.0);
         // A plant wilts over hours of drought and recovers faster once watered.
-        p.wilt += (short - p.wilt) * dt / if short > p.wilt { 5400.0 } else { 1200.0 };
+        // Water stored in swollen stems holds it off for longer.
+        p.wilt += (short - p.wilt) * dt / if short > p.wilt { 5400.0 * (1.0 + 2.0 * g.knots) } else { 1200.0 };
         let water_factor = (1.0 + g.thirst * 0.8) * (1.0 - g.thirst * (1.0 - water.min(1.0))) * (1.0 - 0.8 * p.wilt);
         let temp = env.temperature(p.x, p.alt);
         // Hardening: tolerance shifts slowly towards the warmth it keeps meeting.
@@ -218,12 +220,14 @@ pub fn plants(w: &mut World, dt: f32) {
         // once. Snow lying over a low plant keeps the worst of the frost off.
         let blanket = if floats { 0.0 } else { env.snow_cover(p.x) * terrain::smoothstep(0.04, 0.01, height) };
         if temp < cold {
-            p.frost += (cold - temp) * 0.004 * (1.0 - 0.8 * blanket) * dt;
+            // Needles stand frost better than broad leaves.
+            p.frost += (cold - temp) * 0.004 * (1.0 - 0.8 * blanket) * (0.5 + g.leaf_width) * dt;
         } else {
             p.frost -= dt / 3600.0;
         }
         if temp > hot {
-            p.burn += (temp - hot) * 0.004 * (1.0 + p.wilt) * dt;
+            // Finely divided leaves shed heat.
+            p.burn += (temp - hot) * 0.004 * (1.0 + p.wilt) * (1.0 - 0.4 * g.leaf_split) * dt;
         } else {
             p.burn -= dt / 3600.0;
         }
@@ -259,7 +263,7 @@ pub fn plants(w: &mut World, dt: f32) {
         let harm = (p.wilt - 0.6).max(0.0) * 0.004
             + (p.frost - 0.5).max(0.0) * 0.006 * (1.0 - 0.7 * sleep)
             + (p.burn - 0.5).max(0.0) * 0.006 * (1.0 - 0.7 * sleep)
-            + env.hail_at(p.x) * 0.003
+            + env.hail_at(p.x) * 0.003 * (0.4 + 0.8 * g.leaf_width)
             + drowned as u8 as f32 * env.river.flood * 0.002;
         p.health = (p.health - harm * dt + 0.002 * dt).min(1.0);
         let s = p.scale();
@@ -279,7 +283,9 @@ pub fn plants(w: &mut World, dt: f32) {
                 + g.warn * 0.1
                 + g.listen * 0.05
                 + p.acclim.abs() * 0.5
-                + g.hardening * 0.1)
+                + g.hardening * 0.1
+                + g.knots * 0.2
+                + g.tendrils * 0.15)
             * dt
             * (1.0 - 0.7 * sleep);
         p.vigor += (((light + chemo * 50.0).min(1.0) * (1.0 - sleep)) - p.vigor) * 0.05 * dt;

@@ -5,7 +5,7 @@
 
 use crate::body::{Body, Segment};
 use crate::genetics::{self, COMPAT};
-use crate::genome::{LOOK_GENES, Tissue};
+use crate::genome::{Form, LOOK_GENES, Tissue};
 use crate::history::{PlantId, SpeciesId};
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
@@ -84,13 +84,28 @@ pub struct PlantGenome {
     pub selfing: f32,
     /// Sweet lures that bring animals, which carry its pollen far.
     pub nectar: f32,
+    /// Leaf shape, 0 needles and grass-like straps .. 1 broad round pads.
+    /// Narrow leaves stand frost and hail better; broad ones catch more light.
+    pub leaf_width: f32,
+    /// How divided its leaves are, 0 whole .. 1 feathery fronds of many
+    /// leaflets, which shed heat better.
+    pub leaf_split: f32,
+    /// Swollen water-storing knots along the stem, 0 none .. 1 a chain of
+    /// beads: costly to keep, but slow to wilt in a drought.
+    pub knots: f32,
+    /// How much the stem zigzags from node to node.
+    pub zigzag: f32,
+    /// Coiled tendrils at the nodes, which climb over neighbours toward the light.
+    pub tendrils: f32,
+    /// A ring of leaves spread flat at the base.
+    pub rosette: f32,
 }
 
 /// Quantitative plant loci, in chromosome order.
-const PLANT_LOCI: usize = 47;
-const PLANT_CHROMS: [usize; 5] = [0, 11, 21, 31, PLANT_LOCI];
+const PLANT_LOCI: usize = 53;
+const PLANT_CHROMS: [usize; 5] = [0, 17, 27, 37, PLANT_LOCI];
 /// Hue loci, which blend round the colour wheel.
-const PLANT_HUES: [usize; 2] = [31, 34];
+const PLANT_HUES: [usize; 2] = [37, 40];
 /// How far pollen carries on the wind, at the wind gene's full reach, and on animals.
 pub const POLLEN_WIND: f32 = 0.25;
 pub const POLLEN_ANIMAL: f32 = 0.6;
@@ -158,7 +173,13 @@ impl PlantGenome {
             compat: [0; COMPAT],
             vigor: 1.0,
             selfing: rng.range(0.05, 0.5),
-            nectar: rng.range(0.0, 0.2),
+            nectar: rng.range(0.0, 0.45),
+            leaf_width: rng.f32(),
+            leaf_split: rng.range(0.0, 0.8),
+            knots: rng.range(0.0, 0.3),
+            zigzag: rng.range(0.0, 0.5),
+            tendrils: rng.range(0.0, 0.3),
+            rosette: rng.range(0.0, 0.5),
         };
         match kind {
             Seedling::Fan => {
@@ -167,6 +188,7 @@ impl PlantGenome {
                 g.leaf = 1.1;
                 g.leaves = 3;
                 g.branches = 0;
+                g.leaf_width = rng.range(0.4, 1.0);
             }
             Seedling::VentCrust => {
                 g.adult_scale = rng.range(0.006, 0.012);
@@ -179,6 +201,8 @@ impl PlantGenome {
                 g.glow = 0.5;
                 g.heat_tolerance = 0.8;
                 g.cold_tolerance = 0.6;
+                g.knots = rng.range(0.3, 0.8);
+                g.rosette = 0.0;
             }
             Seedling::Thicket => {
                 g.adult_scale = rng.range(0.02, 0.035);
@@ -187,6 +211,7 @@ impl PlantGenome {
                 g.thirst = 0.9;
                 g.leaf = 0.5;
                 g.fruit = rng.range(0.2, 0.4);
+                g.tendrils = rng.range(0.2, 0.7);
             }
             Seedling::Mat => {
                 g.adult_scale = rng.range(0.01, 0.018);
@@ -198,6 +223,8 @@ impl PlantGenome {
                 g.floating = 0.9;
                 g.thirst = 0.0;
                 g.root = 0.1;
+                g.rosette = 0.0;
+                g.tendrils = 0.0;
             }
         }
         for _ in 0..2 {
@@ -391,6 +418,12 @@ impl PlantGenome {
             self.floating,
             self.thirst,
             self.vent,
+            self.leaf_width,
+            self.leaf_split,
+            self.knots,
+            self.zigzag,
+            self.tendrils,
+            self.rosette,
             self.heat_tolerance,
             self.cold_tolerance,
             self.growth,
@@ -446,6 +479,12 @@ impl PlantGenome {
             &mut self.floating,
             &mut self.thirst,
             &mut self.vent,
+            &mut self.leaf_width,
+            &mut self.leaf_split,
+            &mut self.knots,
+            &mut self.zigzag,
+            &mut self.tendrils,
+            &mut self.rosette,
             &mut self.heat_tolerance,
             &mut self.cold_tolerance,
             &mut self.growth,
@@ -523,6 +562,12 @@ impl PlantGenome {
         nudge(&mut self.mast, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.selfing, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.nectar, 0.03, 0.0, 1.0, rng);
+        nudge(&mut self.leaf_width, 0.05, 0.0, 1.0, rng);
+        nudge(&mut self.leaf_split, 0.05, 0.0, 1.0, rng);
+        nudge(&mut self.knots, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.zigzag, 0.05, 0.0, 1.0, rng);
+        nudge(&mut self.tendrils, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.rosette, 0.04, 0.0, 1.0, rng);
         for (i, v) in self.look.iter_mut().enumerate() {
             if i == 0 || i == 3 {
                 if rng.chance(0.15 * r) {
@@ -553,48 +598,43 @@ impl PlantGenome {
         area * self.adult_scale * self.adult_scale * crate::world::MATTER_DENSITY * (1.0 + self.root * 0.5)
     }
 
-    /// Grows the plant's body: a trunk of stem segments with branches, leaves
-    /// as membranes at the tips, and spines, traps, fruit or glow where the
-    /// genes put them. Up is +y.
+    /// Grows the plant's body: a trunk of stem segments with branches,
+    /// leaves at the tips, and thorns, traps, flowers, fruit, seed plumes,
+    /// tendrils, bladders and roots where the genes put them. Up is +y.
     pub fn develop(&self) -> Body {
-        let mut segs: Vec<Segment> = Vec::new();
         let up = std::f32::consts::FRAC_PI_2;
-        let push =
-            |segs: &mut Vec<Segment>, parent: i16, tissue, length: f32, width: f32, angle: f32, depth: u8, side: i8| {
-                segs.push(Segment {
-                    parent,
-                    tissue,
-                    length,
-                    width,
-                    angle,
-                    along: 1.0,
-                    side,
-                    onset: 0.0,
-                    membrane: tissue == Tissue::LightFilm,
-                    depth,
-                    base: [0.0; 2],
-                    tip: [0.0; 2],
-                    dir: 0.0,
-                    amp: 0.0,
-                    phase: 0.0,
-                    lift: 0.0,
-                    taper: tissue.taper(),
-                });
-                (segs.len() - 1) as i16
-            };
+        let mut b = Sprout::default();
+        // Water-storing stems swell into beads.
+        let stem_form = if self.knots > 0.35 { Form::Beads } else { Form::Tube };
         let mut tips: Vec<(i16, f32, u8)> = Vec::new();
         let mut parent = -1i16;
         for k in 0..self.stem_segments {
-            let angle = if parent < 0 { up } else { self.curl };
+            let turn = if k % 2 == 0 { 1.0 } else { -1.0 };
+            let angle = if parent < 0 { up } else { self.curl + self.zigzag * 0.7 * turn };
             let len = self.stem_length * (1.0 - k as f32 * 0.12);
-            parent = push(&mut segs, parent, Tissue::Frame, len, self.stem_width * len, angle, k, 0);
-            for b in 0..self.branches {
-                let sign = if (b + k) % 2 == 0 { 1.0 } else { -1.0 };
+            parent = b.push(parent, 1.0, Tissue::Frame, len, self.stem_width * len, angle, k, 0);
+            b.shape(stem_form, self.curl * 0.3, self.knots);
+            if self.spines > 0.5 {
+                // Thorns down the stem, hooked on zigzag stems.
+                let thorn = if self.zigzag > 0.5 { Form::Hook } else { Form::Tube };
+                for sign in [1.0, -1.0] {
+                    let l = len * 0.25 * self.spines;
+                    b.push(parent, 0.5, Tissue::Spine, l, l * 0.15, sign * 1.1, k + 1, 0);
+                    b.shape(thorn, sign * 0.6, 0.5);
+                }
+            }
+            if self.tendrils > 0.3 && k > 0 {
+                let l = len * 0.8 * self.tendrils;
+                b.push(parent, 0.6, Tissue::Frame, l, l * 0.06, -turn * 1.2, k + 1, 0);
+                b.shape(Form::Coil, turn * 2.0, self.tendrils);
+            }
+            for br in 0..self.branches {
+                let sign = if (br + k) % 2 == 0 { 1.0 } else { -1.0 };
                 let blen = len * self.branch_scale;
-                let side = if b == 2 { 1 } else { 0 };
-                let br = push(
-                    &mut segs,
+                let side = if br == 2 { 1 } else { 0 };
+                let at = b.push(
                     parent,
+                    1.0,
                     Tissue::Frame,
                     blen,
                     self.stem_width * blen * 0.8,
@@ -602,39 +642,87 @@ impl PlantGenome {
                     k + 1,
                     side,
                 );
-                tips.push((br, blen, k + 2));
+                b.shape(Form::Tube, -sign * self.zigzag * 0.5, 0.5);
+                tips.push((at, blen, k + 2));
             }
         }
-        tips.push((parent, self.stem_length, self.stem_segments));
-        for &(tip, len, depth) in &tips {
-            if segs.len() > 40 {
+        let trunk = parent;
+        tips.push((trunk, self.stem_length, self.stem_segments));
+        for (t, &(tip, len, depth)) in tips.iter().enumerate() {
+            if b.segs.len() > 56 {
                 break;
             }
+            let crown = t == tips.len() - 1;
             let n = self.leaves.max(1);
             for l in 0..n {
                 let a = (l as f32 - (n - 1) as f32 * 0.5) * 0.5;
-                push(&mut segs, tip, Tissue::LightFilm, len * self.leaf, len * self.leaf * 0.5, a, depth, 0);
+                self.leaf(&mut b, tip, 1.0, len * self.leaf, a, depth);
             }
             if self.spines > 0.3 {
-                push(&mut segs, tip, Tissue::Spine, len * 0.4 * self.spines, 0.03, 1.2, depth, 0);
+                b.push(tip, 1.0, Tissue::Spine, len * 0.4 * self.spines, 0.03, 1.2, depth, 0);
             }
             if self.trap > 0.3 {
-                push(&mut segs, tip, Tissue::Mouth, len * 0.5 * self.trap, len * 0.3, 0.0, depth, 0);
+                // Jaws that snap shut on whatever lands between them.
+                b.push(tip, 1.0, Tissue::Mouth, len * 0.5 * self.trap, len * 0.3, 0.0, depth, 0);
+                b.shape(Form::Pincer, 0.0, self.trap);
             }
             if self.fruit > 0.25 {
-                push(&mut segs, tip, Tissue::Brood, len * 0.25, len * 0.25, -0.8, depth, 0);
+                b.push(tip, 1.0, Tissue::Brood, len * 0.25, len * 0.25, -0.8, depth, 0);
+            }
+            if self.nectar > 0.3 && (crown || self.nectar > 0.6) {
+                // A flower: a cup of petals around a lure that glows at night.
+                let l = len * 0.5 * (0.5 + self.nectar);
+                b.push(tip, 1.0, Tissue::Float, l, l * 0.25, 0.0, depth, 0);
+                b.shape(Form::Fan, 0.0, self.nectar);
             }
             if self.glow > 0.4 {
-                push(&mut segs, tip, Tissue::Glow, len * 0.15, len * 0.15, 0.3, depth, 0);
+                b.push(tip, 1.0, Tissue::Glow, len * 0.15, len * 0.15, 0.3, depth, 0);
+                if self.nectar > 0.5 {
+                    b.shape(Form::Bulb, 0.0, self.glow);
+                }
+            }
+            if crown && self.wind > 0.6 {
+                // A seed head of plumes for the wind to take.
+                let l = len * 0.3;
+                b.push(tip, 1.0, Tissue::Float, l, l * 0.12, -0.3, depth, 0);
+                b.shape(Form::Tuft, 0.4, self.wind);
+            }
+        }
+        if b.segs.is_empty() {
+            return Body { segments: Vec::new(), extent: 0.3 };
+        }
+        let len = self.stem_length;
+        if self.floats() {
+            // Gas bladders hold a mat up.
+            for sign in [1.0, -1.0] {
+                b.push(0, 0.0, Tissue::Float, len * 0.35, len * 0.25, sign * 2.3, 1, 0);
+                b.shape(Form::Bulb, 0.0, self.floating);
+            }
+        } else if self.root > 0.6 {
+            // Prop roots splay from the base of the stem.
+            for sign in [1.0, -1.0] {
+                b.push(0, 0.2, Tissue::Frame, len * 0.3, self.stem_width * len * 0.6, sign * 2.4, 1, 0);
+                b.shape(Form::Tube, sign * 0.4, 0.5);
+            }
+        }
+        if self.rosette > 0.2 {
+            // A ring of leaves spread low around the base.
+            let n = 2 + (self.rosette * 4.0) as usize;
+            for i in 0..n {
+                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+                let a = sign * (1.15 + 0.12 * (i / 2) as f32);
+                self.leaf(&mut b, 0, 0.05, len * self.leaf * (0.5 + 0.4 * self.rosette), a, 1);
             }
         }
         // Lay out from the base, without centring: the root sits at the ground.
+        let mut segs = b.segs;
         for i in 0..segs.len() {
             let (base, dir) = if segs[i].parent < 0 {
                 ([0.0, 0.0], 0.0)
             } else {
                 let p = &segs[segs[i].parent as usize];
-                (p.tip, p.dir)
+                let a = segs[i].along;
+                ([p.base[0] + (p.tip[0] - p.base[0]) * a, p.base[1] + (p.tip[1] - p.base[1]) * a], p.dir)
             };
             let s = &mut segs[i];
             s.base = base;
@@ -643,6 +731,22 @@ impl PlantGenome {
         }
         let extent = segs.iter().map(|s| s.tip[1]).fold(0.3, f32::max);
         Body { segments: segs, extent }
+    }
+
+    /// One leaf of length `l`: a broad blade, a feathery frond of leaflets,
+    /// or a spray of needles, as its genes have it. Its light-catching area
+    /// grows with how broad the genes make it, whatever its shape.
+    fn leaf(&self, b: &mut Sprout, parent: i16, along: f32, l: f32, angle: f32, depth: u8) {
+        let width = l * (0.25 + 0.5 * self.leaf_width);
+        b.push(parent, along, Tissue::LightFilm, l, width, angle, depth, 0);
+        let bow = -angle.signum() * (0.2 + 0.5 * (1.0 - self.leaf_width));
+        if self.leaf_split > 0.5 {
+            b.shape(Form::Frond, bow, self.leaf_split);
+        } else if self.leaf_width < 0.3 {
+            b.shape(Form::Tuft, bow, 1.0 - self.leaf_width);
+        } else {
+            b.shape(Form::Paddle, bow * 0.5, self.leaf_width);
+        }
     }
 
     pub fn distance(&self, o: &Self) -> f32 {
@@ -663,12 +767,75 @@ impl PlantGenome {
             (self.leaf / 2.0, o.leaf / 2.0),
             (self.induce * 0.5, o.induce * 0.5),
             (self.mast * 0.5, o.mast * 0.5),
+            (self.leaf_width, o.leaf_width),
+            (self.leaf_split, o.leaf_split),
+            (self.knots, o.knots),
+            (self.tendrils * 0.5, o.tendrils * 0.5),
+            (self.rosette * 0.5, o.rosette * 0.5),
         ] {
             d += (a - b).abs() * 2.0;
         }
         d += crate::genome::Genome::look_distance(&self.look, &o.look) * 3.0;
         d += (1.0 - crate::genome::Genome::kinship(&self.marker, &o.marker)) * 1.5;
         d
+    }
+}
+
+/// A plant body as it is put together, segment by segment.
+#[derive(Default)]
+struct Sprout {
+    segs: Vec<Segment>,
+}
+
+impl Sprout {
+    /// Adds a plain segment growing from `along` its parent, and returns its index.
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &mut self,
+        parent: i16,
+        along: f32,
+        tissue: Tissue,
+        length: f32,
+        width: f32,
+        angle: f32,
+        depth: u8,
+        side: i8,
+    ) -> i16 {
+        self.segs.push(Segment {
+            parent,
+            tissue,
+            length,
+            width,
+            angle,
+            along,
+            side,
+            onset: 0.0,
+            membrane: false,
+            depth,
+            base: [0.0; 2],
+            tip: [0.0; 2],
+            dir: 0.0,
+            amp: 0.0,
+            phase: 0.0,
+            lift: 0.0,
+            taper: tissue.taper(),
+            form: Form::Tube,
+            curl: 0.0,
+            detail: 0.5,
+        });
+        (self.segs.len() - 1) as i16
+    }
+
+    /// Gives the last segment added its form.
+    fn shape(&mut self, form: Form, curl: f32, detail: f32) {
+        if let Some(s) = self.segs.last_mut() {
+            s.form = form;
+            s.curl = curl;
+            s.detail = detail.clamp(0.0, 1.0);
+            if form == Form::Beads || form == Form::Bulb {
+                s.taper = s.taper.max(0.9);
+            }
+        }
     }
 }
 
@@ -776,6 +943,41 @@ mod tests {
         let across: f32 = (0..n).map(|_| a1.cross(&b.wild(&mut rng), &mut rng).viability()).sum::<f32>() / n as f32;
         assert!(within > 0.7, "{within}");
         assert!(across < 0.2, "{across}");
+    }
+
+    #[test]
+    fn plant_loci_read_and_write_the_same_genes() {
+        let mut rng = Rng::new(10);
+        let mut g = PlantGenome::founder(Seedling::Thicket, &mut rng);
+        let read = g.loci();
+        let written: Vec<f32> = g.loci_mut().into_iter().map(|v| *v).collect();
+        assert_eq!(read.to_vec(), written);
+        assert_eq!(PLANT_CHROMS[4], PLANT_LOCI);
+        (g.look[0], g.look[3]) = (0.12, 0.34);
+        let l = g.loci();
+        assert_eq!(PLANT_HUES.map(|i| l[i]), [0.12, 0.34]);
+        // The new shape genes sit on the form chromosome.
+        g.rosette = 0.77;
+        let i = g.loci().iter().position(|&v| v == 0.77).unwrap();
+        assert!(i < PLANT_CHROMS[1]);
+    }
+
+    #[test]
+    fn leaf_and_stem_genes_change_the_body() {
+        let mut rng = Rng::new(11);
+        let mut g = PlantGenome::founder(Seedling::Fan, &mut rng);
+        (g.leaf_split, g.leaf_width, g.knots, g.rosette, g.tendrils, g.stem_segments) = (0.0, 0.8, 0.0, 0.0, 0.0, 3);
+        let forms = |g: &PlantGenome| g.develop().segments.iter().map(|s| s.form).collect::<Vec<_>>();
+        assert!(forms(&g).contains(&Form::Paddle));
+        g.leaf_split = 0.9;
+        assert!(forms(&g).contains(&Form::Frond));
+        (g.leaf_split, g.leaf_width) = (0.0, 0.1);
+        assert!(forms(&g).contains(&Form::Tuft));
+        let plain = g.develop().segments.len();
+        (g.knots, g.rosette, g.tendrils) = (0.9, 0.9, 0.9);
+        let f = forms(&g);
+        assert!(f.contains(&Form::Beads) && f.contains(&Form::Coil));
+        assert!(g.develop().segments.len() > plain + 4);
     }
 
     #[test]

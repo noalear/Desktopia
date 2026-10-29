@@ -154,7 +154,8 @@ pub(crate) fn layout(
     tip_out.extend(tip.iter().map(|&p| place.map(p)));
 }
 
-/// Emits segments and membranes laid out at the given screen positions.
+/// Emits segments and membranes laid out at the given screen positions,
+/// each segment drawn in its form. `hand` is -1 when the body is seen mirrored.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw(
     body: &Body,
@@ -165,25 +166,46 @@ pub(crate) fn draw(
     base: &[[f32; 2]],
     tip: &[[f32; 2]],
     scale: f32,
+    hand: f32,
     out: &mut Pose,
 ) {
+    // Which segments carry on into another at the tip, or carry limbs along
+    // their length, so their forms stay joined to what grows from them.
+    let mut continues = 0u64;
+    let mut carries = 0u64;
+    for (j, s) in body.segments.iter().enumerate() {
+        if s.parent >= 0 && skip & (1 << j) == 0 && keep(j, s) {
+            let bit = 1u64 << s.parent;
+            if s.along > 0.85 {
+                continues |= bit;
+            } else if s.along > 0.1 {
+                carries |= bit;
+            }
+        }
+    }
     for (i, s) in body.segments.iter().enumerate() {
         if skip & (1 << i) != 0 || !keep(i, s) {
             continue;
         }
         let r = s.width * 0.5 * scale;
-        let taper = s.taper;
         let sw = sway(s);
-        out.segs.push(Seg {
-            a: base[i],
-            b: tip[i],
-            ra: r,
-            rb: r * taper,
-            tissue: s.tissue,
-            damage: damage(i, s),
-            side: s.side,
-            sway: sw,
-        });
+        let sw0 = if s.parent >= 0 { sway(&body.segments[s.parent as usize]) } else { 0.0 };
+        crate::forms::draw(
+            out,
+            s,
+            i,
+            &crate::forms::Piece {
+                a: base[i],
+                b: tip[i],
+                ra: r,
+                rb: r * s.taper,
+                damage: damage(i, s),
+                sway: [sw0.min(sw), sw],
+                hand,
+                continues: continues & (1 << i) != 0,
+                carries: carries & (1 << i) != 0,
+            },
+        );
         if s.membrane && s.parent >= 0 {
             let p = s.parent as usize;
             let far = if s.along < 0.5 { tip[p] } else { base[p] };
@@ -212,7 +234,7 @@ fn emit(
 ) {
     let (mut base, mut tip) = (Vec::new(), Vec::new());
     layout(body, bend, place, &mut base, &mut tip);
-    draw(body, skip, keep, damage, sway, &base, &tip, place.scale, out);
+    draw(body, skip, keep, damage, sway, &base, &tip, place.scale, place.face.signum(), out);
 }
 
 /// A body's pose `t` of the way (0..1) through its tick.
@@ -280,7 +302,8 @@ pub(crate) fn physical(
         tip[i] = screen(p.u + ca * half, p.alt + sa * half);
         mask |= 1 << i;
     }
-    draw(body, !mask, keep, damage, |_| 0.0, &base, &tip, m.scale * shrink, out);
+    let hand = if m.face < 0.0 { -1.0 } else { 1.0 };
+    draw(body, !mask, keep, damage, |_| 0.0, &base, &tip, m.scale * shrink, hand, out);
 }
 
 /// Poses a living creature `t` of the way (0..1) through the tick its view
@@ -352,6 +375,19 @@ fn scripted(c: &CreatureView, out: &mut Pose) {
 
 pub(crate) fn body_has_lost_child(body: &Body, lost: u64, i: usize) -> bool {
     lost != 0 && body.segments.iter().enumerate().any(|(j, s)| s.parent == i as i16 && lost & (1 << j) != 0)
+}
+
+/// Poses a grown body standing still, its origin at screen point `at`,
+/// `scale` screen units per body unit, facing right (`face` 1) or left (-1),
+/// for galleries and portraits. Plants say how much each piece sways.
+pub fn at_rest(body: &Body, at: [f32; 2], scale: f32, face: f32, plant: bool, out: &mut Pose) {
+    out.clear();
+    out.at = at;
+    out.shrink = 1.0;
+    let place = Place { origin: at, scale, face, fore: 1.0, tilt: 0.0 };
+    let max_depth = body.segments.iter().map(|s| s.depth).max().unwrap_or(1).max(1) as f32;
+    let sway = |s: &Segment| if plant { s.depth as f32 / max_depth } else { 0.0 };
+    emit(body, 0, |_, _| 0.0, |_, _| true, |_, _| 0.0, sway, &place, out);
 }
 
 /// Poses a plant. Sway is left to the renderer: each piece says how much it moves.
