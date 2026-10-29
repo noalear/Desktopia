@@ -1,7 +1,7 @@
 //! Development: unrolling a genome's part graph into a body of linked
 //! segments, and reading what that body can do.
 
-use crate::genome::{Genome, MAX_PARTS, Motor, Tissue};
+use crate::genome::{Form, Genome, MAX_PARTS, Motor, Tissue};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SEGMENTS: usize = 48;
@@ -41,11 +41,18 @@ pub struct Segment {
     pub lift: f32,
     /// Tip thickness over base thickness.
     pub taper: f32,
+    /// The shape it is drawn and works as, how it bows or curls, and how
+    /// elaborate it is (see `PartGene`).
+    pub form: Form,
+    pub curl: f32,
+    pub detail: f32,
 }
 
 impl Segment {
+    /// Its size as matter is counted: length by thickness, more for forms
+    /// with more to them.
     pub fn area(&self) -> f32 {
-        self.length * self.width
+        self.length * self.width * self.form.bulk()
     }
 }
 
@@ -127,6 +134,9 @@ fn grow(
         phase: (parent_phase + motor.phase + if split { motor.pair } else { 0.0 }).rem_euclid(1.0),
         lift: motor.lift,
         taper: p.taper,
+        form: p.form,
+        curl: p.curl,
+        detail: p.detail,
     });
     counts[part] += 1;
     let last = counts[part] > p.recursion;
@@ -212,6 +222,8 @@ pub struct Phenotype {
     /// Tail-like muscle chains that can drive swimming.
     pub tail: f32,
     pub segments: u32,
+    /// Area grown in each form, body units squared.
+    pub form: [f32; 12],
 }
 
 impl Phenotype {
@@ -227,10 +239,17 @@ impl Phenotype {
                 continue;
             }
             let a = s.area();
-            p.area[s.tissue.index()] += a;
+            p.area[s.tissue.index()] += a * form_gain(s.form, s.tissue);
             p.mass += a * s.tissue.density();
             p.total_area += a;
+            p.form[s.form.index()] += a;
             p.segments += 1;
+            // Fins and blades push on the air as webs do.
+            match s.form {
+                Form::Fan => p.membrane += s.length * s.length * (0.25 + 0.3 * s.detail),
+                Form::Paddle => p.membrane += s.length * s.width * (1.5 + 1.5 * s.detail),
+                _ => {}
+            }
             let down = s.dir.sin() < -0.45;
             if down && s.side != 0 && matches!(s.tissue, Tissue::Muscle | Tissue::Frame | Tissue::Armor) && s.depth <= 2
             {
@@ -253,5 +272,28 @@ impl Phenotype {
 
     pub fn has(&self, t: Tissue) -> bool {
         self.area[t.index()] > 0.0
+    }
+
+    /// Share of the body grown in a form, 0..1.
+    pub fn form_frac(&self, f: Form) -> f32 {
+        if self.total_area > 0.0 { self.form[f.index()] / self.total_area } else { 0.0 }
+    }
+}
+
+/// How much more a tissue does in a form that suits it than as a plain
+/// tube: an eye on a stalk sees further, a feathery gill or leaf has more
+/// surface, overlapping plates or a coiled shell cover more.
+fn form_gain(form: Form, tissue: Tissue) -> f32 {
+    use Tissue::*;
+    match (form, tissue) {
+        (Form::Bulb, Sense | Store | Float | Glow) => 1.35,
+        (Form::Frond, Sense | LightFilm | Gut) => 1.4,
+        (Form::Fork, Sense | Spine) => 1.3,
+        (Form::Tuft, Sense) => 1.2,
+        (Form::Plates, Armor) => 1.35,
+        (Form::Coil, Armor) => 1.2,
+        (Form::Fan | Form::Paddle, LightFilm) => 1.25,
+        (Form::Hook | Form::Pincer, Mouth) => 1.3,
+        _ => 1.0,
     }
 }

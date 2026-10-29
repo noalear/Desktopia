@@ -248,6 +248,10 @@ pub fn distance(a: &Genome, b: &Genome) -> f32 {
                 if p.tissue != q.tissue {
                     d += 1.0;
                 }
+                if p.form != q.form {
+                    d += 0.8;
+                }
+                d += (p.curl - q.curl).abs() * 0.2 + (p.detail - q.detail).abs() * 0.4;
                 d += (p.length - q.length).abs() * 0.5 + (p.width - q.width).abs();
                 d += (p.recursion as f32 - q.recursion as f32).abs() * 0.3;
                 d += (p.links.len() as f32 - q.links.len() as f32).abs() * 0.5;

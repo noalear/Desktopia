@@ -101,6 +101,83 @@ impl Tissue {
     }
 }
 
+/// The shape a part grows into, whatever it is made of. The same tissue
+/// makes very different organs in different forms: muscle as a plain limb,
+/// a hooked talon or a pincer; sense tissue as an eye on a stalk or a
+/// feathery antenna; armour as a smooth shell, overlapping plates or a coil.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Form {
+    /// A plain tapered tube.
+    #[default]
+    Tube,
+    /// Ringed into beads, like a worm, a grub or an antenna.
+    Beads,
+    /// Swollen into a ball on a stalk: an eye stalk, a sac, a club.
+    Bulb,
+    /// Ends in a hook that curls back: talons, claws, hooked beaks and horns.
+    Hook,
+    /// Ends in two jaws that close on each other.
+    Pincer,
+    /// Splits at the tip into prongs, like antlers or a forked tongue.
+    Fork,
+    /// A shaft fringed with barbs down both sides: plumes, gills, feathers.
+    Frond,
+    /// Rays fanned out at the tip with webbing between: fins, flukes, frills.
+    Fan,
+    /// Flattened into a broad blade: paddles, flippers, ears.
+    Paddle,
+    /// Overlapping plates along its length, like a pill bug's back.
+    Plates,
+    /// Bristling with hairs: fur, whiskers, cilia.
+    Tuft,
+    /// Curled into a spiral toward the tip: tentacles, proboscises, shells.
+    Coil,
+}
+
+impl Form {
+    pub const ALL: [Form; 12] = [
+        Form::Tube,
+        Form::Beads,
+        Form::Bulb,
+        Form::Hook,
+        Form::Pincer,
+        Form::Fork,
+        Form::Frond,
+        Form::Fan,
+        Form::Paddle,
+        Form::Plates,
+        Form::Tuft,
+        Form::Coil,
+    ];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    /// Matter in a part of this form, relative to a plain tube of the same
+    /// length and thickness.
+    pub fn bulk(self) -> f32 {
+        match self {
+            Form::Bulb => 1.5,
+            Form::Plates => 1.3,
+            Form::Pincer | Form::Paddle => 1.2,
+            Form::Hook | Form::Fork | Form::Fan | Form::Frond | Form::Tuft => 1.1,
+            Form::Beads => 0.9,
+            Form::Tube | Form::Coil => 1.0,
+        }
+    }
+
+    /// Whether it pushes on the air like a web or a fin.
+    pub fn flat(self) -> bool {
+        matches!(self, Form::Fan | Form::Paddle)
+    }
+
+    /// A form for a new or changed part: plain tubes are commonest.
+    pub fn random(rng: &mut Rng) -> Self {
+        if rng.chance(0.35) { Form::Tube } else { *rng.pick(&Form::ALL) }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LinkGene {
     /// Which part gene grows here.
@@ -186,6 +263,14 @@ pub struct PartGene {
     /// Tip thickness over base thickness: below 1 it narrows to a point or
     /// a tail, above 1 it swells into a club or bulb.
     pub taper: f32,
+    /// The shape it grows into.
+    pub form: Form,
+    /// How it bows along its length, radians end to end; for hooks and
+    /// coils, which way and how hard the tip curls.
+    pub curl: f32,
+    /// How elaborate its form is, 0..1: how many beads, barbs, rays, plates
+    /// or hairs, how wide a blade, how big a bulb.
+    pub detail: f32,
 }
 
 /// The starting wiring of a brain and its learning rule. Weights are stored as
@@ -509,6 +594,9 @@ impl PartGene {
             origin: rng.next_u64() as u32,
             dom: 128,
             taper: tissue.taper(),
+            form: Form::random(rng),
+            curl: rng.signed() * 0.6,
+            detail: rng.f32(),
         };
         for _ in 0..rng.below(3) {
             p.links.push(LinkGene::random(rng, parts));
@@ -561,6 +649,9 @@ impl Genome {
             origin: 0,
             dom: 128,
             taper: Tissue::taper(tissue),
+            form: Form::Tube,
+            curl: 0.0,
+            detail: 0.5,
         };
         let (parts, scale, diet, hidden) = match kind {
             Founder::Drifter => (
@@ -730,11 +821,55 @@ impl Genome {
     /// plan, as if it had evolved apart somewhere else.
     pub fn founder_diverged(kind: Founder, rounds: u32, rng: &mut Rng) -> Self {
         let mut g = Self::founder_plan(kind, rng);
+        g.dress(kind);
         // Founders are already a little varied.
         for _ in 0..3 + rounds {
             g.mutate(rng, 1.0);
         }
         genetics::found(g, rng)
+    }
+
+    /// Gives a founder's parts forms of their own, from those that suit each
+    /// part's job in its plan, so the first lineages differ in shape as well
+    /// as in size and colour. The choice is drawn from the founder's own
+    /// mother line rather than the world's random stream, so every founder
+    /// is otherwise built exactly as before.
+    fn dress(&mut self, kind: Founder) {
+        let rng = &mut Rng::new(u64::from_le_bytes(self.marker) ^ 0xD8E5_5F0E);
+        use Form::*;
+        let choices: &[&[Form]] = match kind {
+            Founder::Drifter => {
+                &[&[Tube, Bulb, Beads], &[Tube], &[Tube, Fan, Frond, Paddle], &[Tube, Bulb, Frond, Fork]]
+            }
+            Founder::Grazer => &[
+                &[Tube, Plates, Tuft],
+                &[Tube, Hook, Pincer],
+                &[Tube, Tube, Beads, Hook],
+                &[Tube, Bulb, Tuft],
+                &[Tube, Bulb, Fork, Frond, Coil],
+            ],
+            Founder::Swimmer => &[
+                &[Tube, Plates, Beads],
+                &[Tube, Beads, Plates],
+                &[Tube, Hook, Pincer, Coil],
+                &[Bulb, Frond, Fork, Tube],
+                &[Tube, Bulb, Frond],
+            ],
+            Founder::Crawler => &[
+                &[Tube, Beads, Tuft],
+                &[Tube, Plates, Plates, Beads],
+                &[Tube, Pincer, Hook],
+                &[Tube, Hook, Beads],
+                &[Tube, Fork, Frond, Bulb, Coil],
+            ],
+        };
+        for (p, forms) in self.parts.iter_mut().zip(choices) {
+            p.form = *rng.pick(forms);
+            p.detail = rng.f32();
+            if p.form != Tube || rng.chance(0.3) {
+                p.curl = rng.signed() * 0.8;
+            }
+        }
     }
 
     /// One member of a founding population: drawn from the founder's genes
@@ -867,6 +1002,15 @@ impl Genome {
             }
             if rng.chance(0.01 * r) {
                 p.tissue = *rng.pick(&Tissue::ALL);
+            }
+            if rng.chance(0.006 * r) {
+                p.form = Form::random(rng);
+            }
+            if rng.chance(0.06 * r) {
+                p.curl = (p.curl + genetics::effect(rng) * 0.12).clamp(-2.5, 2.5);
+            }
+            if rng.chance(0.06 * r) {
+                p.detail = (p.detail + genetics::effect(rng) * 0.08).clamp(0.0, 1.0);
             }
             if rng.chance(0.01 * r) {
                 p.recursion = (p.recursion as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(0, 5) as u8;
