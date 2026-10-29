@@ -821,7 +821,7 @@ impl Genome {
     /// plan, as if it had evolved apart somewhere else.
     pub fn founder_diverged(kind: Founder, rounds: u32, rng: &mut Rng) -> Self {
         let mut g = Self::founder_plan(kind, rng);
-        g.dress(kind, rng);
+        g.dress(kind);
         // Founders are already a little varied.
         for _ in 0..3 + rounds {
             g.mutate(rng, 1.0);
@@ -831,8 +831,11 @@ impl Genome {
 
     /// Gives a founder's parts forms of their own, from those that suit each
     /// part's job in its plan, so the first lineages differ in shape as well
-    /// as in size and colour.
-    fn dress(&mut self, kind: Founder, rng: &mut Rng) {
+    /// as in size and colour. The choice is drawn from the founder's own
+    /// mother line rather than the world's random stream, so every founder
+    /// is otherwise built exactly as before.
+    fn dress(&mut self, kind: Founder) {
+        let rng = &mut Rng::new(u64::from_le_bytes(self.marker) ^ 0xD8E5_5F0E);
         use Form::*;
         let choices: &[&[Form]] = match kind {
             Founder::Drifter => {
