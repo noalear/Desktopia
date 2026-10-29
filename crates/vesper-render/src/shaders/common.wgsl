@@ -80,8 +80,18 @@ fn hash22(p: vec2f) -> vec2f {
     return vec2f(n, hash21(p + n + 17.17));
 }
 
-fn vnoise(p: vec2f) -> f32 {
+// hash21 repeats every 100 cells on whole numbers anyway, so lattice
+// points are wrapped into one period before hashing. The values are the
+// same, but they stay exact far from the origin: noise that drifts with the
+// clock otherwise loses its randomness after a few hours and starts to
+// visibly loop.
+fn lattice(p: vec2f) -> vec2f {
     let i = floor(p);
+    return i - 100.0 * floor(i / 100.0);
+}
+
+fn vnoise(p: vec2f) -> f32 {
+    let i = lattice(p);
     let f = fract(p);
     let u = f * f * (3.0 - 2.0 * f);
     let a = hash21(i);
@@ -93,7 +103,7 @@ fn vnoise(p: vec2f) -> f32 {
 
 // Value noise with analytic derivatives, -1..1.
 fn noised(p: vec2f) -> vec3f {
-    let i = floor(p);
+    let i = lattice(p);
     let f = fract(p);
     let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
     let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);

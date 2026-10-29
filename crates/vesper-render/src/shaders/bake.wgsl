@@ -278,7 +278,10 @@ fn shade_land(p: vec2f, ro: vec3f, rd: vec3f, t: f32) -> vec4f {
         n = normalize(n + vec3f(bump.x, bump.y * 0.6, bump.x * 0.5));
     }
     let flat = smoothstep(0.55, 0.85, n.y);
-    let grain = tri_fbm(pos, n, ts * 2.0, 4);
+    // Faces seen edge-on cram a lot of rock into each pixel across; paint
+    // them coarser, or their texture aliases into vertical streaks.
+    let oblique = 1.0 / max(abs(dot(n, rd)), 0.15);
+    let grain = tri_fbm(pos, n, ts * 2.0 * oblique, 4);
 
     // Rock: sandstone banded by strata on the day edge, rust, ochre, cream
     // and maroon; purple-grey basalt through the twilight, stained copper
