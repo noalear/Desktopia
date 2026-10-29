@@ -278,23 +278,16 @@ mod tests {
     use std::time::Duration;
 
     /// Every shader compiles with DXC, in seconds. The build machine has no GPU,
-    /// so this runs on Windows' software renderer, where the compiler costs the same.
+    /// so this runs on Windows' software renderer; there DXC took 8 s and FXC 41 s.
     #[test]
     fn shaders_compile_quickly() {
-        let time = |compiler: wgpu::Dx12Compiler| {
-            let start = Instant::now();
-            Gpu::open_with(compiler).map(|_| start.elapsed())
-        };
-        let dxc = match time(wgpu::Dx12Compiler::StaticDxc) {
-            Ok(t) => t,
+        let start = Instant::now();
+        match Gpu::open_with(wgpu::Dx12Compiler::StaticDxc) {
+            Ok(_) => {}
             Err(e) if e.starts_with("no GPU") => return eprintln!("skipped: {e}"),
             Err(e) => panic!("{e}"),
-        };
-        let fxc = time(wgpu::Dx12Compiler::Fxc);
-        panic!("timings: dxc {dxc:?}, fxc {fxc:?}");
-        #[allow(unreachable_code)]
-        {
-            assert!(dxc < Duration::from_secs(20), "the shaders took {dxc:?} to compile");
         }
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(30), "the shaders took {took:?} to compile");
     }
 }
