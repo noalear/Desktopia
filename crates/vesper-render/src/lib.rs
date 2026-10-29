@@ -177,6 +177,8 @@ struct Params {
     wind_low: f32,
     wind_high: f32,
     cloud_drift: f32,
+    /// Where in the pixel this bake pass samples, in pixels from its centre.
+    bake_jitter: [f32; 2],
 }
 
 pub struct Renderer {
@@ -190,8 +192,12 @@ pub struct Renderer {
     composite_module: wgpu::ShaderModule,
     composite_pipeline_layout: wgpu::PipelineLayout,
     bloom: BloomPipelines,
+    /// The bake again, averaged into what is already there (see `BAKE_SAMPLES`).
+    refine_pipeline: wgpu::RenderPipeline,
     life_pipelines: [wgpu::RenderPipeline; life::GROUPS],
     sampler: wgpu::Sampler,
+    /// Finish every bake within the frame that starts it (for stills).
+    instant_bake: bool,
     plants: LifeBuffer,
     creatures: LifeBuffer,
 }
@@ -242,6 +248,18 @@ pub struct Output {
     /// A bake under way in the back texture: the band shift it bakes and the
     /// next strip to draw.
     baking: Option<(f32, u32)>,
+    /// A finished bake gathering its extra samples.
+    refining: Option<Refine>,
+}
+
+/// Progress of the extra samples going into a fresh bake: which texture,
+/// which sample, the next strip, and the band shift it shows once done.
+#[derive(Clone, Copy)]
+struct Refine {
+    tex: usize,
+    sample: u32,
+    strip: u32,
+    shift: f32,
 }
 
 impl Output {
@@ -253,6 +271,11 @@ impl Output {
     pub fn invalidate(&mut self) {
         self.baked_band_shift = None;
         self.baking = None;
+        self.refining = None;
+    }
+
+    fn bake_jitter(&self) -> [f32; 2] {
+        self.refining.map_or([0.0; 2], |r| BAKE_JITTER[r.sample as usize])
     }
 }
 
@@ -333,6 +356,29 @@ impl Renderer {
         let frame_pipeline_layout = pipeline_layout(&device, "frame", &frame_layout);
         let bake_pipeline =
             fullscreen_pipeline(&device, "bake", &bake_pipeline_layout, &bake_module, "fs_bake", BAKED_FORMAT);
+        // Each extra sample is blended in with weight 1/(n+1), a running
+        // mean. Alpha holds the material code, which can't be averaged, so
+        // it keeps the first sample's.
+        let refine_pipeline = fullscreen_pipeline_blended(
+            &device,
+            "bake refine",
+            &bake_pipeline_layout,
+            &bake_module,
+            "fs_bake",
+            BAKED_FORMAT,
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Constant,
+                    dst_factor: wgpu::BlendFactor::OneMinusConstant,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+        );
         let frame_pipeline =
             fullscreen_pipeline(&device, "frame", &frame_pipeline_layout, &frame_module, "fs_frame", SCENE_FORMAT);
         let life_pipelines = life_pipelines(&device, &frame_pipeline_layout, &life_module);
@@ -363,12 +409,14 @@ impl Renderer {
             frame_layout,
             composite_layout,
             bake_pipeline,
+            refine_pipeline,
             frame_pipeline,
             composite_module,
             composite_pipeline_layout,
             bloom,
             life_pipelines,
             sampler,
+            instant_bake: false,
             plants: empty(),
             creatures: empty(),
         }
@@ -509,25 +557,42 @@ impl Renderer {
             bloom,
             baked_band_shift: None,
             baking: None,
+            refining: None,
         }
     }
 
     /// Keeps the baked landscape up to date with the season. The first bake
     /// is drawn whole. Later ones, when the band has slid a little, are drawn
-    /// a strip per frame into the back texture and shown once complete, so a
-    /// heavy bake never stalls the GPU for a whole frame.
+    /// a strip per frame into the back texture, so a heavy bake never stalls
+    /// the GPU for a whole frame. Either way the fresh bake then gathers
+    /// BAKE_SAMPLES - 1 more samples per pixel, a strip per frame, and a
+    /// re-bake is shown once it has them all.
     fn bake(&self, encoder: &mut wgpu::CommandEncoder, output: &mut Output, band_shift: f32) {
+        let size = output.config.size_px;
+        if let Some(r) = output.refining {
+            let weight = 1.0 / (r.sample + 1) as f64;
+            let view = &output.baked_views[r.tex];
+            bake_strips(encoder, view, &self.refine_pipeline, &output.bake_group, r.strip..r.strip + 1, size, weight);
+            let mut next = Refine { strip: r.strip + 1, ..r };
+            if next.strip == BAKE_STRIPS {
+                next.strip = 0;
+                next.sample += 1;
+            }
+            if next.sample < BAKE_SAMPLES {
+                output.refining = Some(next);
+            } else {
+                output.front = r.tex;
+                output.baked_band_shift = Some(r.shift);
+                output.refining = None;
+            }
+            return;
+        }
         let Some(shown) = output.baked_band_shift else {
             let front = output.front;
-            bake_strips(
-                encoder,
-                &output.baked_views[front],
-                &self.bake_pipeline,
-                &output.bake_group,
-                0..BAKE_STRIPS,
-                output.config.size_px,
-            );
+            let view = &output.baked_views[front];
+            bake_strips(encoder, view, &self.bake_pipeline, &output.bake_group, 0..BAKE_STRIPS, size, 1.0);
             output.baked_band_shift = Some(band_shift);
+            output.refining = Some(Refine { tex: front, sample: 1, strip: 0, shift: band_shift });
             return;
         };
         if output.baking.is_none() && (shown - band_shift).abs() > 0.002 {
@@ -541,15 +606,21 @@ impl Renderer {
             &self.bake_pipeline,
             &output.bake_group,
             next..next + 1,
-            output.config.size_px,
+            size,
+            1.0,
         );
         if next + 1 < BAKE_STRIPS {
             output.baking = Some((shift, next + 1));
         } else {
-            output.front = back;
-            output.baked_band_shift = Some(shift);
             output.baking = None;
+            output.refining = Some(Refine { tex: back, sample: 1, strip: 0, shift });
         }
+    }
+
+    /// Makes every bake finish within the frame that starts it, extra
+    /// samples and all. Slow; for stills, not the wallpaper.
+    pub fn set_instant_bake(&mut self, on: bool) {
+        self.instant_bake = on;
     }
 
     fn create_bloom(
@@ -609,41 +680,19 @@ impl Renderer {
     /// Draws one frame of `output` into `target`, re-baking the landscape first
     /// if the season has moved on since the last bake.
     pub fn render(&self, output: &mut Output, world: &WorldView, target: &wgpu::TextureView) {
-        let cfg = output.config;
-        let (mode, paper_white, peak) = match cfg.mode {
-            OutputMode::Sdr => (0, 1.0, 1.0),
-            OutputMode::Hdr { paper_white_nits, peak_nits } => {
-                (1, paper_white_nits / 80.0, peak_nits.max(paper_white_nits) / 80.0)
+        if self.instant_bake {
+            loop {
+                self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params(output, world)));
+                let mut encoder =
+                    self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("bake") });
+                self.bake(&mut encoder, output, world.band_shift);
+                self.queue.submit(Some(encoder.finish()));
+                if output.baking.is_none() && output.refining.is_none() {
+                    break;
+                }
             }
-        };
-        let params = Params {
-            world_size: world.world_size_px,
-            view_origin: cfg.origin_px,
-            view_size: [cfg.size_px[0] as f32, cfg.size_px[1] as f32],
-            time: world.time,
-            band_shift: world.band_shift,
-            exposure: world.exposure,
-            mode,
-            paper_white,
-            peak,
-            lightning: world.lightning,
-            storm_x: world.storm_x,
-            storm: world.storm,
-            volcano: world.volcano,
-            river_phase: world.river_phase,
-            river_flood: world.river_flood,
-            lightning_x: world.lightning_x,
-            lava: world.lava,
-            ash: world.ash,
-            cold: world.cold,
-            cold_x: world.cold_x,
-            dust: world.dust,
-            dust_x: world.dust_x,
-            wind_low: world.wind_low,
-            wind_high: world.wind_high,
-            cloud_drift: world.cloud_drift,
-        };
-        self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params));
+        }
+        self.queue.write_buffer(&output.params, 0, bytemuck::bytes_of(&params(output, world)));
         self.queue.write_buffer(&output.sky, 0, bytemuck::cast_slice(&world.sky.rows));
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("vesper") });
@@ -682,8 +731,7 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        // The frame group carries the baked landscape, which translucent
-        // bodies show through.
+        // Life shares the frame pass's uniforms and weather.
         pass.set_bind_group(0, &output.frame_groups[output.front], &[]);
         // Each group draws plants first, then creatures, far to near.
         for (g, pipeline) in self.life_pipelines.iter().enumerate() {
@@ -781,6 +829,45 @@ fn life_pipelines(
     ]
 }
 
+/// The uniforms for one pass over `output`.
+fn params(output: &Output, world: &WorldView) -> Params {
+    let cfg = output.config;
+    let (mode, paper_white, peak) = match cfg.mode {
+        OutputMode::Sdr => (0, 1.0, 1.0),
+        OutputMode::Hdr { paper_white_nits, peak_nits } => {
+            (1, paper_white_nits / 80.0, peak_nits.max(paper_white_nits) / 80.0)
+        }
+    };
+    Params {
+        world_size: world.world_size_px,
+        view_origin: cfg.origin_px,
+        view_size: [cfg.size_px[0] as f32, cfg.size_px[1] as f32],
+        time: world.time,
+        band_shift: world.band_shift,
+        exposure: world.exposure,
+        mode,
+        paper_white,
+        peak,
+        lightning: world.lightning,
+        storm_x: world.storm_x,
+        storm: world.storm,
+        volcano: world.volcano,
+        river_phase: world.river_phase,
+        river_flood: world.river_flood,
+        lightning_x: world.lightning_x,
+        lava: world.lava,
+        ash: world.ash,
+        cold: world.cold,
+        cold_x: world.cold_x,
+        dust: world.dust,
+        dust_x: world.dust_x,
+        wind_low: world.wind_low,
+        wind_high: world.wind_high,
+        cloud_drift: world.cloud_drift,
+        bake_jitter: output.bake_jitter(),
+    }
+}
+
 /// Where the weather's columns are bound, in the frame, life and composite passes.
 const SKY_BINDING: u32 = 5;
 
@@ -815,6 +902,18 @@ fn fullscreen_pipeline(
     fragment_entry: &str,
     format: wgpu::TextureFormat,
 ) -> wgpu::RenderPipeline {
+    fullscreen_pipeline_blended(device, label, layout, module, fragment_entry, format, None)
+}
+
+fn fullscreen_pipeline_blended(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    fragment_entry: &str,
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
@@ -831,7 +930,7 @@ fn fullscreen_pipeline(
             module,
             entry_point: Some(fragment_entry),
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
         }),
         multiview_mask: None,
         cache: None,
@@ -841,8 +940,28 @@ fn fullscreen_pipeline(
 /// How many frames a re-bake of the landscape is spread over.
 const BAKE_STRIPS: u32 = 12;
 
+/// Samples averaged into each baked pixel. The landscape only changes with
+/// the season, so supersampling it costs a few seconds of strips after each
+/// bake and nothing after that, and it smooths every edge and fine texture
+/// in the land and sky.
+const BAKE_SAMPLES: u32 = 8;
+
+/// Where in the pixel each sample falls, in pixels from its centre: the
+/// centre, then the rest of the standard 8x pattern.
+const BAKE_JITTER: [[f32; 2]; BAKE_SAMPLES as usize] = [
+    [0.0, 0.0],
+    [-0.0625, 0.1875],
+    [0.3125, 0.0625],
+    [-0.1875, -0.3125],
+    [-0.3125, 0.3125],
+    [-0.4375, -0.0625],
+    [0.1875, 0.4375],
+    [0.4375, -0.4375],
+];
+
 /// Bakes some horizontal strips of the landscape (of BAKE_STRIPS), leaving
-/// the rest of the texture as it was.
+/// the rest of the texture as it was. `weight` is the blend constant, for
+/// the refine pipeline.
 fn bake_strips(
     encoder: &mut wgpu::CommandEncoder,
     target: &wgpu::TextureView,
@@ -850,6 +969,7 @@ fn bake_strips(
     group: &wgpu::BindGroup,
     strips: std::ops::Range<u32>,
     size: [u32; 2],
+    weight: f64,
 ) {
     let (w, h) = (size[0].max(1), size[1].max(1));
     let row = |k: u32| (h as u64 * k as u64 / BAKE_STRIPS as u64) as u32;
@@ -873,6 +993,7 @@ fn bake_strips(
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, group, &[]);
     pass.set_scissor_rect(0, y0, w, y1 - y0);
+    pass.set_blend_constant(wgpu::Color { r: weight, g: weight, b: weight, a: weight });
     pass.draw(0..3, 0..1);
 }
 
