@@ -21,6 +21,8 @@ Download `desktopia.exe` from the [latest build](https://github.com/noalear/Desk
 
 Desktopia lives in the tray. Right-click its icon to pause, to start it with Windows, or to quit. Quitting gives the normal wallpaper back.
 
+To make evolution go faster, right-click the tray icon and pick a **Speed**: 2×, 5× or 10× faster, or **As fast as it can**. The choice is remembered. A faster world borrows up to a quarter of the CPU's threads, at the lowest priority, and drops back to real time on its own whenever a fullscreen game or app or a presentation is running, the PC is on battery, or other programs use more than 20% of the CPU (`fast_cpu_percent` in the settings file). It speeds up again after half a minute of quiet. The tray tooltip shows how fast the world is really running, since a big world may not reach 10× on every PC.
+
 To start Vesper over, right-click the tray icon and choose **New world…**. After you confirm, the current world ends and life begins again from its first founders. The old world isn't deleted: its save moves to `%LOCALAPPDATA%\Desktopia\world-past` and its history to `chronicle-past`, and an open chronicle window switches to the new world by itself.
 
 It stays out of the way:

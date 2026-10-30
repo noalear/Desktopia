@@ -37,4 +37,4 @@ mod think;
 pub mod world;
 
 pub use genome::{Form, Tissue};
-pub use sim::{PHASE_NAMES, PHASES, Sim};
+pub use sim::{PHASE_NAMES, PHASES, Sim, on_helper_start};

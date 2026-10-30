@@ -13,8 +13,12 @@ pub struct Config {
     pub battery_fps: u32,
     /// Frame cap while the CPU is busy with something else.
     pub busy_fps: u32,
-    /// Total CPU use, in percent, above which Desktopia slows down.
+    /// CPU use by other programs, in percent of the whole machine, above
+    /// which Desktopia draws more slowly.
     pub busy_cpu_percent: f32,
+    /// CPU use by other programs above which a faster world drops back to
+    /// real time, until the PC has been quiet for half a minute.
+    pub fast_cpu_percent: f32,
     /// Use HDR on monitors that have it switched on in Windows.
     pub hdr: bool,
     /// Brightness multiplier for the whole scene.
@@ -30,6 +34,7 @@ impl Default for Config {
             battery_fps: 10,
             busy_fps: 10,
             busy_cpu_percent: 80.0,
+            fast_cpu_percent: 20.0,
             hdr: true,
             exposure: 1.0,
             chronicle_hotkey: "Win+Alt+V".into(),
@@ -49,6 +54,11 @@ battery_fps = 10
 # Frame cap while other programs keep the CPU busy, and what counts as busy.
 busy_fps = 10
 busy_cpu_percent = 80
+
+# When the world runs faster than real time (Speed in the tray menu), it drops
+# back to real time while other programs use more CPU than this, and for
+# fullscreen games, presentations and battery power.
+fast_cpu_percent = 20
 
 # Use HDR on monitors that have HDR switched on in Windows.
 hdr = true
@@ -131,6 +141,7 @@ mod tests {
         let def = super::Config::default();
         assert_eq!(cfg.fps, def.fps);
         assert_eq!(cfg.busy_cpu_percent, def.busy_cpu_percent);
+        assert_eq!(cfg.fast_cpu_percent, def.fast_cpu_percent);
         assert_eq!(cfg.exposure, def.exposure);
         assert_eq!(cfg.chronicle_hotkey, def.chronicle_hotkey);
     }

@@ -16,11 +16,12 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, GetCursorPos, HICON, ICONINFO, IDYES, MB_DEFBUTTON2, MB_ICONWARNING,
-    MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MF_CHECKED, MF_SEPARATOR, MF_STRING, MessageBoxW, PBT_POWERSETTINGCHANGE,
-    PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, TPM_NONOTIFY,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_POWERBROADCAST, WM_RBUTTONUP,
-    WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+    MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MENU_ITEM_FLAGS, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
+    MFT_RADIOCHECK, MessageBoxW, PBT_POWERSETTINGCHANGE, PostMessageW, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetMenuDefaultItem, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONUP,
+    WM_NULL, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK,
+    WTS_SESSION_UNLOCK,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -32,6 +33,8 @@ const CMD_AUTOSTART: u32 = 2;
 const CMD_QUIT: u32 = 3;
 const CMD_CHRONICLE: u32 = 4;
 const CMD_NEW_WORLD: u32 = 5;
+/// The speed choices are this plus their place in `speed::SPEEDS`.
+const CMD_SPEED: u32 = 100;
 const HOTKEY_CHRONICLE: i32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,6 +53,8 @@ pub enum Event {
     OpenChronicle,
     /// Asked from the tray to give up this world and start another.
     NewWorld,
+    /// Run the world at this many sim seconds per real second.
+    SetSpeed(f32),
     Quit,
 }
 
@@ -60,6 +65,9 @@ pub struct MenuState {
     pub autostart: bool,
     /// The chronicle hotkey as typed in the settings, if it was registered.
     pub hotkey: Option<String>,
+    /// The speed chosen, and why the world is held at real time instead, if it is.
+    pub speed: f32,
+    pub held: Option<&'static str>,
 }
 
 thread_local! {
@@ -272,6 +280,27 @@ unsafe fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, CMD_CHRONICLE as usize, &open);
         let _ = SetMenuDefaultItem(menu, CMD_CHRONICLE, 0);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        if let Ok(speeds) = CreatePopupMenu() {
+            for (i, &s) in crate::speed::SPEEDS.iter().enumerate() {
+                let flags = if s == state.speed {
+                    MF_STRING | MF_CHECKED | MENU_ITEM_FLAGS(MFT_RADIOCHECK.0)
+                } else {
+                    MF_STRING
+                };
+                let _ =
+                    AppendMenuW(speeds, flags, (CMD_SPEED + i as u32) as usize, &HSTRING::from(crate::speed::label(s)));
+            }
+            if state.speed > 1.0 {
+                let note = match state.held {
+                    Some(why) => format!("Held at real time: {why}"),
+                    None => "Slows to real time when the PC is busy".into(),
+                };
+                let _ = AppendMenuW(speeds, MF_SEPARATOR, 0, PCWSTR::null());
+                let _ = AppendMenuW(speeds, MF_STRING | MF_GRAYED, 0, &HSTRING::from(note));
+            }
+            let title = format!("Speed: {}", crate::speed::label(state.speed));
+            let _ = AppendMenuW(menu, MF_POPUP, speeds.0 as usize, &HSTRING::from(title));
+        }
         let _ = AppendMenuW(menu, check(state.paused), CMD_PAUSE as usize, w!("Pause"));
         let _ = AppendMenuW(menu, check(state.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -290,6 +319,9 @@ unsafe fn show_menu(hwnd: HWND) {
             CMD_QUIT => push(Event::Quit),
             CMD_CHRONICLE => push(Event::OpenChronicle),
             CMD_NEW_WORLD => push(Event::NewWorld),
+            c if (CMD_SPEED..CMD_SPEED + crate::speed::SPEEDS.len() as u32).contains(&c) => {
+                push(Event::SetSpeed(crate::speed::SPEEDS[(c - CMD_SPEED) as usize]))
+            }
             _ => {}
         }
     }

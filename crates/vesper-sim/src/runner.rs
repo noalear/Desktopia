@@ -1,6 +1,7 @@
-//! Runs a world on its own background thread in real time, so the host only
-//! has to pick up frames and facts. The thread does a few milliseconds of
-//! work every 200 ms and sleeps the rest.
+//! Runs a world on its own background thread, so the host only has to pick
+//! up frames and facts. In real time the thread does a few milliseconds of
+//! work every 200 ms and sleeps the rest; it can also run faster than real
+//! time, up to as fast as the machine allows.
 
 use crate::frame::Frame;
 use crate::history::Fact;
@@ -39,13 +40,26 @@ pub trait Recorder: Send {
     fn frame(&mut self, _frame: &Frame) {}
 }
 
+/// Sim seconds per real second that means as fast as it can go.
+pub const FLAT_OUT: f32 = f32::INFINITY;
+/// Frames are made at most this often, however fast the world runs.
+const FRAME_MIN: f32 = 1.0 / 30.0;
+/// The share of each frame's time spent stepping when the world can't keep
+/// up with its speed; the rest is left for frames, saves and the machine.
+const DUTY: f32 = 0.9;
+/// Above this share of one core, ticks are shared out among the helpers,
+/// until the shared work falls below the second share.
+const SHARE: (f32, f32) = (0.6, 0.15);
+
 #[derive(Default)]
 struct Control {
     paused: bool,
     quit: bool,
     save_now: bool,
-    /// Sim seconds per real second.
+    /// Sim seconds per real second, or FLAT_OUT.
     speed: f32,
+    /// Extra threads the world may use when one isn't enough for its speed.
+    helpers: usize,
 }
 
 /// The two most recent frames and when the newer one was made, so the
@@ -55,12 +69,14 @@ pub struct Frames {
     pub prev: Arc<Frame>,
     pub next: Arc<Frame>,
     pub made: Instant,
+    /// Real seconds until the frame after `next` is due.
+    pub span: f32,
 }
 
 impl Frames {
     /// How far to blend from `prev` to `next` right now, 0..1.
     pub fn alpha(&self) -> f32 {
-        (self.made.elapsed().as_secs_f32() / TICK).clamp(0.0, 1.0)
+        (self.made.elapsed().as_secs_f32() / self.span).clamp(0.0, 1.0)
     }
 }
 
@@ -71,6 +87,8 @@ struct Shared {
     history: Mutex<Vec<(f64, Fact)>>,
     /// Sim time, and whether it's still catching up.
     status: Mutex<(f64, bool)>,
+    /// Sim seconds per real second over the last few seconds.
+    rate: Mutex<f32>,
 }
 
 pub struct Runner {
@@ -84,9 +102,10 @@ impl Runner {
         let shared = Arc::new(Shared {
             control: Mutex::new(Control { speed: 1.0, ..Default::default() }),
             wake: Condvar::new(),
-            frames: Mutex::new(Frames { prev: first.clone(), next: first, made: Instant::now() }),
+            frames: Mutex::new(Frames { prev: first.clone(), next: first, made: Instant::now(), span: TICK }),
             history: Mutex::new(Vec::new()),
             status: Mutex::new((sim.time(), opts.catch_up > 0.0)),
+            rate: Mutex::new(1.0),
         });
         let s = shared.clone();
         let thread = std::thread::Builder::new()
@@ -121,9 +140,22 @@ impl Runner {
         self.shared.wake.notify_all();
     }
 
-    /// Sim seconds per real second (1 is real time).
+    /// Sim seconds per real second: 1 is real time, FLAT_OUT as fast as the
+    /// thread is given time for.
     pub fn set_speed(&self, speed: f32) {
-        self.shared.control.lock().unwrap().speed = speed.clamp(0.0, 64.0);
+        self.shared.control.lock().unwrap().speed = speed.max(0.0);
+        self.shared.wake.notify_all();
+    }
+
+    /// How many more threads may share the work when one can't keep up.
+    pub fn set_helpers(&self, n: usize) {
+        self.shared.control.lock().unwrap().helpers = n;
+    }
+
+    /// How fast the world has really been running lately, in sim seconds per
+    /// real second; below the speed asked for when the machine can't keep up.
+    pub fn rate(&self) -> f32 {
+        *self.shared.rate.lock().unwrap()
     }
 
     pub fn save_now(&self) {
@@ -151,12 +183,13 @@ impl Drop for Runner {
     }
 }
 
-fn publish(sim: &mut Sim, s: &Shared, recorder: &mut Option<Box<dyn Recorder>>) {
+fn publish(sim: &mut Sim, s: &Shared, recorder: &mut Option<Box<dyn Recorder>>, span: f32) {
     let frame = Arc::new(Frame::of(sim.world()));
     {
         let mut f = s.frames.lock().unwrap();
         f.prev = std::mem::replace(&mut f.next, frame.clone());
         f.made = Instant::now();
+        f.span = span;
     }
     hand_on(sim, s, recorder);
     if let Some(r) = recorder {
@@ -208,14 +241,19 @@ fn run(sim: &mut Sim, s: &Shared, opts: &mut Options) {
         std::thread::sleep(Duration::from_millis(5));
     }
     sim.set_coarse(false);
-    publish(sim, s, &mut recorder);
+    publish(sim, s, &mut recorder, TICK);
     let mut last_save = Instant::now();
     let mut next = Instant::now();
+    // Ticks due but not yet run.
     let mut owed = 0.0f64;
+    // Recent real seconds per tick, for deciding when to share the work.
+    let mut tick_cost = 0.0f32;
+    let mut sharing = false;
+    let mut measured = (Instant::now(), sim.time());
     loop {
-        let (paused, quit, save_now, speed) = {
+        let (paused, quit, save_now, speed, helpers) = {
             let mut c = s.control.lock().unwrap();
-            let r = (c.paused, c.quit, c.save_now, c.speed);
+            let r = (c.paused, c.quit, c.save_now, c.speed, c.helpers);
             c.save_now = false;
             r
         };
@@ -230,18 +268,39 @@ fn run(sim: &mut Sim, s: &Shared, opts: &mut Options) {
             let c = s.control.lock().unwrap();
             let _ = s.wake.wait_timeout(c, Duration::from_millis(500));
             next = Instant::now();
+            owed = 0.0;
+            measured = (Instant::now(), sim.time());
             continue;
         }
-        owed += speed as f64 * TICK as f64;
-        let mut steps = 0;
-        while owed >= TICK as f64 && steps < 64 {
-            sim.step();
-            owed -= TICK as f64;
-            steps += 1;
+        // A frame per tick up to 30 a second, then several ticks per frame.
+        let span = (TICK / speed).max(FRAME_MIN);
+        let flat_out = speed.is_infinite();
+        if !flat_out {
+            owed = (owed + (speed * span / TICK) as f64).min((speed * span / TICK) as f64 * 2.0 + 1.0);
         }
-        publish(sim, s, &mut recorder);
+        // One thread is plenty in real time; more only when it can't keep up.
+        let need = if flat_out { f32::INFINITY } else { speed * tick_cost / TICK };
+        sharing = helpers > 0 && if sharing { need > SHARE.1 } else { need > SHARE.0 };
+        sim.set_helpers(if sharing { helpers } else { 0 });
+        let start = Instant::now();
+        let budget = Duration::from_secs_f32(span * DUTY);
+        while (flat_out || owed >= 1.0) && start.elapsed() < budget {
+            let t = Instant::now();
+            sim.step();
+            let cost = t.elapsed().as_secs_f32();
+            tick_cost = if tick_cost == 0.0 { cost } else { tick_cost + (cost - tick_cost) * 0.05 };
+            owed -= 1.0;
+        }
+        // What couldn't be run in time is let go rather than piled up.
+        owed = owed.clamp(0.0, 1.0);
+        publish(sim, s, &mut recorder, span);
         *s.status.lock().unwrap() = (sim.time(), false);
-        next += Duration::from_secs_f32(TICK);
+        let (since, from) = measured;
+        if since.elapsed() >= Duration::from_secs(3) {
+            *s.rate.lock().unwrap() = ((sim.time() - from) / since.elapsed().as_secs_f64()) as f32;
+            measured = (Instant::now(), sim.time());
+        }
+        next += Duration::from_secs_f32(span);
         let now = Instant::now();
         if next > now {
             let c = s.control.lock().unwrap();
