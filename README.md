@@ -36,6 +36,16 @@ On a monitor with HDR switched on, it draws in HDR, using the Windows SDR bright
 
 Settings are in `%APPDATA%\Desktopia\config.toml`, and the logs are in `%LOCALAPPDATA%\Desktopia`.
 
+### Updates
+
+Desktopia keeps itself up to date from the [latest build](https://github.com/noalear/Desktopia/releases/tag/latest). A few minutes after it starts, and every six hours after that, it asks GitHub which commit that build came from. If it's newer, it downloads it next to the running `desktopia.exe`, checks that it runs and is the build it claims to be, and puts it in place, keeping the old one as `desktopia.exe.old` until the next start. It then restarts into the new build the next time the desktop is out of sight (the PC locked, the display asleep, or every monitor covered by a window), or after half an hour anyway, but never during a fullscreen game or a presentation. The world, its chronicle, the speed and the settings all live in your user folders, so they carry on as they were, and a paused wallpaper stays paused.
+
+The tray menu's **Updates** entry shows what it last found, checks right away, or restarts into a waiting build now. Set `auto_update = false` in the settings file to stop the checks; checking from the tray still works.
+
+While the repository is private, GitHub only shows the build to someone signed in, so updates need a token. Make a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) with access to only this repository and **Contents: Read-only** permission, and put it in the settings file as `update_token = "github_pat_..."`. It's read at each check, so there's no need to restart. The token stays out of the log.
+
+The download is done by the `curl.exe` that comes with Windows. Builds made anywhere but GitHub never replace themselves. `desktopia.exe --version` prints the commit a build came from.
+
 ### The chronicle
 
 Click the tray icon, or press **Win+Alt+V**, to open the chronicle: Vesper's written history. It shows

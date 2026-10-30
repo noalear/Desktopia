@@ -12,15 +12,24 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, CreateMutexW, GetCurrentProcess, GetCurrentThread, OpenProcess,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-    PROCESS_TERMINATE, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, SetThreadPriority,
-    THREAD_PRIORITY_LOWEST, TerminateProcess, WaitForSingleObject,
+    PROCESS_TERMINATE, ProcessPowerThrottling, ReleaseMutex, SetPriorityClass, SetProcessInformation,
+    SetThreadPriority, THREAD_PRIORITY_LOWEST, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW};
 use windows::core::{HSTRING, PCWSTR, w};
 
-/// Holds the single-instance mutex for the life of the process.
-pub struct Instance(#[allow(dead_code)] HANDLE);
+/// Holds the single-instance mutex until dropped, so a restart can hand it on.
+pub struct Instance(HANDLE);
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = ReleaseMutex(self.0);
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
 
 /// Makes this the only running copy. A copy that is already running is asked
 /// to quit, and stopped if it doesn't, so starting a new build replaces the old.

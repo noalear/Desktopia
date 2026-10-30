@@ -105,15 +105,15 @@ impl Governor {
         self.hold.map(|(r, _)| r)
     }
 
+    /// Why the last decision was made.
+    pub fn reason(&self) -> &'static str {
+        self.decision.reason
+    }
+
     /// What the PC is busy with that a fast world would get in the way of.
     fn busy(&mut self, cfg: &Config) -> Option<&'static str> {
-        if let Ok(state) = unsafe { SHQueryUserNotificationState() } {
-            match state {
-                QUNS_RUNNING_D3D_FULL_SCREEN => return Some("fullscreen game"),
-                QUNS_PRESENTATION_MODE => return Some("presentation mode"),
-                QUNS_BUSY => return Some("fullscreen app"),
-                _ => {}
-            }
+        if let Some(what) = fullscreen() {
+            return Some(what);
         }
         if on_battery() {
             return Some("on battery");
@@ -162,6 +162,16 @@ impl Governor {
             reason = "CPU busy";
         }
         Decision { fps, visible, reason }
+    }
+}
+
+/// A fullscreen game, app or presentation, which nothing should interrupt.
+pub fn fullscreen() -> Option<&'static str> {
+    match unsafe { SHQueryUserNotificationState() } {
+        Ok(QUNS_RUNNING_D3D_FULL_SCREEN) => Some("fullscreen game"),
+        Ok(QUNS_PRESENTATION_MODE) => Some("presentation mode"),
+        Ok(QUNS_BUSY) => Some("fullscreen app"),
+        _ => None,
     }
 }
 
