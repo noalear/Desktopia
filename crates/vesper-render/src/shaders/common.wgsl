@@ -29,6 +29,8 @@ struct Params {
     wind_high: f32,     // high wind, positive is night-ward
     cloud_drift: f32,   // how far the high wind has carried the clouds
     bake_jitter: vec2f, // bake only: where in the pixel this sample falls
+    ground_drift: f32,  // how far the ground wind has carried things (integrated wind_low)
+    river_flow: f32,    // how far the current has carried the ripples
 };
 
 @group(0) @binding(0) var<uniform> P: Params;

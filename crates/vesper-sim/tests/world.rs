@@ -101,3 +101,29 @@ fn poses_land_on_screen() {
     }
     assert!(segs > 1000);
 }
+
+#[test]
+fn lava_only_runs_down_the_volcano() {
+    // Weather alone, the way the preview's --weather runs it, until an
+    // eruption has come and gone.
+    let mut sim = Sim::new(3, EPOCH);
+    let w = sim.world_mut();
+    w.env.next_eruption = w.time + 60.0;
+    let (mut last, mut furthest, mut ended) = (0.0f32, 0.0f32, false);
+    for _ in 0..4 * 3600 {
+        w.time += 1.0;
+        w.ground.refresh(w.env.river);
+        vesper_sim::world::weather(w, 1.0);
+        w.history.clear();
+        let e = &w.env;
+        if e.eruption > 0.0 {
+            assert!(e.lava >= last, "lava ran back up the cone: {last} -> {}", e.lava);
+        } else if furthest > 0.0 {
+            ended = true;
+            break;
+        }
+        last = e.lava;
+        furthest = furthest.max(e.lava);
+    }
+    assert!(ended && furthest > 0.1, "the eruption ran lava {furthest} and ended: {ended}");
+}

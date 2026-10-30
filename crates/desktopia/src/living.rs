@@ -32,8 +32,8 @@ pub struct Living {
     born: Instant,
     segs: Vec<Seg>,
     membranes: Vec<Membrane>,
-    /// How far the high wind has carried the clouds, and when it was last moved.
-    cloud: Option<(f32, Instant)>,
+    /// How far the winds and the river have carried what they move, and when.
+    drift: Option<Drift>,
     /// Where each floating mat was in the older snapshot, and that snapshot's tick.
     mats_before: (u64, HashMap<u64, [f32; 3]>),
 }
@@ -119,7 +119,7 @@ impl Living {
             born: Instant::now(),
             segs: Vec::new(),
             membranes: Vec::new(),
-            cloud: None,
+            drift: None,
             mats_before: (u64::MAX, HashMap::new()),
         }
     }
@@ -145,11 +145,24 @@ impl Living {
         view.wind_low = e.wind_low;
         view.wind_high = e.wind_high;
         view.sky = vesper_render::Sky::from_rows(&e.sky);
+        // Integrated here rather than drawn as time * speed, which would run
+        // them backwards whenever the wind dropped or the flood went down.
         let now = Instant::now();
-        let (drift, last) = self.cloud.unwrap_or((view.cloud_drift, now));
-        let drift = (drift + e.wind_high * 0.5 * (now - last).as_secs_f32().min(1.0)) % 4096.0;
-        self.cloud = Some((drift, now));
-        view.cloud_drift = drift;
+        let d = self.drift.get_or_insert(Drift {
+            cloud: view.cloud_drift,
+            ground: view.ground_drift,
+            flow: view.river_flow,
+            last: now,
+        });
+        let dt = (now - d.last).as_secs_f32().min(1.0);
+        d.cloud = (d.cloud + e.wind_high * 0.5 * dt) % 4096.0;
+        d.ground = (d.ground + e.wind_low * dt) % 4096.0;
+        d.flow =
+            (d.flow + vesper_render::rhythm::river_speed(e.river.flood) * dt) % vesper_render::rhythm::TIME_WRAP as f32;
+        d.last = now;
+        view.cloud_drift = d.cloud;
+        view.ground_drift = d.ground;
+        view.river_flow = d.flow;
         view
     }
 
@@ -320,6 +333,14 @@ impl Living {
     pub fn stop(self) {
         self.runner.stop();
     }
+}
+
+/// What the host moves along by integrating a speed, see [`Living::world_view`].
+struct Drift {
+    cloud: f32,
+    ground: f32,
+    flow: f32,
+    last: Instant,
 }
 
 /// Writes the world's history down for the chronicle window, and draws its

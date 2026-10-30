@@ -84,6 +84,12 @@ pub struct WorldView {
     /// How far the high wind has carried the cloud deck, world units. The
     /// host integrates `wind_high` into this; it may wrap like `time`.
     pub cloud_drift: f32,
+    /// How far the ground wind has carried what it drags along (fog wisps,
+    /// dust), world units, integrated by the host from `wind_low`.
+    pub ground_drift: f32,
+    /// How far the river's current has carried its ripples, integrated by
+    /// the host from [`rhythm::river_speed`]. Wraps like `time`.
+    pub river_flow: f32,
     pub exposure: f32,
     /// The weather column by column, as the simulation has it.
     pub sky: Sky,
@@ -132,7 +138,7 @@ impl WorldView {
             storm_x: w.storm_x,
             storm: w.storm,
             volcano,
-            lava: rhythm::lava(volcano),
+            lava: rhythm::lava(unix_secs),
             ash: rhythm::ash(unix_secs),
             river_phase: 0.0,
             river_flood: 0.0,
@@ -143,6 +149,8 @@ impl WorldView {
             wind_low: rhythm::CALM_LOW * (1.0 + w.storm),
             wind_high: rhythm::CALM_HIGH * (1.0 + w.storm),
             cloud_drift: time * rhythm::CALM_HIGH * 0.5,
+            ground_drift: time * rhythm::CALM_LOW,
+            river_flow: time * rhythm::river_speed(0.0),
             exposure,
             sky: rhythm::sky(&w),
         }
@@ -179,6 +187,8 @@ struct Params {
     cloud_drift: f32,
     /// Where in the pixel this bake pass samples, in pixels from its centre.
     bake_jitter: [f32; 2],
+    ground_drift: f32,
+    river_flow: f32,
 }
 
 pub struct Renderer {
@@ -865,6 +875,8 @@ fn params(output: &Output, world: &WorldView) -> Params {
         wind_high: world.wind_high,
         cloud_drift: world.cloud_drift,
         bake_jitter: output.bake_jitter(),
+        ground_drift: world.ground_drift,
+        river_flow: world.river_flow,
     }
 }
 
@@ -1040,6 +1052,14 @@ pub mod rhythm {
         (secs % TIME_WRAP) as f32
     }
 
+    /// How fast the river's ripples drift for a flood level, per second.
+    /// Anything that moves at a speed that changes has to be integrated like
+    /// this rather than drawn as `time * speed`, which runs backwards
+    /// whenever the speed falls.
+    pub fn river_speed(flood: f32) -> f32 {
+        0.6 + 0.6 * flood
+    }
+
     /// Calm-air wind near the ground and up high, world units per second;
     /// storms double both. Matches the simulation's own.
     pub const CALM_LOW: f32 = -0.004;
@@ -1113,24 +1133,41 @@ pub mod rhythm {
     /// The volcano's mood. Long quiet spells with a steam plume, a rumbling
     /// build-up as the crater glows, then an eruption that dies back slowly.
     pub fn volcano(secs: f64) -> f32 {
+        mood(secs).0
+    }
+
+    /// The volcano's mood, and how many seconds ago the eruption began if
+    /// this cycle has erupted.
+    fn mood(secs: f64) -> (f32, Option<f64>) {
         // Cycles of 2.5 to 4 hours; about two in three end in an eruption.
         const CYCLE: f64 = 3.0 * 3600.0;
         let slot = (secs / CYCLE).floor();
         let local = (secs - slot * CYCLE) / CYCLE;
         if hash(slot * 3.7 + 1.0) < 0.35 {
             // A cycle that only rumbles.
-            return (0.25 * smooth(0.6, 0.75, local) * smooth(0.95, 0.85, local)) as f32;
+            return ((0.25 * smooth(0.6, 0.75, local) * smooth(0.95, 0.85, local)) as f32, None);
         }
         let start = 0.55 + 0.25 * hash(slot + 9.1);
         let rumble = smooth(start - 0.15, start, local) * (1.0 - smooth(start, start + 0.1, local)) * 0.3;
         // Erupts within a minute, then dies back over about half an hour.
         let erupt = smooth(start, start + 0.005, local) * (-(local - start).max(0.0) * 10.0).exp();
-        rumble.max(erupt) as f32
+        let since = (local >= start).then(|| (local - start) * CYCLE);
+        (rumble.max(erupt) as f32, since)
     }
 
-    /// How far lava has run from the crater for a volcano mood.
-    pub fn lava(volcano: f32) -> f32 {
-        // Rumbling only wells up in the crater; an eruption sends it down the cone.
+    /// How far lava has run from the crater at `secs`. It only ever runs
+    /// down: rumbling wells it up in the crater, an eruption sends it down
+    /// the cone, and there it stays while it cools.
+    pub fn lava(secs: f64) -> f32 {
+        match mood(secs) {
+            (v, Some(since)) if v >= 0.03 => (0.012 + 0.002 * since).min(0.32) as f32,
+            (v, _) => 0.04 * v,
+        }
+    }
+
+    /// How far lava has run once an eruption of mood `volcano` is under way,
+    /// for stills that set the mood by hand.
+    pub fn lava_for(volcano: f32) -> f32 {
         let v = volcano as f64;
         (0.04 * v + 0.28 * v * smooth(0.35, 0.6, v)) as f32
     }
@@ -1252,13 +1289,25 @@ pub mod rhythm {
 
         #[test]
         fn lava_and_ash_follow_the_volcano() {
-            assert_eq!(lava(0.0), 0.0);
-            assert!(lava(1.0) > 0.25 && lava(0.3) < 0.03);
+            assert_eq!(lava_for(0.0), 0.0);
+            assert!(lava_for(1.0) > 0.25 && lava_for(0.3) < 0.03);
             let t0 = 1_800_000_000.0;
+            let mut ran = false;
+            let mut last = 0.0;
             for k in 0..(86400 / 60) {
-                let a = ash(t0 + k as f64 * 60.0);
+                let t = t0 + k as f64 * 60.0;
+                let a = ash(t);
                 assert!((0.0..=0.8).contains(&a));
+                // Once lava is out of the crater it only runs down the cone
+                // until it has cooled.
+                let l = lava(t);
+                if last > 0.02 && volcano(t) >= 0.03 {
+                    assert!(l >= last, "lava ran back up at {t}: {last} -> {l}");
+                }
+                ran |= l > 0.25;
+                last = l;
             }
+            assert!(ran, "no eruption sent lava down the cone in a day");
         }
     }
 }

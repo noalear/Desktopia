@@ -42,7 +42,7 @@ fn dust_air(p: vec2f) -> vec4f {
     // Lumpy, cauliflower billows along the top.
     let lumps = fbm(vec2f(p.x * 22.0 - P.time * 0.002, p.y * 10.0 + P.time * 0.006), 4);
     let top = 0.17 + (0.08 + 0.26 * P.dust) * sqrt(along) + 0.07 * (billow - 0.5) + 0.035 * (lumps - 0.5);
-    let churn = fbm(vec2f(p.x * 9.0 + P.time * P.wind_low * 3.0, p.y * 12.0 - P.time * 0.012), 4);
+    let churn = fbm(vec2f(p.x * 9.0 + P.ground_drift * 3.0, p.y * 12.0 - P.time * 0.012), 4);
     let dens = smoothstep(top, top - 0.035, p.y) * along * P.dust * (0.55 + 0.7 * churn);
     // The sun catches the upper billows; the base is dark and thick.
     let lit = smoothstep(top - 0.16, top, p.y) * daylight(p.x);
@@ -209,7 +209,7 @@ fn fog_air(p: vec2f) -> vec4f {
     } else {
         depth = smoothstep(gt + 0.03 + 0.12 * fog, gt - 0.01, p.y);
     }
-    let wisp = fbm(vec2f(p.x * 5.0 + P.time * P.wind_low * 2.0, p.y * 28.0 - P.time * 0.002), 4);
+    let wisp = fbm(vec2f(p.x * 5.0 + P.ground_drift * 2.0, p.y * 28.0 - P.time * 0.002), 4);
     let dens = fog * depth * (0.45 + 0.8 * wisp);
     let col = sky_base(vec2f(p.x, 0.42)) * 0.85 + sun_glow(p) * 0.4 + vec3f(0.01, 0.012, 0.022);
     return vec4f(col, clamp(dens * 1.2, 0.0, 0.92));
@@ -224,10 +224,11 @@ fn dust_haze(p: vec2f) -> vec4f {
     }
     let gust = sky_more(p.x).z;
     let low = smoothstep(0.7, 0.15, p.y);
-    let churn = fbm(vec2f(p.x * 7.0 + P.time * P.wind_low * (3.0 + 2.0 * gust), p.y * 16.0 - P.time * 0.01), 4);
+    let churn = fbm(vec2f(p.x * 7.0 + P.ground_drift * 4.0, p.y * 16.0 - P.time * 0.01), 4);
     let day = daylight(p.x);
     let col = mix(vec3f(0.12, 0.05, 0.02), vec3f(1.3, 0.6, 0.22), day) * (0.6 + 0.6 * churn) + sun_glow(p) * 0.3;
-    return vec4f(col, clamp(dust * low * (0.35 + 0.7 * churn) * 0.8, 0.0, 0.85));
+    // Gusts lift more of it.
+    return vec4f(col, clamp(dust * low * (0.35 + 0.7 * churn) * (0.7 + 0.15 * gust), 0.0, 0.85));
 }
 
 // Fine ash hanging everywhere downwind after an eruption, and the veil it
