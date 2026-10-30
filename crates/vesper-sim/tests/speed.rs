@@ -18,14 +18,21 @@ fn helpers_change_nothing() {
     assert!(save::to_bytes(&one) == save::to_bytes(&many), "the worlds parted");
 }
 
+/// An empty world ticks in well under a millisecond even in a debug build on
+/// a busy runner, so only a runner that waits between ticks could fall short.
 #[test]
 fn flat_out_outruns_real_time() {
-    let runner = Runner::start(Sim::new(3, 1_800_000_000.0), Options::default());
-    runner.set_helpers(2);
+    let mut sim = Sim::new(3, 1_800_000_000.0);
+    let w = sim.world_mut();
+    w.creatures.clear();
+    w.eggs.clear();
+    w.remains.clear();
+    w.plants.clear();
+    let runner = Runner::start(sim, Options::default());
     runner.set_speed(FLAT_OUT);
     std::thread::sleep(Duration::from_millis(3500));
     let (time, _) = runner.status();
     let rate = runner.rate();
     runner.stop();
-    assert!(rate > 2.0 && time > 7.0, "flat out ran at only {rate:.1}x ({time:.0} s in 3.5 s)");
+    assert!(rate > 5.0 && time > 17.5, "flat out ran at only {rate:.1}x ({time:.0} s in 3.5 s)");
 }
