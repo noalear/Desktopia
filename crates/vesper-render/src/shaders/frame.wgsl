@@ -267,7 +267,9 @@ fn curtains(p: vec2f, base: vec3f, floor_y: f32) -> vec3f {
 
 // The volcano's plume follows its mood: a thin steam wisp when quiet, a
 // darkening column as it rumbles, a thick ash tower with a lava fountain
-// when it erupts.
+// when it erupts. The tower climbs out of the crater as the eruption gets
+// going (the lava's run stands in for how long ago that was) and sinks back
+// as it wanes, but what is in it always billows upward.
 fn smoke(p: vec2f, base: vec3f) -> vec3f {
     let v = P.volcano;
     let rise = p.y - VOLCANO_TOP;
@@ -275,19 +277,22 @@ fn smoke(p: vec2f, base: vec3f) -> vec3f {
         return base;
     }
     let r = max(rise, 0.0);
-    let height = mix(0.22, 0.62, smoothstep(0.0, 0.8, v));
-    let xc = VOLCANO_X + pow(r, 1.6) * mix(1.3, 0.7, v);
-    let w = mix(0.008, 0.03, v) + r * mix(0.18, 0.4, v);
+    let hv = min(v, 0.3 + 0.7 * smoothstep(0.012, 0.15, P.lava));
+    let height = mix(0.22, 0.62, smoothstep(0.0, 0.8, hv));
+    let xc = VOLCANO_X + pow(r, 1.6) * mix(1.3, 0.7, hv);
+    let w = mix(0.008, 0.03, hv) + r * mix(0.18, 0.4, hv);
     let across = (p.x - xc) / w;
-    let n = fbm(vec2f(across * 1.3, p.y * 9.0 - P.time * mix(0.02, 0.06, v)), 5);
-    let dens = smoothstep(1.0, 0.0, abs(across)) * smoothstep(mix(0.45, 0.25, v), 0.65, n) * smoothstep(height, height * 0.4, r)
+    // Rising at one steady rate: scrolling at a rate that follows the mood
+    // would run the billows backwards whenever the mood eased.
+    let n = fbm(vec2f(across * 1.3, p.y * 9.0 - P.time * 0.045), 5);
+    let dens = smoothstep(1.0, 0.0, abs(across)) * smoothstep(mix(0.45, 0.25, hv), 0.65, n) * smoothstep(height, height * 0.4, r)
         * smoothstep(-0.01, 0.01, rise);
     let t = nightness(p.x);
     let steam = mix(vec3f(0.55, 0.32, 0.3), vec3f(0.12, 0.05, 0.12), t) * (0.5 + 0.5 * n);
     let ash = vec3f(0.035, 0.028, 0.03) * (0.6 + 0.8 * n);
     // Only the foot of the plume is lit by the crater.
     let glow = vec3f(3.0, 0.8, 0.15) * exp(-r * mix(70.0, 35.0, v)) * (0.08 + 1.2 * v);
-    var col = mix(base, mix(steam, ash, smoothstep(0.1, 0.5, v)) + glow, dens * mix(0.45, 0.95, smoothstep(0.0, 0.5, v)));
+    var col = mix(base, mix(steam, ash, smoothstep(0.1, 0.5, hv)) + glow, dens * mix(0.45, 0.95, smoothstep(0.0, 0.5, hv)));
     // Lava fountain: incandescent spray thrown up from the crater.
     if (v > 0.5 && r < 0.1) {
         let q = vec2f((p.x - VOLCANO_X) * 70.0, r * 40.0 - P.time * 3.0);
@@ -432,7 +437,7 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         // of the land and sky its tilted surface faces, sun glitter included.
         let w = plain_point(p);
         let calm = 1.0 - 0.6 * smoothstep(0.6, 0.3, p.x); // shallow, slow water in the pan
-        let flow = P.time * (0.6 + 0.6 * P.river_flood);
+        let flow = P.river_flow;
         let swell = noised(vec2f(w.x * 0.3 + flow * 0.35, w.y * 0.8));
         let chop = noised(vec2f(w.x * 1.4 + flow * 1.2, w.y * 2.6 + P.time * 0.15) + 7.0);
         let streak = noised(vec2f(w.x * 0.12 + flow * 0.2, w.y * 3.5) + 3.0);
@@ -478,12 +483,15 @@ fn fs_frame(in: VOut) -> @location(0) vec4f {
         let threads = smoothstep(0.55, 0.8, fbm(vec2f(w.x * 0.25 + flow * 0.3, w.y * 2.0) + 11.0, 4));
         col += vec3f(0.03, 0.45, 0.7) * (threads * 0.18 + 0.025) * t * t * cover * (0.5 + 0.5 * smoothstep(2.4, 3.2, p.x));
     } else if (is_mat(m, 0.25)) {
-        // Flows glow as far as the lava has run, brightest at the front,
-        // cooling as the eruption dies and crusting over when it is quiet.
+        // Flows glow as far as the lava has run, brightest at the front
+        // while it is still pushing on, then cooling where they stopped as
+        // the eruption dies, until only a few cracks glow and then none.
         let run = (m - 0.19) / 0.12 * 0.45;
         let reach = smoothstep(P.lava + 0.01, P.lava - 0.025, run) * smoothstep(0.0, 0.03, P.lava);
-        let front = exp(-pow((run - P.lava) / 0.012, 2.0)) * reach;
-        let heat = reach * (0.45 + 0.55 * smoothstep(0.0, 0.4, P.volcano)) + front * 0.8;
+        let front = exp(-pow((run - P.lava) / 0.012, 2.0)) * reach * smoothstep(0.35, 0.7, P.volcano);
+        let hot = smoothstep(0.03, 0.4, P.volcano);
+        let cracks = smoothstep(0.55, 0.8, fbm(p * vec2f(260.0, 520.0), 3)) * smoothstep(0.03, 0.1, P.volcano);
+        let heat = reach * (hot + 0.3 * cracks * (1.0 - hot)) + front * 0.8;
         col += vec3f(9.0, 2.2, 0.3) * heat * (0.75 + 0.35 * sin(P.time * 0.6 + p.y * 90.0 - p.x * 30.0));
     } else if (is_mat(m, 0.75)) {
         if (m > 0.77) {

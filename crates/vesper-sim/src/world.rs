@@ -188,7 +188,8 @@ impl Env {
     pub fn temperature(&self, x: f32, alt: f32) -> f32 {
         let vents = terrain::vent_heat(x) * 0.9 * (1.0 - (alt / 0.15).min(1.0));
         let lava = if self.lava > 0.0 && (x - terrain::VOLCANO_X).abs() < self.lava {
-            2.0 * (1.0 - alt * 4.0).max(0.0)
+            // Cooling with the eruption that feeds it.
+            2.0 * (self.eruption / 0.3).min(1.0) * (1.0 - alt * 4.0).max(0.0)
         } else {
             0.0
         };
@@ -217,7 +218,7 @@ impl Env {
     }
 
     pub fn lava_at(&self, x: f32) -> bool {
-        self.eruption > 0.05 && (x - terrain::VOLCANO_X).abs() < self.lava
+        self.eruption > 0.1 && (x - terrain::VOLCANO_X).abs() < self.lava
     }
 }
 
@@ -646,14 +647,19 @@ pub fn weather(w: &mut World, dt: f32) {
         erupted = Some(strength);
     }
     if e.eruption > 0.0 {
+        // Lava only ever runs downhill: the front pushes on while the vent
+        // still has the strength to feed it, then stands where it stopped and
+        // cools as the eruption dies (the renderer dims it with `eruption`).
         let reach = 0.06 + 0.3 * e.eruption;
-        e.lava = (e.lava + 0.002 * dt).min(reach);
+        if e.lava < reach {
+            e.lava = (e.lava + 0.002 * e.eruption.sqrt() * dt).min(reach);
+        }
         e.eruption *= (-dt / 900.0).exp();
         if e.eruption < 0.03 {
+            // Cold and dark by now, so it can go without being seen to.
             e.eruption = 0.0;
+            e.lava = 0.0;
         }
-    } else {
-        e.lava = (e.lava - 0.0005 * dt).max(0.0);
     }
     let plume = e.atmos.ash.iter().fold(0.0, |m: f32, &v| m.max(v));
     e.ash = (plume * 0.8 + e.atmos.veil * 0.6).min(0.9);

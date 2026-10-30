@@ -422,7 +422,7 @@ fn pin(args: &Args, mut w: WorldView) -> WorldView {
     }
     if let Some(v) = args.volcano {
         w.volcano = v;
-        w.lava = vesper_render::rhythm::lava(v);
+        w.lava = vesper_render::rhythm::lava_for(v);
     }
     if let Some(r) = args.lava {
         w.lava = r;
