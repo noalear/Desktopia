@@ -326,6 +326,13 @@ pub fn creature_traits(g: &Genome) -> Traits {
             g.selfing * 0.2
         },
         picky: 1.0 - g.breadth,
+        features: p
+            .kit
+            .list()
+            .into_iter()
+            .filter(|&o| o.notable() && p.organ(o) > 0.015)
+            .map(|o| o.name().to_string())
+            .collect(),
     }
 }
 
@@ -359,5 +366,43 @@ pub fn plant_traits(g: &PlantGenome) -> Traits {
         inbreeding: 1.0 - g.vigor,
         selfing: g.selfing,
         picky: 0.0,
+        features: plant_features(g),
     }
+}
+
+/// The parts a plant's genes give it, as words, most prominent first.
+fn plant_features(g: &PlantGenome) -> Vec<String> {
+    let leaves = if g.leaf_split > 0.5 {
+        "feathery fronds"
+    } else if g.tough > 0.6 && g.leaf_width >= 0.3 {
+        "leathery scale-leaves"
+    } else if g.leaf_width < 0.3 {
+        "needles"
+    } else if g.leaf_width > 0.7 {
+        "broad pads"
+    } else {
+        "blade leaves"
+    };
+    let mut v: Vec<(f32, &str)> = vec![(0.5, leaves)];
+    let mut has = |on: bool, weight: f32, word: &'static str| {
+        if on {
+            v.push((weight, word));
+        }
+    };
+    has(g.spines > 0.5, g.spines, "thorns");
+    has(g.trap > 0.3, g.trap + 0.3, "snapping traps");
+    has(g.nectar > 0.3, g.nectar, "flowers");
+    has(g.fruit > 0.25, g.fruit, "fruit");
+    has(g.wind > 0.6, g.wind * 0.5, "seed plumes");
+    has(g.floats(), 0.9, "gas bladders");
+    has(!g.floats() && g.root > 0.6, g.root * 0.4, "prop roots");
+    has(g.knots > 0.35, g.knots * 0.6, "water-filled knots");
+    has(g.tendrils > 0.3, g.tendrils * 0.6, "climbing tendrils");
+    has(g.rosette > 0.2, g.rosette * 0.5, "a basal rosette");
+    has(g.tough > 0.6, g.tough * 0.5, "tough leaves");
+    has(g.toxin > 0.5, g.toxin * 0.6, "poison");
+    has(g.glow > 0.4, g.glow * 0.6, "glowing tips");
+    has(g.stem_segments >= 5, 0.4, "a tall trunk");
+    v.sort_by(|a, b| b.0.total_cmp(&a.0));
+    v.into_iter().map(|(_, w)| w.to_string()).collect()
 }

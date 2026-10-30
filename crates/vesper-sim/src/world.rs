@@ -461,7 +461,7 @@ impl World {
         m += self.soil.iter().map(|&v| v as f64).sum::<f64>();
         m += self.air.iter().map(|&v| v as f64).sum::<f64>();
         m += self.creatures.iter().map(|c| c.matter as f64).sum::<f64>();
-        m += self.plants.iter().map(|p| (p.matter + p.fruit + p.seeds) as f64).sum::<f64>();
+        m += self.plants.iter().map(|p| (p.matter + p.fruit + p.seeds + p.nectar) as f64).sum::<f64>();
         m += self.remains.iter().map(|r| r.matter as f64).sum::<f64>();
         m += self.eggs.iter().map(|e| e.matter as f64).sum::<f64>();
         m += self.seedbank.iter().map(|d| d.matter as f64).sum::<f64>();

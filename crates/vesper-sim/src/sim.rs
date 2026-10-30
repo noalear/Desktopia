@@ -88,10 +88,12 @@ impl Sim {
         let w = &mut self.w;
         ecology::rebuild_plant_grid(w);
         let kinds = [
-            (Seedling::Fan, 360, 0.5, 2.7),
-            (Seedling::Thicket, 220, 0.8, 2.9),
+            (Seedling::Fan, 300, 0.5, 2.7),
+            (Seedling::Thicket, 200, 0.8, 2.9),
             (Seedling::VentCrust, 150, 0.0, 0.0),
             (Seedling::Mat, 90, 0.8, 2.6),
+            (Seedling::Spire, 140, 1.6, 2.8),
+            (Seedling::Cushion, 160, 0.3, 1.3),
         ];
         for (kind, n, lo, hi) in kinds {
             let g = Arc::new(PlantGenome::founder(kind, &mut w.rng));
@@ -134,7 +136,13 @@ impl Sim {
         // Several lineages of each kind, each drifted apart from the others
         // and settled in its own stretch of land, so the world opens with a
         // spread of distinct species rather than one of each.
-        let founders = [(Founder::Drifter, 3), (Founder::Grazer, 3), (Founder::Swimmer, 2), (Founder::Crawler, 2)];
+        let founders = [
+            (Founder::Drifter, 2),
+            (Founder::Grazer, 3),
+            (Founder::Swimmer, 2),
+            (Founder::Crawler, 2),
+            (Founder::Stalker, 2),
+        ];
         for (kind, lineages) in founders {
             for _ in 0..lineages {
                 let rounds = w.rng.below(4) as u32;
@@ -415,10 +423,11 @@ fn margin(w: &World, g: &Genome, x: f32) -> f32 {
     margin_at(w, g, x, 0.0)
 }
 
-/// The same, at altitude `alt`.
+/// The same, at altitude `alt`, for the body these genes grow.
 fn margin_at(w: &World, g: &Genome, x: f32, alt: f32) -> f32 {
-    let cold = -(0.35 + g.cold_tolerance * 0.8);
-    let hot = 0.35 + g.heat_tolerance * 0.8;
+    let body = crate::body::Body::develop(g);
+    let p = crate::body::Phenotype::read(&body, 1.0, 0);
+    let (cold, hot) = crate::creature::comfort(g, &p, 0.0);
     let t = w.env.temperature(x, alt);
     (hot - t).min(t - cold)
 }
@@ -447,7 +456,7 @@ fn sweep_strains(w: &mut World) {
 /// it can stand the warmth, rather than having to cross the day or night
 /// side to get there.
 fn renew(w: &mut World) {
-    let kinds = [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler];
+    let kinds = Founder::ALL;
     let total = w.creatures.len() + w.eggs.len();
     if total < 30 && w.rng.chance(0.2) {
         let kind = *w.rng.pick(&kinds);
@@ -461,7 +470,9 @@ fn renew(w: &mut World) {
         kinds_alive.sort_unstable();
         kinds_alive.dedup();
         if kinds_alive.len() < 4 {
-            let kind = *w.rng.pick(&kinds);
+            // A world without hunters draws them in.
+            let hunters = w.creatures.iter().any(|c| c.genome.diet > 0.5);
+            let kind = if !hunters && w.rng.chance(0.5) { Founder::Stalker } else { *w.rng.pick(&kinds) };
             let rounds = w.rng.below(4) as u32;
             let g = Genome::founder_diverged(kind, rounds, &mut w.rng);
             let home = settle(w, &g);
@@ -469,7 +480,8 @@ fn renew(w: &mut World) {
         }
     }
     if w.plants.len() < 30 && w.rng.chance(0.2) {
-        let kinds = [Seedling::Fan, Seedling::VentCrust, Seedling::Thicket, Seedling::Mat];
+        let kinds =
+            [Seedling::Fan, Seedling::VentCrust, Seedling::Thicket, Seedling::Mat, Seedling::Spire, Seedling::Cushion];
         let g = Arc::new(PlantGenome::founder(*w.rng.pick(&kinds), &mut w.rng));
         let species = w.species.found_plant(&g, w.time, &mut w.history);
         for _ in 0..20 {

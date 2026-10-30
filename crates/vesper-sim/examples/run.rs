@@ -133,6 +133,9 @@ fn main() {
             steps = 0;
         }
     }
+    if let Some(path) = std::env::var_os("SAVE") {
+        vesper_sim::save::save(&sim, std::path::Path::new(&path)).expect("save");
+    }
     println!("\nfacts:");
     for (k, v) in facts {
         println!("  {k}: {v}");

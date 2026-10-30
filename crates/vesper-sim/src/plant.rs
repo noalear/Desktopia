@@ -99,13 +99,18 @@ pub struct PlantGenome {
     pub tendrils: f32,
     /// A ring of leaves spread flat at the base.
     pub rosette: f32,
+    /// How tough and leathery its leaves are, 0 soft .. 1 hard with grit
+    /// and fibre: they wear down teeth and take long to digest, so grazers
+    /// without grinding teeth leave them be, but they catch less light.
+    #[serde(default)]
+    pub tough: f32,
 }
 
 /// Quantitative plant loci, in chromosome order.
-const PLANT_LOCI: usize = 53;
-const PLANT_CHROMS: [usize; 5] = [0, 17, 27, 37, PLANT_LOCI];
+const PLANT_LOCI: usize = 54;
+const PLANT_CHROMS: [usize; 5] = [0, 17, 27, 38, PLANT_LOCI];
 /// Hue loci, which blend round the colour wheel.
-const PLANT_HUES: [usize; 2] = [37, 40];
+const PLANT_HUES: [usize; 2] = [38, 41];
 /// How far pollen carries on the wind, at the wind gene's full reach, and on animals.
 pub const POLLEN_WIND: f32 = 0.25;
 pub const POLLEN_ANIMAL: f32 = 0.6;
@@ -120,6 +125,10 @@ pub enum Seedling {
     Thicket,
     /// Floating mats on the wind.
     Mat,
+    /// Tall, slow, long-lived trees with tough leaves.
+    Spire,
+    /// Low spiny cushions that store water, for the hot dry day side.
+    Cushion,
 }
 
 impl PlantGenome {
@@ -180,6 +189,7 @@ impl PlantGenome {
             zigzag: rng.range(0.0, 0.5),
             tendrils: rng.range(0.0, 0.3),
             rosette: rng.range(0.0, 0.5),
+            tough: rng.range(0.0, 0.3),
         };
         match kind {
             Seedling::Fan => {
@@ -226,6 +236,41 @@ impl PlantGenome {
                 g.rosette = 0.0;
                 g.tendrils = 0.0;
             }
+            Seedling::Spire => {
+                g.adult_scale = rng.range(0.035, 0.05);
+                g.stem_segments = 5;
+                g.stem_length = 1.1;
+                g.stem_width = 0.16;
+                g.branches = 2;
+                g.branch_scale = 0.6;
+                g.leaf = 0.7;
+                g.leaves = 3;
+                g.tough = rng.range(0.5, 0.8);
+                g.lifespan = rng.range(6000.0, 9000.0);
+                g.growth = 0.75;
+                g.thirst = 0.5;
+                g.cold_tolerance = 0.6;
+                g.wind = 0.55;
+                g.rosette = 0.0;
+                g.leaf_width = rng.range(0.1, 0.5);
+            }
+            Seedling::Cushion => {
+                g.adult_scale = rng.range(0.012, 0.02);
+                g.stem_segments = 1;
+                g.stem_length = 0.5;
+                g.stem_width = 0.3;
+                g.branches = 3;
+                g.branch_angle = 1.3;
+                g.leaf = 0.5;
+                g.leaves = 2;
+                g.knots = rng.range(0.7, 0.95);
+                g.spines = rng.range(0.4, 0.7);
+                g.thirst = 0.1;
+                g.heat_tolerance = 0.85;
+                g.cold_tolerance = 0.2;
+                g.leaf_width = rng.range(0.05, 0.3);
+                g.tough = rng.range(0.3, 0.6);
+            }
         }
         for _ in 0..2 {
             g.mutate(rng);
@@ -262,8 +307,12 @@ impl PlantGenome {
     pub fn cross(&self, pollen: &Self, rng: &mut Rng) -> Self {
         let mut ovule = self.gamete(rng);
         let mut grain = pollen.gamete(rng);
-        ovule.mutate_haplotype(rng);
-        grain.mutate_haplotype(rng);
+        // Copying errors in every gene, not just the hidden ones: this is
+        // what lets a stand drift and be selected into something new.
+        for g in [&mut ovule, &mut grain] {
+            g.mutate_gamete(rng);
+            g.mutate_haplotype(rng);
+        }
         Self::express([ovule, grain], genetics::mother_line(&self.marker, rng))
     }
 
@@ -444,6 +493,7 @@ impl PlantGenome {
             self.induce,
             self.warn,
             self.listen,
+            self.tough,
             l[0],
             l[1],
             l[2],
@@ -505,6 +555,7 @@ impl PlantGenome {
             &mut self.induce,
             &mut self.warn,
             &mut self.listen,
+            &mut self.tough,
             l0,
             l1,
             l2,
@@ -524,8 +575,18 @@ impl PlantGenome {
         ]
     }
 
+    /// Copying errors made with each ovule or pollen grain: fewer than in
+    /// `mutate`, as each seed takes two gametes.
+    fn mutate_gamete(&mut self, rng: &mut Rng) {
+        self.mutate_at(rng, 0.6);
+    }
+
     pub fn mutate(&mut self, rng: &mut Rng) {
-        let r = self.mutation.clamp(0.3, 2.5);
+        self.mutate_at(rng, 1.0);
+    }
+
+    fn mutate_at(&mut self, rng: &mut Rng, k: f32) {
+        let r = self.mutation.clamp(0.3, 2.5) * k;
         let nudge = |v: &mut f32, sd: f32, lo: f32, hi: f32, rng: &mut Rng| {
             if rng.chance(0.15 * r) {
                 *v = (*v + genetics::effect(rng) * sd).clamp(lo, hi);
@@ -568,6 +629,7 @@ impl PlantGenome {
         nudge(&mut self.zigzag, 0.05, 0.0, 1.0, rng);
         nudge(&mut self.tendrils, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.rosette, 0.04, 0.0, 1.0, rng);
+        nudge(&mut self.tough, 0.04, 0.0, 1.0, rng);
         for (i, v) in self.look.iter_mut().enumerate() {
             if i == 0 || i == 3 {
                 if rng.chance(0.15 * r) {
@@ -742,6 +804,9 @@ impl PlantGenome {
         let bow = -angle.signum() * (0.2 + 0.5 * (1.0 - self.leaf_width));
         if self.leaf_split > 0.5 {
             b.shape(Form::Frond, bow, self.leaf_split);
+        } else if self.tough > 0.6 && self.leaf_width >= 0.3 {
+            // Hard, leathery leaves grow in overlapping scales.
+            b.shape(Form::Plates, bow * 0.5, self.tough);
         } else if self.leaf_width < 0.3 {
             b.shape(Form::Tuft, bow, 1.0 - self.leaf_width);
         } else {
@@ -772,6 +837,7 @@ impl PlantGenome {
             (self.knots, o.knots),
             (self.tendrils * 0.5, o.tendrils * 0.5),
             (self.rosette * 0.5, o.rosette * 0.5),
+            (self.tough, o.tough),
         ] {
             d += (a - b).abs() * 2.0;
         }
@@ -895,6 +961,13 @@ pub struct Plant {
     pub burn: f32,
     #[serde(default)]
     pub coat: f32,
+    /// Nectar standing in its flowers, matter.
+    #[serde(default)]
+    pub nectar: f32,
+    /// Seconds animals have lately spent drinking at its flowers, fading:
+    /// the pollen they carry in and off with them.
+    #[serde(default)]
+    pub visits: f32,
 }
 
 impl Plant {

@@ -616,6 +616,13 @@ pub enum Founder {
     Swimmer,
     /// Slow crawling detritus feeder.
     Crawler,
+    /// Long-legged hunter with eyes, fangs and talons.
+    Stalker,
+}
+
+impl Founder {
+    pub const ALL: [Founder; 5] =
+        [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler, Founder::Stalker];
 }
 
 impl Genome {
@@ -663,9 +670,11 @@ impl Genome {
                         0,
                         vec![link(1, 0.0, 1.0, 0.6, false), drive(link(2, 2.3, 0.6, 0.7, true), 0.5, 0.0, 0.0)],
                     ),
-                    part(Gut, 0.8, 0.6, 0, vec![link(3, 0.3, 1.0, 0.5, false)]),
+                    part(Gut, 0.8, 0.6, 0, vec![link(3, 0.3, 1.0, 0.5, false), link(4, -0.5, 0.9, 0.45, false)]),
                     part(LightFilm, 1.2, 0.2, 0, vec![]),
                     part(Sense, 0.5, 0.4, 0, vec![]),
+                    // A sieve that strains the drifting specks.
+                    part(Mouth, 0.5, 0.3, 0, vec![]),
                 ],
                 0.0045,
                 0.05,
@@ -685,14 +694,40 @@ impl Genome {
                             link(3, 3.1, 0.0, 0.7, false),
                         ],
                     ),
-                    part(Mouth, 0.6, 0.5, 0, vec![link(4, 0.6, 0.3, 0.6, false)]),
+                    part(Mouth, 0.6, 0.5, 0, vec![link(4, 0.6, 0.3, 0.6, false), link(5, 1.4, 0.1, 0.5, false)]),
                     part(Muscle, 1.0, 0.2, 1, vec![drive(link(2, 0.85, 1.0, 0.8, false), 0.7, 0.26, 0.5)]),
                     part(Gut, 0.9, 0.7, 0, vec![]),
                     part(Sense, 0.5, 0.4, 0, vec![]),
+                    // Ears or feelers on the head.
+                    part(Sense, 0.4, 0.3, 0, vec![]),
                 ],
                 0.009,
                 0.15,
                 8,
+            ),
+            Founder::Stalker => (
+                vec![
+                    part(
+                        Frame,
+                        1.3,
+                        0.38,
+                        0,
+                        vec![
+                            link(1, 0.15, 1.0, 0.5, false),
+                            drive(link(2, -1.7, 0.25, 0.8, true), 1.2, 0.83, 0.14),
+                            drive(link(2, -1.25, 0.8, 0.8, true), 0.5, 0.35, 0.5),
+                            link(3, 3.1, 0.0, 0.6, false),
+                        ],
+                    ),
+                    part(Mouth, 0.65, 0.45, 0, vec![link(4, 0.7, 0.4, 0.55, false), link(5, 1.5, 0.15, 0.5, false)]),
+                    part(Muscle, 1.05, 0.18, 1, vec![drive(link(2, 0.85, 1.0, 0.8, false), 0.7, 0.26, 0.5)]),
+                    part(Gut, 0.7, 0.55, 0, vec![]),
+                    part(Sense, 0.45, 0.45, 0, vec![]),
+                    part(Sense, 0.4, 0.3, 0, vec![]),
+                ],
+                0.0105,
+                0.85,
+                10,
             ),
             Founder::Swimmer => (
                 vec![
@@ -804,7 +839,7 @@ impl Genome {
         // Each plan's gait was tuned at about this rhythm.
         g.gait_hz = match kind {
             Founder::Drifter => g.gait_hz,
-            Founder::Grazer => rng.range(3.2, 4.0),
+            Founder::Grazer | Founder::Stalker => rng.range(3.2, 4.0),
             Founder::Crawler => rng.range(2.3, 2.9),
             Founder::Swimmer => rng.range(2.6, 3.2),
         };
@@ -820,11 +855,24 @@ impl Genome {
     /// A founding lineage that has drifted `rounds` further from its kind's
     /// plan, as if it had evolved apart somewhere else.
     pub fn founder_diverged(kind: Founder, rounds: u32, rng: &mut Rng) -> Self {
-        let mut g = Self::founder_plan(kind, rng);
-        g.dress(kind);
-        // Founders are already a little varied.
-        for _ in 0..3 + rounds {
-            g.mutate(rng, 1.0);
+        let plan = {
+            let mut g = Self::founder_plan(kind, rng);
+            g.dress(kind);
+            g
+        };
+        // Founders are already a little varied, but still have the organs
+        // their way of life needs: a mouth, or light film for a drifter.
+        let mut g = plan.clone();
+        for attempt in 0..8 {
+            g = plan.clone();
+            for _ in 0..3 + rounds {
+                g.mutate(rng, 1.0);
+            }
+            let body = crate::body::Body::develop(&g);
+            let needs = if matches!(kind, Founder::Drifter) { Tissue::LightFilm } else { Tissue::Mouth };
+            if attempt == 7 || body.segments.iter().any(|s| s.tissue == needs) {
+                break;
+            }
         }
         genetics::found(g, rng)
     }
@@ -837,30 +885,45 @@ impl Genome {
     fn dress(&mut self, kind: Founder) {
         let rng = &mut Rng::new(u64::from_le_bytes(self.marker) ^ 0xD8E5_5F0E);
         use Form::*;
+        // Per part, in plan order, the forms it may take: each makes a
+        // different organ of the part's tissue (see `organ::Organ::of`).
         let choices: &[&[Form]] = match kind {
-            Founder::Drifter => {
-                &[&[Tube, Bulb, Beads], &[Tube], &[Tube, Fan, Frond, Paddle], &[Tube, Bulb, Frond, Fork]]
-            }
+            Founder::Drifter => &[
+                &[Tube, Bulb, Beads],
+                &[Tube, Bulb, Frond],
+                &[Tube, Fan, Frond, Paddle],
+                &[Bulb, Bulb, Frond, Fork, Tuft],
+                &[Frond, Tuft],
+            ],
             Founder::Grazer => &[
-                &[Tube, Plates, Tuft],
-                &[Tube, Hook, Pincer],
+                &[Tube, Plates, Tuft, Tuft],
+                &[Plates, Plates, Pincer, Tube, Hook],
                 &[Tube, Tube, Beads, Hook],
-                &[Tube, Bulb, Tuft],
-                &[Tube, Bulb, Fork, Frond, Coil],
+                &[Tube, Bulb],
+                &[Bulb, Bulb, Fork, Frond],
+                &[Paddle, Paddle, Fan, Tuft, Fork],
             ],
             Founder::Swimmer => &[
                 &[Tube, Plates, Beads],
-                &[Tube, Beads, Plates],
-                &[Tube, Hook, Pincer, Coil],
-                &[Bulb, Frond, Fork, Tube],
-                &[Tube, Bulb, Frond],
+                &[Tube, Beads, Fan, Paddle],
+                &[Tube, Hook, Fork, Frond, Bulb, Coil],
+                &[Bulb, Frond, Fork, Paddle],
+                &[Frond, Tube, Bulb],
             ],
             Founder::Crawler => &[
-                &[Tube, Beads, Tuft],
-                &[Tube, Plates, Plates, Beads],
-                &[Tube, Pincer, Hook],
-                &[Tube, Hook, Beads],
-                &[Tube, Fork, Frond, Bulb, Coil],
+                &[Tube, Beads, Bulb],
+                &[Plates, Plates, Coil, Beads, Tube],
+                &[Beads, Paddle, Pincer, Plates],
+                &[Tube, Hook, Fork, Beads],
+                &[Fork, Frond, Tuft, Bulb, Coil],
+            ],
+            Founder::Stalker => &[
+                &[Tube, Tuft, Plates],
+                &[Fork, Fork, Pincer, Tube, Hook],
+                &[Hook, Hook, Tube],
+                &[Tube, Bulb],
+                &[Bulb, Bulb, Fork],
+                &[Paddle, Fork, Bulb, Tuft],
             ],
         };
         for (p, forms) in self.parts.iter_mut().zip(choices) {
