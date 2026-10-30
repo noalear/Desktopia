@@ -8,6 +8,7 @@ use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::history::{Behavior, CreatureId, DeathCause, Fact, SpeciesId, StrainId};
 use crate::mind::{self, Mind, PlaceKind, creature_bin};
+use crate::organ::Fare;
 use crate::physics::{self, Rig};
 use crate::strain::{Infection, Strain};
 use crate::think::season_quarter;
@@ -124,6 +125,7 @@ pub fn new_creature(
         toil: 0.0,
         climb: 0.0,
         exposure: Default::default(),
+        venom: 0.0,
         moments: Vec::new(),
     };
     c.refresh();
@@ -140,28 +142,44 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
     let sever_roll = w.rng.f32();
     let pick = w.rng.next_u64();
     let (att, def) = pair_mut(&mut w.creatures, ai, di);
-    let raw = att.abil.bite.max(att.abil.spines * att.abil.bite * 0.5 + 0.0001)
-        * dt
-        * drive.min(1.0)
-        * 4.0
-        * (1.0 + att.rank.max(0.0) * 0.3);
+    // Anything can ram; jaws, claws, horns and clubs are what wound.
+    let raw =
+        (att.abil.strike + att.abil.body_matter * 0.004) * dt * drive.min(1.0) * 4.0 * (1.0 + att.rank.max(0.0) * 0.3);
     let guard = if def.action == Action::Guarding { 0.25 } else { 0.0 };
-    let dmg = raw * (1.0 - (def.abil.armor + guard).min(0.9));
+    // A shelled creature pulls in when it is guarding or caught resting.
+    let shell =
+        if matches!(def.action, Action::Guarding | Action::Resting | Action::Held) { def.abil.shell } else { 0.0 };
+    let dmg = raw * (1.0 - (def.abil.armor + guard + shell).min(0.92));
     att.action = Action::Attacking;
     att.target = Some(def.id);
     // Fighting is hard work.
     att.energy -= att.abil.upkeep * 2.0 * dt;
-    // Spines hurt whatever bites them.
+    // Spines, quills and barbs hurt whatever bites them; a stinger stings back.
     let back = def.abil.spines * raw * 0.5 / att.matter.max(1e-4);
     att.health -= back;
     att.pain += back * 4.0;
+    if def.abil.sting > 0.0 {
+        let dose = def.abil.sting * 0.25 * dt * (1.0 - att.genome.detox * 0.8);
+        att.venom = (att.venom + dose).min(1.5);
+        att.pain += dose * 3.0;
+    }
     let frac = dmg / def.matter.max(1e-4);
-    // Anything with jaws bites back.
-    if def.pheno.has(Tissue::Mouth) && def.health > 0.3 {
-        let back = def.abil.bite * dt * 2.0 * (1.0 - att.abil.armor) / att.matter.max(1e-4);
+    // Anything that can strike strikes back.
+    if def.abil.strike > 0.0 && def.health > 0.3 {
+        let back = def.abil.strike * dt * 2.0 * (1.0 - att.abil.armor) / att.matter.max(1e-4);
         att.health -= back * 1.2;
         att.pain += back * 4.0;
         att.reward -= (back * 4.0).min(0.5);
+    }
+    // Fangs and stingers inject venom, which a body that can break down
+    // poison shrugs off; talons and claws hold on, and the struggle tires.
+    if att.abil.venom > 0.0 {
+        let dose = att.abil.venom * frac * 3.0 * (1.0 - def.genome.detox * 0.8);
+        def.venom = (def.venom + dose).min(1.5);
+        def.pain += dose * 2.0;
+    }
+    if att.abil.grip > 0.0 {
+        def.mind.mood.tired = (def.mind.mood.tired + att.abil.grip * frac * 3.0).min(1.0);
     }
     def.health -= frac * 1.6;
     def.pain += frac * 6.0;
@@ -180,8 +198,8 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         def.mind.remember(PlaceKind::Danger, def.pos[0], def.pos[1], 0.6, now, false);
     }
     // Hunters eat what they tear off.
-    let eats = att.pheno.has(Tissue::Mouth) && att.genome.diet > 0.15;
-    let eaten = if eats { (dmg * 0.8).min(def.matter * 0.5) } else { 0.0 };
+    let eats = att.genome.diet > 0.15;
+    let eaten = if eats { (dmg * 0.8).min(def.matter * 0.5).min(att.intake(Fare::Flesh, 1.0) * dt * 3.0) } else { 0.0 };
     def.matter -= eaten;
     let toxin = def.genome.toxin;
     let bin = creature_bin(&def.genome.look, def.length());
@@ -710,6 +728,15 @@ pub fn metabolism(w: &mut World, dt: f32) {
             }
         }
         c.pain *= (-dt * 0.5).exp();
+        // Venom burns on for a while, and wears off.
+        if c.venom > 0.0 {
+            c.health -= c.venom * 0.012 * dt;
+            c.pain += c.venom * 0.1 * dt;
+            c.venom *= (-dt / 40.0).exp();
+            if c.venom < 0.005 {
+                c.venom = 0.0;
+            }
+        }
         c.mind.fade((-dt * 0.4).exp());
         c.breed_wait -= dt;
         // Weather, worn in over time.
@@ -746,12 +773,16 @@ pub fn metabolism(w: &mut World, dt: f32) {
         }
         // Water: lost faster in heat, dry air and hard work; drunk from wet
         // ground and the river, from rain, and even from fog.
-        let loss = (0.25 + 0.75 * temp.max(0.0) + ex.heat) * (1.2 - humid) * (1.0 + c.effort * 0.5) / 1500.0;
+        // Scales and shells keep water in; gills, light film and thin
+        // limbs let it out.
+        let loss =
+            (0.25 + 0.75 * temp.max(0.0) + ex.heat) * (1.2 - humid) * (1.0 + c.effort * 0.5) * c.abil.leak / 1500.0;
         let drink = (damp_ground * 0.04 + in_water as u8 as f32 * 0.06 + rain * 0.02 + fog * 0.004) * dt;
         ex.thirst += loss * dt - drink;
         // Ash and dust breathed in, coughed out slowly.
         let air = (env.dust_at(x) + env.ash_at(x) * 1.3) * (1.0 - 0.6 * c.shelter.clamp(0.0, 1.0));
-        ex.grit += air * 0.003 * (1.0 + c.effort) * dt - 0.0006 * dt;
+        // Gills take in far more air than skin does, ash and all.
+        ex.grit += air * 0.003 * (1.0 + c.effort) * (1.0 + c.abil.breath) * dt - 0.0006 * dt;
         for v in [&mut ex.chill, &mut ex.heat, &mut ex.thirst, &mut ex.grit] {
             *v = v.clamp(0.0, 1.5);
         }
@@ -762,7 +793,8 @@ pub fn metabolism(w: &mut World, dt: f32) {
         let harms = [
             (ex.chill - 0.6).max(0.0),
             (ex.heat - 0.6).max(0.0),
-            (ex.thirst - 0.7).max(0.0) * 0.7,
+            // A hump holds water back for the dry days.
+            (ex.thirst - 0.7 - c.abil.water_store).max(0.0) * 0.7,
             (ex.grit - 0.6).max(0.0) * 0.5,
         ];
         let harm: f32 = harms.iter().sum();

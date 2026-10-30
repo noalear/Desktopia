@@ -110,6 +110,10 @@ pub struct Traits {
     /// 0..1 how narrowly its gut is tuned to one kind of plant (creatures).
     #[serde(default)]
     pub picky: f32,
+    /// The organs and parts it is built with, most prominent first, as
+    /// words: "eyes", "fangs", "fur", "thorns", "flowers".
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

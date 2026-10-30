@@ -90,7 +90,7 @@ fn jitter(i: usize, j: usize) -> f32 {
 
 /// Draws segment `s` (index `i`) as its form.
 pub(crate) fn draw(out: &mut Pose, s: &Segment, i: usize, p: &Piece) {
-    let mut pen = Pen { out, tissue: s.tissue, damage: p.damage, side: s.side, sway: p.sway };
+    let mut pen = Pen { out, tissue: shown(s, i, p), damage: p.damage, side: s.side, sway: p.sway };
     let (a, b) = (p.a, p.b);
     let v = [b[0] - a[0], b[1] - a[1]];
     let len = (v[0] * v[0] + v[1] * v[1]).sqrt();
@@ -309,6 +309,19 @@ pub(crate) fn draw(out: &mut Pose, s: &Segment, i: usize, p: &Piece) {
             // Tubes, and tip forms on a part that carries on into another.
             bowed(&mut pen, &at, r, bow);
         }
+    }
+}
+
+/// The tissue a segment shows on the outside. Gut, fat and brood are
+/// hidden inside the body, unless they are the body: a gut that limbs grow
+/// from is a belly under skin, a fat hump or a brood pouch bulges out in
+/// skin, and feathery gills hang out in the air.
+fn shown(s: &Segment, i: usize, p: &Piece) -> Tissue {
+    match (s.tissue, s.form) {
+        (Tissue::Gut, Form::Frond | Form::Tuft) => Tissue::Muscle,
+        (Tissue::Store, Form::Bulb) | (Tissue::Brood, Form::Bulb | Form::Paddle) => Tissue::Frame,
+        (Tissue::Gut | Tissue::Store | Tissue::Brood, _) if i == 0 || p.continues || p.carries => Tissue::Frame,
+        (t, _) => t,
     }
 }
 

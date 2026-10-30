@@ -3,9 +3,11 @@
 
 use crate::brain::{NI, Tone, i, o};
 use crate::creature::Action;
-use crate::genome::{Genome, Tissue};
+use crate::creature::fare_energy;
+use crate::genome::Genome;
 use crate::history::CreatureId;
 use crate::mind::{self, PlaceKind, creature_bin, plant_bin};
+use crate::organ::Fare;
 use crate::world::{ALT_MAX, TICK, World, col_of, dist2, dist3};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -15,6 +17,10 @@ pub enum Food {
     Egg(usize),
     /// Detritus strained from the air.
     Air,
+    /// Nectar in a plant's flowers.
+    Nectar(usize),
+    /// Rotting matter dug from the soil underfoot.
+    Soil,
 }
 
 /// What a creature noticed this tick, used again when it acts.
@@ -92,6 +98,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             displaying: if o.action == Action::Displaying { o.target } else { None },
             parent: o.parent,
             young: o.maturity < 0.5,
+            moving: (o.vel[0] * o.vel[0] + o.vel[1] * o.vel[1] + o.vel[2] * o.vel[2]).sqrt() > o.length() * 0.15
+                || matches!(o.action, Action::Attacking | Action::Fleeing | Action::Displaying | Action::Playing),
+            // Still and dull, it is hard to pick out; moving, bright,
+            // ornamented or flashing, easy.
+            vis: o.abil.conspicuous * if o.action == Action::Resting { 0.5 } else { 1.0 } * (1.0 + o.flash * 1.5),
         })
         .collect();
     let flora: Vec<Patch> = w
@@ -103,6 +114,12 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             bin: plant_bin(&pl.genome.look) as u8,
             value: (pl.matter + pl.fruit * 4.0 + pl.genome.trap * pl.genome.glow * pl.adult_matter * 2.0).powf(0.3),
             cover: if pl.alt > 0.05 { 0.0 } else { (pl.leaf_area() * 4000.0).min(1.0) },
+            crust: pl.genome.vent > 0.5,
+            tough: 1.0 + 1.5 * pl.genome.tough,
+            fruit: pl.fruit > pl.adult_matter * 0.01,
+            nectar: pl.nectar > pl.adult_matter * 0.002,
+            chem: pl.genome.look[0],
+            height: if pl.alt > 0.05 { 0.0 } else { pl.height() },
         })
         .collect();
     for ci in 0..n {
@@ -110,6 +127,21 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         let me = &seen[ci];
         let r = c.abil.sense;
         let r2 = r * r;
+        // How far it can see now: eyes need light, big ones less of it, and
+        // fog, dust and ash hide things.
+        let light = w.env.light(c.pos[0], c.pos[2]);
+        let dim = ((light + 0.03) * (1.0 + 6.0 * c.abil.night_eyes) / 0.5).min(1.0);
+        let haze = (1.0 - 0.6 * w.env.fog_at(c.pos[0]))
+            * (1.0 - 0.6 * w.env.dust_at(c.pos[0]))
+            * (1.0 - 0.4 * w.env.ash_at(c.pos[0]));
+        let sight = c.abil.sight * dim * haze;
+        let (smell, hearing, touch) = (c.abil.smell, c.abil.hearing, c.abil.touch);
+        // Whether it notices something at distance `d`, seen as `vis`
+        // (0 if it can't be seen at all), heard if it is moving, and smelt
+        // as strongly as `scent`.
+        let notice = |d: f32, vis: f32, moving: bool, scent: f32| {
+            d < touch || d < sight * vis || d < smell * scent || (moving && d < hearing)
+        };
         let mut p = Percept { other_dist: f32::MAX, ..Default::default() };
         let mut young = 0.0f32;
         let mut ally_hurt = 0.0f32;
@@ -134,6 +166,11 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                 return;
             }
             let d = d2.sqrt();
+            // Kin it knows the smell of from afar.
+            let scent = if o.species == me.species { 1.0 } else { 0.8 };
+            if !notice(d, o.vis, o.moving, scent) {
+                return;
+            }
             let close = 1.0 - d / r;
             if d < p.other_dist {
                 p.other_dist = d;
@@ -212,16 +249,18 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
             p.ally_heading = [heading[0] * k, heading[1] * k];
         }
 
-        // Food, by what this creature can eat and has learned to like, and
-        // cover, in the same look at the plants around it.
-        let diet = c.genome.diet;
-        let mouth = c.pheno.has(Tissue::Mouth);
+        // Food, by how much energy this creature's mouths and gut could get
+        // from it and what it has learned to like, and cover, in the same
+        // look at the plants around it.
+        let mouth = c.can_eat();
         let mut best = 0.0f32;
         let mut cover_d = f32::MAX;
         let mut sheltered = 0.0f32;
         {
             let reach_alt = c.pos[2];
-            let herb = 1.0 - diet;
+            // What each kind of plant food is worth to it, before the plant's own toughness.
+            let fruit_rate = c.intake(Fare::Fruit, 1.0) * fare_energy(Fare::Fruit);
+            let nectar_rate = c.intake(Fare::Nectar, 1.0) * fare_energy(Fare::Nectar);
             w.pgrid.near_any_alt(c.pos, r, |j| {
                 let Some(pl) = flora.get(j) else { return };
                 let pp = pl.pos;
@@ -245,17 +284,36 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                     return;
                 }
                 let d = d2.sqrt();
+                // Flowers and fruit catch the eye; all plants smell.
+                let show = if pl.nectar || pl.fruit { 1.2 } else { 0.8 };
+                if !notice(d, show, false, 1.0) {
+                    return;
+                }
+                let fare = if pl.crust { Fare::Crust } else { Fare::Leaf };
+                let reach =
+                    if pl.height > 0.0 { ((reach_alt + my_len * 1.2) / pl.height).clamp(0.4, 1.0) } else { 1.0 };
+                let digest = c.genome.digests(pl.chem);
+                let leaf = c.intake(fare, pl.tough) * fare_energy(fare) * c.efficiency(fare, pl.chem) * reach;
+                let fruit = if pl.fruit { fruit_rate * c.efficiency(Fare::Fruit, pl.chem) * reach } else { 0.0 };
+                let nectar = if pl.nectar { nectar_rate * (0.15 + 0.85 * (1.0 - c.genome.diet)) * digest } else { 0.0 };
+                let gain = leaf.max(fruit).max(nectar);
+                if gain <= 0.0 {
+                    return;
+                }
                 let bin = pl.bin as usize;
                 let taste = c.mind.taste(bin);
-                let s = herb * (1.0 + taste) * (1.0 - c.mind.wary(bin)) * pl.value / (d + 0.02);
+                let s = gain * (1.0 + taste) * (1.0 - c.mind.wary(bin)) * pl.value / (d + 0.02);
                 if s > best {
                     best = s;
-                    p.food = Some(Food::Plant(j));
+                    p.food = Some(if nectar > leaf.max(fruit) { Food::Nectar(j) } else { Food::Plant(j) });
                     p.food_pos = [pp[0], pp[1], at[2]];
                 }
             });
         }
         if mouth {
+            let carrion = c.yield_rate(Fare::Carrion, 1.0, 0.0);
+            let fresh = c.yield_rate(Fare::Flesh, 1.0, 0.0);
+            let egg_rate = c.yield_rate(Fare::Egg, 1.0, 0.0);
             w.rgrid.near(c.pos, r, |j| {
                 let rm = &w.remains[j];
                 let d2 = dist2(c.pos, rm.pos);
@@ -267,9 +325,14 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                     return;
                 }
                 let d = d2.sqrt();
-                let taste = c.mind.taste(creature_bin(&rm.look, rm.scale * rm.body.extent));
                 let rot = rm.decay01();
-                let s = (diet * 0.9 + rot * 0.3 + 0.05) * (1.0 + taste) * rm.matter.powf(0.3) / (d + 0.02);
+                // Rot carries far on the air.
+                if !notice(d, 0.8, false, 1.0 + rot) {
+                    return;
+                }
+                let taste = c.mind.taste(creature_bin(&rm.look, rm.scale * rm.body.extent));
+                let meat = if rot < 0.2 { fresh } else { carrion };
+                let s = (meat * (1.0 - rot * 0.5) + 0.0001) * (1.0 + taste) * rm.matter.powf(0.3) / (d + 0.02);
                 let s = if rm.offered_to.is_some() && rm.offered_to == c.parent { s * 10.0 } else { s };
                 if s > best {
                     best = s;
@@ -277,28 +340,42 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                     p.food_pos = rm.pos;
                 }
             });
-            w.egrid.near(c.pos, r, |j| {
-                let e = &w.eggs[j];
-                if e.mother == Some(c.id) {
-                    return;
-                }
-                let d2 = dist2(c.pos, e.pos);
-                if d2 > r2 {
-                    return;
-                }
-                let d = d2.sqrt();
-                let s = diet * 1.2 * e.matter.powf(0.3) / (d + 0.02);
-                if s > best {
-                    best = s;
-                    p.food = Some(Food::Egg(j));
-                    p.food_pos = e.pos;
-                }
-            });
+            if egg_rate > 0.0 {
+                w.egrid.near(c.pos, r, |j| {
+                    let e = &w.eggs[j];
+                    if e.mother == Some(c.id) {
+                        return;
+                    }
+                    let d2 = dist2(c.pos, e.pos);
+                    if d2 > r2 {
+                        return;
+                    }
+                    let d = d2.sqrt();
+                    // Eggs lie still and quiet, and are hidden from eyes.
+                    if !notice(d, 0.4, false, 0.7) {
+                        return;
+                    }
+                    let s = egg_rate * 1.2 * e.matter.powf(0.3) / (d + 0.02);
+                    if s > best {
+                        best = s;
+                        p.food = Some(Food::Egg(j));
+                        p.food_pos = e.pos;
+                    }
+                });
+            }
         }
         let air = w.air[col_of(c.pos[0])];
-        if p.food.is_none() && c.abil.filter && air > 0.01 {
-            p.food = Some(Food::Air);
-            p.food_pos = c.pos;
+        // Strained from the air, or dug from the ground, when there is nothing better.
+        let plankton = c.yield_rate(Fare::Plankton, 1.0, 0.0) * (air * 4.0).min(1.0);
+        let soil = if c.pos[2] < 0.01 { c.yield_rate(Fare::Soil, 1.0, 0.0) } else { 0.0 };
+        if p.food.is_none() || best < plankton.max(soil) * 0.5 {
+            if plankton > soil && air > 0.01 {
+                p.food = Some(Food::Air);
+                p.food_pos = c.pos;
+            } else if soil > 0.0 {
+                p.food = Some(Food::Soil);
+                p.food_pos = c.pos;
+            }
         }
         // Huddled bodies keep each other warm and dry.
         let huddled = (p.huddle as f32 * 0.25).min(0.75);
@@ -308,7 +385,9 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
                 huddles.push((c.species, c.id));
             }
         }
-        let shelter = sheltered.max(huddled);
+        // Diggers and shelled things dig in or shut up where they rest.
+        let dug = if c.action == Action::Resting && c.pos[2] < 0.01 { c.abil.burrow } else { 0.0 };
+        let shelter = sheltered.max(huddled).max(dug);
         if p.cover.is_none()
             && let Some([x, d]) = c.mind.nearest_shelter(c.pos[0], c.pos[1])
         {
@@ -374,10 +453,14 @@ pub fn think(w: &mut World, percepts: &mut Vec<Percept>) {
         inputs[i::ALT] = c.pos[2] / ALT_MAX;
         if let Some(f) = p.food {
             let d = dist3(c.pos, p.food_pos);
-            inputs[i::FOOD_NEAR] = if f == Food::Air { (air * 4.0).min(1.0) } else { 1.0 - (d / r).min(1.0) };
+            inputs[i::FOOD_NEAR] = match f {
+                Food::Air => (air * 4.0).min(1.0),
+                Food::Soil => 0.5,
+                _ => 1.0 - (d / r).min(1.0),
+            };
             inputs[i::FOOD_DIR] = ahead(c.heading, c.pos, p.food_pos);
             inputs[i::FOOD_TASTE] = match f {
-                Food::Plant(j) => c.mind.taste(plant_bin(&w.plants[j].genome.look)),
+                Food::Plant(j) | Food::Nectar(j) => c.mind.taste(plant_bin(&w.plants[j].genome.look)),
                 Food::Remains(j) => {
                     let rm = &w.remains[j];
                     c.mind.taste(creature_bin(&rm.look, rm.scale * rm.body.extent))
@@ -518,6 +601,10 @@ struct Glimpse {
     displaying: Option<CreatureId>,
     parent: Option<CreatureId>,
     young: bool,
+    /// Moving or fighting, so anything with ears hears it.
+    moving: bool,
+    /// How far off eyes pick it out, relative to their range.
+    vis: f32,
 }
 
 struct Patch {
@@ -527,6 +614,15 @@ struct Patch {
     value: f32,
     /// How much cover its leaves give, 0..1.
     cover: f32,
+    /// A vent crust rather than leaves, how hard its leaves are to eat
+    /// (1 soft), whether it has ripe fruit or nectar to offer, its
+    /// chemistry, and how tall it stands (0 for mats aloft).
+    crust: bool,
+    tough: f32,
+    fruit: bool,
+    nectar: bool,
+    chem: f32,
+    height: f32,
 }
 
 pub fn season_quarter(w: &World) -> usize {

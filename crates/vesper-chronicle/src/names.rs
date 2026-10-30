@@ -331,6 +331,10 @@ pub fn describe(t: &Traits) -> String {
     if t.glow > 0.5 {
         out.push_str(if plant { " It glows." } else { " It talks and hunts in light." });
     }
+    if !t.features.is_empty() {
+        let words: Vec<&str> = t.features.iter().take(6).map(|s| s.as_str()).collect();
+        out.push_str(&format!(" It has {}.", list(&words)));
+    }
     out.push_str(match t.reproduction {
         Reproduction::Budding => " It buds copies of itself.",
         Reproduction::Spores => " It scatters spores by the thousand.",
@@ -393,11 +397,43 @@ pub fn difference(child: &Traits, parent: &Traits) -> String {
         diffs.push((0.9, "moving in a new way"));
     }
     diffs.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let top: Vec<&str> = diffs.iter().take_while(|d| d.0 > 0.08).take(2).map(|d| d.1).collect();
-    match top.as_slice() {
-        [] => "almost identical to look at".into(),
-        [a] => (*a).into(),
-        [a, b, ..] => format!("{a} and {b}"),
+    // Organs gained and lost say more than any shift in degree.
+    let organs = organ_change(child, parent);
+    let take = if organs.is_some() { 1 } else { 2 };
+    let top: Vec<&str> = diffs.iter().take_while(|d| d.0 > 0.08).take(take).map(|d| d.1).collect();
+    match (top.as_slice(), organs) {
+        ([], None) => "almost identical to look at".into(),
+        ([], Some(o)) => o,
+        ([a], Some(o)) => format!("{o}, and {a}"),
+        ([a], None) => (*a).into(),
+        ([a, b, ..], _) => format!("{a} and {b}"),
+    }
+}
+
+/// The organs a species has that its parent lacked and the other way round,
+/// as a phrase: "with fangs and fur, and without eyes".
+pub fn organ_change(child: &Traits, parent: &Traits) -> Option<String> {
+    if child.features.is_empty() || parent.features.is_empty() {
+        return None;
+    }
+    let gained: Vec<&str> =
+        child.features.iter().filter(|f| !parent.features.contains(f)).take(3).map(|s| s.as_str()).collect();
+    let lost: Vec<&str> =
+        parent.features.iter().filter(|f| !child.features.contains(f)).take(2).map(|s| s.as_str()).collect();
+    match (gained.is_empty(), lost.is_empty()) {
+        (true, true) => None,
+        (false, true) => Some(format!("with {}", list(&gained))),
+        (true, false) => Some(format!("without the {} its ancestors had", list(&lost))),
+        (false, false) => Some(format!("with {}, and without {}", list(&gained), list(&lost))),
+    }
+}
+
+/// "a", "a and b", "a, b and c".
+pub fn list(words: &[&str]) -> String {
+    match words {
+        [] => String::new(),
+        [a] => (*a).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
 

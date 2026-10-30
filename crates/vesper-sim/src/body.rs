@@ -2,6 +2,7 @@
 //! segments, and reading what that body can do.
 
 use crate::genome::{Form, Genome, MAX_PARTS, Motor, Tissue};
+use crate::organ::{Kit, Organ};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_SEGMENTS: usize = 48;
@@ -224,6 +225,12 @@ pub struct Phenotype {
     pub segments: u32,
     /// Area grown in each form, body units squared.
     pub form: [f32; 12],
+    /// The organs its parts make.
+    pub kit: Kit,
+    /// Outline length of its parts, body units: thin limbs, fins and ears
+    /// have far more skin for their bulk than a round trunk, and lose heat
+    /// and water through it.
+    pub outline: f32,
 }
 
 impl Phenotype {
@@ -239,7 +246,9 @@ impl Phenotype {
                 continue;
             }
             let a = s.area();
-            p.area[s.tissue.index()] += a * form_gain(s.form, s.tissue);
+            p.area[s.tissue.index()] += a;
+            p.kit.add(Organ::of(s.tissue, s.form), a);
+            p.outline += 2.0 * s.length + s.width;
             p.mass += a * s.tissue.density();
             p.total_area += a;
             p.form[s.form.index()] += a;
@@ -274,26 +283,13 @@ impl Phenotype {
         self.area[t.index()] > 0.0
     }
 
+    /// Share of the body an organ takes up, 0..1.
+    pub fn organ(&self, o: Organ) -> f32 {
+        self.kit.frac(o, self.total_area)
+    }
+
     /// Share of the body grown in a form, 0..1.
     pub fn form_frac(&self, f: Form) -> f32 {
         if self.total_area > 0.0 { self.form[f.index()] / self.total_area } else { 0.0 }
-    }
-}
-
-/// How much more a tissue does in a form that suits it than as a plain
-/// tube: an eye on a stalk sees further, a feathery gill or leaf has more
-/// surface, overlapping plates or a coiled shell cover more.
-fn form_gain(form: Form, tissue: Tissue) -> f32 {
-    use Tissue::*;
-    match (form, tissue) {
-        (Form::Bulb, Sense | Store | Float | Glow) => 1.35,
-        (Form::Frond, Sense | LightFilm | Gut) => 1.4,
-        (Form::Fork, Sense | Spine) => 1.3,
-        (Form::Tuft, Sense) => 1.2,
-        (Form::Plates, Armor) => 1.35,
-        (Form::Coil, Armor) => 1.2,
-        (Form::Fan | Form::Paddle, LightFilm) => 1.25,
-        (Form::Hook | Form::Pincer, Mouth) => 1.3,
-        _ => 1.0,
     }
 }

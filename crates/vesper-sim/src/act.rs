@@ -10,6 +10,7 @@ use crate::ground::Ground;
 use crate::history::{Behavior, CreatureId, DeathCause};
 use crate::life;
 use crate::mind::{self, Grief, PlaceKind, creature_bin, plant_bin};
+use crate::organ::Fare;
 use crate::physics::{self, AIR, Drive, MOTOR_COST, Medium, Rig, STEP, STEPS_PER_TICK, WATER};
 use crate::think::{Food, Percept, season_quarter};
 use crate::world::{
@@ -203,7 +204,8 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         if resting {
             m.tired = (m.tired - 0.004).max(0.0);
         } else {
-            m.tired = (m.tired + 0.00012 + effort * 0.0003).min(1.0);
+            // Gills and lungs keep a hard-working body going longer.
+            m.tired = (m.tired + 0.00012 + effort * 0.0003 * (1.0 - 0.5 * c.abil.breath)).min(1.0);
         }
         let weary = 1.0 - m.tired * 0.4;
         let guarding = out[o::GUARD] > 0.3;
@@ -213,7 +215,9 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         let torpor = 1.0
             - 0.5 * c.exposure.chill.min(1.0)
             - 0.25 * (c.exposure.thirst - 0.5).clamp(0.0, 1.0)
-            - 0.25 * (c.exposure.grit - 0.4).clamp(0.0, 1.0);
+            - 0.25 * (c.exposure.grit - 0.4).clamp(0.0, 1.0)
+            - 0.5 * c.venom.min(1.0);
+        let torpor = torpor.max(0.1);
         let power = effort * way * (0.5 + 0.5 * c.health) * weary * torpor * if guarding { 0.3 } else { 1.0 };
         c.drive = [power, (out[o::RISE] + dir[2]).clamp(-1.0, 1.0) * if resting { 0.2 } else { 1.0 }];
         c.effort = effort;
@@ -428,10 +432,10 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
             && let Some(food) = p.food
         {
             let c = &w.creatures[ci];
-            let close = food == Food::Air || dist3(c.pos, p.food_pos) < r;
+            let close = matches!(food, Food::Air | Food::Soil) || dist3(c.pos, p.food_pos) < r;
             if close {
                 eat(w, ci, food, out[o::EAT]);
-                if food != Food::Air && w.creatures[ci].action == Action::Eating {
+                if !matches!(food, Food::Air | Food::Soil) && w.creatures[ci].action == Action::Eating {
                     w.creatures[ci].focus = Some(p.food_pos);
                 }
             }
@@ -456,7 +460,7 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
                 let (c, t) = (&w.creatures[ci], &w.creatures[j]);
                 if plays(c, t) {
                     play(w, ci, j);
-                } else if c.pheno.has(Tissue::Mouth) || c.pheno.has(Tissue::Spine) {
+                } else if c.abil.strike > 0.0 {
                     life::attack(w, ci, j, out[o::ATTACK]);
                     if p.quarry == Some(j) {
                         joined(w, ci, j);
@@ -495,7 +499,10 @@ pub fn actions(w: &mut World, percepts: &[Percept]) {
                 let scent = (genetics::immune_likeness(&x.genome, &y.genome) - 0.5) * x.genome.mhc_pref * 0.3;
                 let condition = (y.health * y.energy / y.abil.energy_cap.max(1e-9)).clamp(0.0, 1.0);
                 let poor = (1.0 - condition) * x.genome.choosiness * 0.4;
-                looks + scent + poor < 1.0 - x.genome.choosiness * 0.85
+                // Crests, plumes, frills and horns, which cost to grow and draw
+                // hunters' eyes, are what a choosy partner falls for.
+                let show = (y.abil.ornament * 2.0).min(0.35) * x.genome.choosiness;
+                looks + scent + poor - show < 1.0 - x.genome.choosiness * 0.85
             };
             if a.ready() && b.ready() && b.genome.sexual > FACULTATIVE && accept(a, b) && accept(b, a) {
                 let (mother, father) = if a.energy >= b.energy { (ci, j) } else { (j, ci) };
@@ -658,7 +665,7 @@ fn presence(c: &Creature) -> f32 {
     c.length()
         * (0.5 + c.health)
         * (1.0 + c.rank.clamp(-1.0, 2.0) * 0.3)
-        * (1.0 + c.abil.spines * 0.3 + c.abil.armor * 0.5)
+        * (1.0 + c.abil.spines * 0.3 + c.abil.armor * 0.5 + c.abil.ornament * 2.0)
         * (0.7 + c.genome.boldness * 0.6)
         * (1.0 - c.mind.mood.tired * 0.3)
 }
@@ -773,28 +780,75 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
     if c.energy >= c.abil.energy_cap * 0.95 && life::growth_room(c) <= 0.0 {
         return;
     }
-    let bite = c.abil.bite * dt * drive.min(1.0);
-    let diet = c.genome.diet;
+    // Once it has decided to eat, its mouth and gut set the pace.
+    let _ = drive;
+    let drive = dt;
     let id = c.id;
     match food {
         Food::Air => {
             let col = col_of(c.pos[0]);
-            let m = (w.air[col] * 0.01 * dt).min(c.abil.gut * dt);
+            let m = (w.air[col] * 0.01 * dt).min(c.intake(Fare::Plankton, 1.0) * drive);
             if m <= 0.0 {
                 return;
             }
             w.air[col] -= m;
-            digest(w, ci, m, E_DETRITUS, 0.6, 48, 0.0);
+            let eff = c.efficiency(Fare::Plankton, 0.0);
+            digest(w, ci, m, E_DETRITUS, eff, 48, 0.0);
             w.creatures[ci].action = Action::Eating;
         }
-        Food::Plant(j) => {
-            if j >= w.plants.len() || bite <= 0.0 {
+        Food::Soil => {
+            let (x, d) = (c.pos[0], c.pos[1]);
+            let want = c.intake(Fare::Soil, 1.0) * drive;
+            let eff = c.efficiency(Fare::Soil, 0.0);
+            let m = w.take_soil(x, d, want);
+            if m <= 0.0 {
                 return;
             }
+            digest(w, ci, m, crate::creature::fare_energy(Fare::Soil), eff, 49, 0.0);
+            w.creatures[ci].action = Action::Eating;
+        }
+        Food::Nectar(j) => {
+            if j >= w.plants.len() {
+                return;
+            }
+            let pl = &w.plants[j];
+            let chem = pl.genome.look[0];
+            let bin = plant_bin(&pl.genome.look);
+            let m = (c.intake(Fare::Nectar, 1.0) * drive).min(pl.nectar);
+            if m <= 0.0 {
+                return;
+            }
+            let eff = c.efficiency(Fare::Nectar, chem);
             let pl = &mut w.plants[j];
-            let from_fruit = bite.min(pl.fruit);
+            pl.nectar -= m;
+            // A visit: the pollen it carries off and brings in.
+            pl.visits = (pl.visits + dt).min(30.0);
+            w.creatures[ci].action = Action::Eating;
+            digest(w, ci, m, crate::creature::fare_energy(Fare::Nectar), eff, bin, 0.0);
+        }
+        Food::Plant(j) => {
+            if j >= w.plants.len() {
+                return;
+            }
+            let pl = &w.plants[j];
+            // Tall plants keep most of their leaves out of a small grazer's
+            // reach; long necks and flight get at the rest.
+            let reach = if pl.alt > 0.05 {
+                1.0
+            } else {
+                ((c.pos[2] + c.length() * 1.2) / pl.height().max(1e-4)).clamp(0.4, 1.0)
+            };
+            let tough = 1.0 + 1.5 * pl.genome.tough;
+            let fare = if pl.genome.vent > 0.5 { Fare::Crust } else { Fare::Leaf };
+            let chem = pl.genome.look[0];
+            let fruit_rate = c.intake(Fare::Fruit, 1.0) * drive * reach;
+            let leaf_rate = c.intake(fare, tough) * drive * reach;
+            let pl = &mut w.plants[j];
+            let from_fruit = fruit_rate.min(pl.fruit);
             pl.fruit -= from_fruit;
-            let from_body = (bite - from_fruit).min((pl.matter - pl.adult_matter * 0.15).max(0.0));
+            // What time is left after the fruit goes on leaves.
+            let left = if fruit_rate > 0.0 { 1.0 - from_fruit / fruit_rate } else { 1.0 };
+            let from_body = (leaf_rate * left).min((pl.matter - pl.adult_matter * 0.15).max(0.0));
             pl.matter -= from_body;
             let wound = from_body / pl.matter.max(1e-4);
             pl.health = (pl.health - wound * 0.08).max(0.0);
@@ -804,7 +858,6 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             let spines = pl.spines();
             let toxin = pl.toxin();
             let bin = plant_bin(&pl.genome.look);
-            let chem = pl.genome.look[0];
             let seed = if from_fruit > 0.0 {
                 Some(crate::plant::Seed {
                     genome: pl.genome.clone(),
@@ -819,8 +872,8 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
                 return;
             }
             let c = &mut w.creatures[ci];
-            let eff = (0.15 + 0.85 * (1.0 - diet)) * c.genome.digests(chem);
-            let toxin = c.genome.felt(toxin);
+            // Feelers taste poison before it is swallowed.
+            let toxin = c.genome.felt(toxin) * (1.0 - 0.6 * c.abil.taste);
             let harm = spines * 0.6 * (from_body / m) + toxin * 1.5;
             let hurt = (spines * from_body * 3.0 + toxin * m * 4.0) / c.matter.max(1e-4);
             c.health -= hurt * 0.3;
@@ -833,8 +886,10 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             }
             c.action = Action::Eating;
             // Fruit is sweeter than leaves.
-            let e = if from_fruit > 0.0 { E_PLANT * 1.6 } else { E_PLANT };
-            digest(w, ci, m, e, eff, bin, harm);
+            let e = (from_fruit * c.efficiency(Fare::Fruit, chem) * crate::creature::fare_energy(Fare::Fruit)
+                + from_body * c.efficiency(fare, chem) * E_PLANT)
+                / m;
+            digest(w, ci, m, e, 1.0, bin, harm);
             if w.creatures[ci].health <= 0.0 {
                 w.creatures[ci].doom = Some(DeathCause::Starvation);
             }
@@ -843,22 +898,25 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             if j >= w.remains.len() {
                 return;
             }
-            let rm = &mut w.remains[j];
-            let m = bite.min(rm.matter);
+            let rm = &w.remains[j];
+            let rot = rm.decay01();
+            // A fresh kill is still meat; it takes a scavenger's gut once it rots.
+            let fare = if rot < 0.2 { Fare::Flesh } else { Fare::Carrion };
+            let m = (c.intake(fare, 1.0) * drive).min(rm.matter);
             if m <= 0.0 {
                 return;
             }
+            let eff = c.efficiency(fare, 0.0) * (1.0 - rot) + 0.5 * rot;
+            let rm = &mut w.remains[j];
             rm.matter -= m;
-            let rot = rm.decay01();
             let toxin = rm.toxin;
             let bin = creature_bin(&rm.look, rm.scale * rm.body.extent);
             let strain = rm.strain;
             let offered = rm.offered_to;
             let killed_by_other = rm.killer.is_some_and(|k| k != id);
-            let eff = (0.1 + 0.9 * diet) * (1.0 - rot) + 0.5 * rot;
             let e = E_MEAT * (1.0 - rot * 0.6);
             let c = &mut w.creatures[ci];
-            let toxin = c.genome.felt(toxin);
+            let toxin = c.genome.felt(toxin) * (1.0 - 0.6 * c.abil.taste);
             let hurt = toxin * m * 4.0 / c.matter.max(1e-4);
             c.health -= hurt * 0.3;
             c.pain += hurt;
@@ -879,10 +937,12 @@ fn eat(w: &mut World, ci: usize, food: Food, drive: f32) {
             if j >= w.eggs.len() {
                 return;
             }
-            let e = &mut w.eggs[j];
-            let m = bite.min(e.matter);
-            e.matter -= m;
-            let eff = 0.2 + 0.8 * diet;
+            let m = (c.intake(Fare::Egg, 1.0) * drive).min(w.eggs[j].matter);
+            let eff = c.efficiency(Fare::Egg, 0.0);
+            w.eggs[j].matter -= m;
+            if m <= 0.0 {
+                return;
+            }
             w.creatures[ci].action = Action::Eating;
             digest(w, ci, m, E_MEAT, eff, 48, 0.0);
         }

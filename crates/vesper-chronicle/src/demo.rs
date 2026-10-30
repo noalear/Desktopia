@@ -37,6 +37,7 @@ pub fn seed_traits(seed: u64) -> Traits {
         inbreeding: 0.05,
         selfing: 0.3,
         picky: 0.3,
+        features: Vec::new(),
     }
 }
 

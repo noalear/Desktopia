@@ -40,10 +40,12 @@ pub const SKY_COLS: usize = 64;
 pub const SKY_CELLS: usize = 5;
 pub const SKY_ROWS: usize = SKY_COLS * 3 + SKY_CELLS + 1;
 
-/// Length of one seasonal wobble of the twilight band, in days.
-pub const SEASON_DAYS: f64 = 4.0;
-/// How far the band slides each way, in world units.
-pub const BAND_AMPLITUDE: f64 = 0.08;
+/// Length of one seasonal wobble of the twilight band, in days: eight
+/// hours, so a day at the desktop sees the warm and cold zones sweep out and
+/// back, and life that can't follow its climate is stranded.
+pub const SEASON_DAYS: f64 = 1.0 / 3.0;
+/// How far the band slides each way at most, in world units.
+pub const BAND_AMPLITUDE: f64 = 0.3;
 
 /// The river's current course. The simulation drifts `phase` over days and
 /// raises `flood` after storms; zero for both is the shader's original river.
@@ -120,7 +122,10 @@ pub fn ridged(p: [f32; 2], octaves: i32) -> f32 {
 /// The band's seasonal slide at a moment, in world units.
 pub fn band_shift(world_secs: f64) -> f32 {
     let phase = world_secs / 86400.0 / SEASON_DAYS * std::f64::consts::TAU;
-    (BAND_AMPLITUDE * phase.sin()) as f32
+    // A slower swell under the seasons, so no two are quite alike: some
+    // reach far, some hardly turn.
+    let swell = (phase * 0.29 + 1.3).sin();
+    (BAND_AMPLITUDE * (0.75 * phase.sin() + 0.25 * swell)) as f32
 }
 
 /// 0 on the day edge, 1 on the night edge, following the sliding band.

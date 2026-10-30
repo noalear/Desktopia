@@ -24,25 +24,79 @@ struct Sitter {
 pub fn render(renderer: &mut Renderer, args: &Args) {
     let mut rng = Rng::new(args.seed);
     let mut creatures: Vec<Vec<Sitter>> = Vec::new();
-    for kind in [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler] {
+    for kind in Founder::ALL {
         creatures.push((0..COLS).map(|_| creature(Genome::founder(kind, &mut rng), &mut rng, 0)).collect());
     }
     // Lineages left to drift: forms come and go, parts duplicate and change.
-    let kinds = [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler];
+    let kinds = Founder::ALL;
     for _ in 0..2 {
-        creatures.push((0..COLS).map(|c| creature(Genome::founder(kinds[c % 4], &mut rng), &mut rng, 60)).collect());
+        creatures.push(
+            (0..COLS).map(|c| creature(Genome::founder(kinds[c % kinds.len()], &mut rng), &mut rng, 60)).collect(),
+        );
     }
     sheet(renderer, args, &creatures, "forms-creatures");
 
     let mut plants: Vec<Vec<Sitter>> = Vec::new();
-    for kind in [Seedling::Fan, Seedling::VentCrust, Seedling::Thicket, Seedling::Mat] {
+    let kinds =
+        [Seedling::Fan, Seedling::VentCrust, Seedling::Thicket, Seedling::Mat, Seedling::Spire, Seedling::Cushion];
+    for kind in kinds {
         plants.push((0..COLS).map(|_| plant(PlantGenome::founder(kind, &mut rng), &mut rng, 0)).collect());
     }
-    let kinds = [Seedling::Fan, Seedling::VentCrust, Seedling::Thicket, Seedling::Mat];
     for _ in 0..2 {
-        plants.push((0..COLS).map(|c| plant(PlantGenome::founder(kinds[c % 4], &mut rng), &mut rng, 40)).collect());
+        plants.push(
+            (0..COLS).map(|c| plant(PlantGenome::founder(kinds[c % kinds.len()], &mut rng), &mut rng, 40)).collect(),
+        );
     }
     sheet(renderer, args, &plants, "forms-plants");
+}
+
+/// One grown member of each species living in a saved world, creatures then
+/// plants, commonest first, to see what evolution has made of them.
+pub fn zoo(renderer: &mut Renderer, args: &Args) {
+    let path = args.world.as_ref().expect("--zoo needs --world FILE");
+    let sim = vesper_sim::save::load(path).expect("load the world");
+    let w = sim.world();
+    let mut by: std::collections::BTreeMap<u64, Vec<&vesper_sim::creature::Creature>> = Default::default();
+    for c in w.creatures.iter().filter(|c| c.maturity > 0.8) {
+        by.entry(c.species.0).or_default().push(c);
+    }
+    let mut kinds: Vec<_> = by.into_values().collect();
+    kinds.sort_by_key(|k| std::cmp::Reverse(k.len()));
+    let mut sitters: Vec<Sitter> = kinds
+        .iter()
+        .flat_map(|k| k.iter().take(2))
+        .map(|c| Sitter { body: (*c.body).clone(), look: c.genome.look, plant: false, id: c.id.0 as u32 })
+        .collect();
+    sitters.truncate(COLS * 5);
+    let rows: Vec<Vec<Sitter>> = chunk(sitters);
+    sheet(renderer, args, &rows, "zoo-creatures");
+    let mut by: std::collections::BTreeMap<u64, Vec<&vesper_sim::plant::Plant>> = Default::default();
+    for p in w.plants.iter().filter(|p| p.growth01() > 0.7) {
+        by.entry(p.species.0).or_default().push(p);
+    }
+    let mut kinds: Vec<_> = by.into_values().collect();
+    kinds.sort_by_key(|k| std::cmp::Reverse(k.len()));
+    let sitters: Vec<Sitter> = kinds
+        .iter()
+        .flat_map(|k| k.iter().take(2))
+        .take(COLS * 5)
+        .map(|p| {
+            let mut g = (*p.genome).clone();
+            g.floating = g.floating.min(0.4);
+            Sitter { body: g.develop(), look: g.look, plant: true, id: p.id.0 as u32 }
+        })
+        .collect();
+    sheet(renderer, args, &chunk(sitters), "zoo-plants");
+}
+
+fn chunk(mut v: Vec<Sitter>) -> Vec<Vec<Sitter>> {
+    let mut rows = Vec::new();
+    while !v.is_empty() {
+        let rest = v.split_off(v.len().min(COLS));
+        rows.push(v);
+        v = rest;
+    }
+    rows
 }
 
 fn creature(mut g: Genome, rng: &mut Rng, rounds: usize) -> Sitter {

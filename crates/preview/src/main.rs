@@ -5,7 +5,7 @@
 //!                [--band SHIFT] [--band-speed S] [--lightning L] [--storm X STRENGTH] [--volcano V]
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--progressive] [--sim MINUTES]
-//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES] [--forms]
+//!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES] [--forms] [--zoo]
 //!                [--world FILE] [--out DIR]
 //!                [--weather HOURS] [--until storm|rain|snow|dust|cold|erupt|drought|flood]
 //!
@@ -30,6 +30,8 @@
 //!
 //! `--forms` draws a gallery of founders and seedlings, each dressed in
 //! different part forms, and lineages mutated for many generations (see forms.rs).
+//! `--zoo` with `--world FILE` draws grown members of every species living
+//! in that saved world.
 //!
 //! `--weather` runs a real world's weather alone for that many hours and
 //! draws the sky it makes over the stand-in life; `--until` then waits for a
@@ -73,6 +75,8 @@ struct Args {
     acts: Option<f64>,
     family: Option<f64>,
     forms: bool,
+    /// With --world: one grown member of each living species.
+    zoo: bool,
     crop: Option<[f32; 4]>,
     /// With --sim: frame one walking creature instead of the whole world.
     follow: bool,
@@ -106,6 +110,7 @@ fn parse_args() -> Args {
         acts: None,
         family: None,
         forms: false,
+        zoo: false,
         crop: None,
         follow: false,
         world: None,
@@ -144,6 +149,7 @@ fn parse_args() -> Args {
             "--acts" => a.acts = Some(val().parse().unwrap()),
             "--family" => a.family = Some(val().parse().unwrap()),
             "--forms" => a.forms = true,
+            "--zoo" => a.zoo = true,
             "--follow" => a.follow = true,
             "--crop" => {
                 let mut c = [0.0; 4];
@@ -176,6 +182,9 @@ fn main() {
 
     if args.forms {
         return forms::render(&mut renderer, &args);
+    }
+    if args.zoo {
+        return forms::zoo(&mut renderer, &args);
     }
     if let Some(minutes) = args.family {
         return family::render(&mut renderer, &args, minutes);

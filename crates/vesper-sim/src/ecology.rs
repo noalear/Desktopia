@@ -102,6 +102,8 @@ fn plant_seed(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: 
         frost: 0.0,
         burn: 0.0,
         coat: 0.0,
+        nectar: 0.0,
+        visits: 0.0,
     });
     w.counters.plant_births += 1;
     true
@@ -268,7 +270,8 @@ pub fn plants(w: &mut World, dt: f32) {
         p.health = (p.health - harm * dt + 0.002 * dt).min(1.0);
         let s = p.scale();
         let area: f32 = p.body.segments.iter().map(|q| q.area()).sum::<f32>() * s * s;
-        let photo = leaf * light * 60.0 * (1.0 - g.vent);
+        // Tough leaves are thick and catch less light for their size.
+        let photo = leaf * light * 60.0 * (1.0 - g.vent) * (1.0 - 0.3 * g.tough);
         let chemo = terrain::vent_heat(p.x) * g.vent * area * 40.0 * (p.alt < 0.05) as u8 as f32;
         let potential = (photo + chemo) * g.growth * water_factor * dt * (1.0 - 0.9 * sleep);
         let upkeep = p.matter
@@ -285,7 +288,8 @@ pub fn plants(w: &mut World, dt: f32) {
                 + p.acclim.abs() * 0.5
                 + g.hardening * 0.1
                 + g.knots * 0.2
-                + g.tendrils * 0.15)
+                + g.tendrils * 0.15
+                + g.tough * 0.2)
             * dt
             * (1.0 - 0.7 * sleep);
         p.vigor += (((light + chemo * 50.0).min(1.0) * (1.0 - sleep)) - p.vigor) * 0.05 * dt;
@@ -331,6 +335,19 @@ pub fn plants(w: &mut World, dt: f32) {
         let rot = p.fruit * 0.002 * dt;
         p.fruit -= rot;
         litter += rot;
+        // Flowers fill with nectar while awake, paid for out of the plant's
+        // own body; unvisited nectar sours away.
+        if g.nectar > 0.3 && p.growth01() > 0.5 {
+            let cap = p.adult_matter * 0.03 * g.nectar;
+            let make = (p.adult_matter * 0.0004 * g.nectar * dt * (1.0 - sleep)).min((cap - p.nectar).max(0.0));
+            let make = make.min(p.matter * 0.01);
+            p.matter -= make;
+            p.nectar += make;
+        }
+        let sour = p.nectar * 0.001 * dt;
+        p.nectar -= sour;
+        litter += sour;
+        p.visits *= (-dt / 900.0).exp();
         // Seeds. Some plants hold theirs back and let it all go when rain
         // comes, together with their neighbours, so seed-eaters can't keep up
         // and the seedlings start in wet ground.
@@ -399,7 +416,7 @@ pub fn plants(w: &mut World, dt: f32) {
     dead.dedup();
     for &i in dead.iter().rev() {
         let p = w.plants.swap_remove(i);
-        let m = p.matter + p.fruit + p.seeds;
+        let m = p.matter + p.fruit + p.seeds + p.nectar;
         if p.alt > 0.05 {
             w.air[col_of(p.x)] += m;
         } else {
@@ -423,9 +440,9 @@ fn pollinate(w: &mut World, i: usize) -> Arc<PlantGenome> {
         return g;
     }
     let at = [p.x, p.depth, p.alt];
-    let mut visitors = 0;
-    w.cgrid.near_any_alt(at, 0.12, |_| visitors += 1);
-    let reach = 0.03 + POLLEN_WIND * g.wind + POLLEN_ANIMAL * g.nectar * (visitors as f32 / 3.0).min(1.0);
+    // Animals that drank at its flowers carry its pollen far; wind only a little way.
+    let visitors = (p.visits / 10.0).min(1.0);
+    let reach = 0.03 + POLLEN_WIND * g.wind + POLLEN_ANIMAL * visitors;
     // A few candidates, picked fairly from everything in reach.
     let mut picked = [usize::MAX; 6];
     let mut seen = 0usize;

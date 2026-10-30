@@ -595,7 +595,7 @@ impl Renderer {
             output.refining = Some(Refine { tex: front, sample: 1, strip: 0, shift: band_shift });
             return;
         };
-        if output.baking.is_none() && (shown - band_shift).abs() > 0.002 {
+        if output.baking.is_none() && (shown - band_shift).abs() > 0.005 {
             output.baking = Some((band_shift, 0));
         }
         let Some((shift, next)) = output.baking else { return };
@@ -1028,14 +1028,12 @@ fn draw_fullscreen(
 /// simulation when it is not running.
 pub mod rhythm {
     /// Length of one seasonal wobble, in days.
-    pub const SEASON_DAYS: f64 = 4.0;
-    const BAND_AMPLITUDE: f64 = 0.08;
+    pub const SEASON_DAYS: f64 = vesper_terrain::SEASON_DAYS;
     /// Shader time wraps at this many seconds to keep f32 precision.
     pub const TIME_WRAP: f64 = 65536.0;
 
     pub fn band_shift(unix_secs: f64) -> f32 {
-        let phase = unix_secs / 86400.0 / SEASON_DAYS * std::f64::consts::TAU;
-        (BAND_AMPLITUDE * phase.sin()) as f32
+        vesper_terrain::band_shift(unix_secs)
     }
 
     pub fn shader_time(secs: f64) -> f32 {

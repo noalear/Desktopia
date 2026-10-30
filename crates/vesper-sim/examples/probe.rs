@@ -16,13 +16,13 @@ fn main() {
                 c.abil.energy_cap,
                 c.abil.upkeep,
                 c.abil.film,
-                c.abil.bite,
+                c.abil.strike,
                 c.abil.gut,
                 c.abil.speed,
                 c.abil.sense,
                 c.length(),
                 c.maturity,
-                c.abil.filter
+                c.abil.takes[vesper_sim::organ::Fare::Plankton.index()] > 0.0
             );
         }
     }
