@@ -33,6 +33,8 @@ const CMD_AUTOSTART: u32 = 2;
 const CMD_QUIT: u32 = 3;
 const CMD_CHRONICLE: u32 = 4;
 const CMD_NEW_WORLD: u32 = 5;
+const CMD_CHECK_UPDATES: u32 = 6;
+const CMD_RESTART_TO_UPDATE: u32 = 7;
 /// The speed choices are this plus their place in `speed::SPEEDS`.
 const CMD_SPEED: u32 = 100;
 const HOTKEY_CHRONICLE: i32 = 1;
@@ -55,6 +57,10 @@ pub enum Event {
     NewWorld,
     /// Run the world at this many sim seconds per real second.
     SetSpeed(f32),
+    /// Look for a new build now instead of waiting.
+    CheckForUpdates,
+    /// Restart into the new build now instead of waiting for a quiet moment.
+    RestartToUpdate,
     Quit,
 }
 
@@ -68,6 +74,11 @@ pub struct MenuState {
     /// The speed chosen, and why the world is held at real time instead, if it is.
     pub speed: f32,
     pub held: Option<&'static str>,
+    /// What the updater last found, whether it can be asked to look now, and
+    /// whether a new build is waiting for a restart.
+    pub update: String,
+    pub update_can_check: bool,
+    pub update_ready: bool,
 }
 
 thread_local! {
@@ -303,6 +314,18 @@ unsafe fn show_menu(hwnd: HWND) {
         }
         let _ = AppendMenuW(menu, check(state.paused), CMD_PAUSE as usize, w!("Pause"));
         let _ = AppendMenuW(menu, check(state.autostart), CMD_AUTOSTART as usize, w!("Start with Windows"));
+        if let Ok(updates) = CreatePopupMenu() {
+            let _ = AppendMenuW(updates, MF_STRING | MF_GRAYED, 0, &HSTRING::from(state.update.as_str()));
+            let _ = AppendMenuW(updates, MF_SEPARATOR, 0, PCWSTR::null());
+            if state.update_ready {
+                let _ = AppendMenuW(updates, MF_STRING, CMD_RESTART_TO_UPDATE as usize, w!("Restart now to update"));
+            } else {
+                let flags = if state.update_can_check { MF_STRING } else { MF_STRING | MF_GRAYED };
+                let _ = AppendMenuW(updates, flags, CMD_CHECK_UPDATES as usize, w!("Check for updates now"));
+            }
+            let title = if state.update_ready { w!("Update ready") } else { w!("Updates") };
+            let _ = AppendMenuW(menu, MF_POPUP, updates.0 as usize, title);
+        }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, CMD_NEW_WORLD as usize, w!("New world\u{2026}"));
         let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT as usize, w!("Quit Desktopia"));
@@ -319,6 +342,8 @@ unsafe fn show_menu(hwnd: HWND) {
             CMD_QUIT => push(Event::Quit),
             CMD_CHRONICLE => push(Event::OpenChronicle),
             CMD_NEW_WORLD => push(Event::NewWorld),
+            CMD_CHECK_UPDATES => push(Event::CheckForUpdates),
+            CMD_RESTART_TO_UPDATE => push(Event::RestartToUpdate),
             c if (CMD_SPEED..CMD_SPEED + crate::speed::SPEEDS.len() as u32).contains(&c) => {
                 push(Event::SetSpeed(crate::speed::SPEEDS[(c - CMD_SPEED) as usize]))
             }

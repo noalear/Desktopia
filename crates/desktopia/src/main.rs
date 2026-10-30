@@ -18,6 +18,7 @@ mod logger;
 mod speed;
 #[cfg(windows)]
 mod system;
+mod update;
 #[cfg(windows)]
 mod wallpaper;
 
@@ -33,6 +34,8 @@ fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("--chronicle") => chronicle::window(false),
         Some("--chronicle-demo") => chronicle::window(true),
+        // The updater asks a new build this before trusting it.
+        Some("--version") => println!("{}", if update::BUILD.is_empty() { "dev" } else { update::BUILD }),
         _ => app::run(),
     }
 }
@@ -43,8 +46,10 @@ mod app {
     use crate::governor::Governor;
     use crate::host::{self, Event, Host, MenuState};
     use crate::living::Living;
+    use crate::update::{self, Updater};
     use crate::wallpaper::{Gpu, Presented, Wallpaper};
     use crate::{logger, system};
+    use std::path::PathBuf;
     use std::sync::mpsc::{self, Receiver, TryRecvError};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use vesper_render::{LifeBatch, WorldView};
@@ -66,12 +71,38 @@ mod app {
     const MODES_EVERY: Duration = Duration::from_secs(5);
     /// How long to sleep between checks while nothing is being drawn.
     const IDLE_WAIT: Duration = Duration::from_millis(250);
+    /// How often to see whether it's a good moment to restart into a new build.
+    const UPDATE_EVERY: Duration = Duration::from_secs(5);
+    /// How long a new build waits for the desktop to be out of sight before it
+    /// restarts anyway (never during a fullscreen game or presentation).
+    const RESTART_WITHIN: Duration = Duration::from_secs(30 * 60);
+    /// Passed to a restarted build that should stay paused.
+    const PAUSED_ARG: &str = "--paused";
 
     pub fn run() {
         logger::init("desktopia");
+        let paused = std::env::args().any(|a| a == PAUSED_ARG);
+        // The new build starts only once this one has saved and let go.
+        if let Some(exe) = live(paused) {
+            log::info!("restarting into {}", exe.display());
+            let mut new = std::process::Command::new(&exe);
+            if paused {
+                new.arg(PAUSED_ARG);
+            }
+            if let Err(e) = new.spawn() {
+                log::error!("can't start the new build: {e}");
+            }
+        }
+        log::info!("bye");
+        log::logger().flush();
+    }
+
+    /// Runs the wallpaper until it quits. Returns the exe to restart into if
+    /// it quit for an update.
+    fn live(paused: bool) -> Option<PathBuf> {
         let Some(_instance) = system::single_instance() else {
             log::info!("already running");
-            return;
+            return None;
         };
         system::be_polite();
         vesper_sim::on_helper_start(system::lower_thread_priority);
@@ -82,7 +113,7 @@ mod app {
             Ok(h) => h,
             Err(e) => {
                 log::error!("can't create the host window: {e}");
-                return;
+                return None;
             }
         };
         let timer = unsafe {
@@ -116,7 +147,15 @@ mod app {
             speed: crate::speed::load(),
             pace: None,
             held: None,
+            updater: Updater::start(Some(Box::new(system::lower_thread_priority))),
+            update: update::Status::Waiting,
+            update_ready_at: None,
+            last_update_look: Instant::now(),
+            restart: false,
         };
+        app.governor.user_paused = paused;
+        app.update = app.updater.status();
+        log::info!("build {}: {}", update::short(update::BUILD), app.update.describe());
         app.hotkey = app.host.register_hotkey(&app.cfg.chronicle_hotkey);
         app.sync_menu();
         app.run(timer);
@@ -125,14 +164,14 @@ mod app {
         if let Some(life) = app.life.take() {
             life.stop();
         }
+        let restart = app.restart.then(|| app.updater.exe().map(PathBuf::from)).flatten();
         drop(app);
         if !timer.is_invalid() {
             unsafe {
                 let _ = CloseHandle(timer);
             }
         }
-        log::info!("bye");
-        log::logger().flush();
+        restart
     }
 
     struct App {
@@ -166,6 +205,14 @@ mod app {
         pace: Option<(f32, usize)>,
         /// Why the world is held at real time instead, if it is.
         held: Option<&'static str>,
+        updater: Updater,
+        /// What the updater last said.
+        update: update::Status,
+        /// When a new build was put in place, waiting for a restart.
+        update_ready_at: Option<Instant>,
+        last_update_look: Instant,
+        /// Quitting to restart into a new build.
+        restart: bool,
     }
 
     impl App {
@@ -181,6 +228,10 @@ mod app {
                 }
                 self.maintain();
                 self.pace();
+                if self.restart_due() {
+                    self.restart = true;
+                    return;
+                }
 
                 let fps = self.frame();
                 let wait = match fps {
@@ -241,9 +292,52 @@ mod app {
                     self.pace();
                     self.sync_menu();
                 }
+                Event::CheckForUpdates => self.updater.check_now(),
+                Event::RestartToUpdate => {
+                    if self.update_ready_at.is_some() {
+                        log::info!("restart to update asked for from the tray");
+                        self.restart = true;
+                        return false;
+                    }
+                }
                 Event::Quit => return false,
             }
             true
+        }
+
+        /// Follows the updater, and says when to restart into a new build: as
+        /// soon as nobody is looking at the desktop, or after a while anyway,
+        /// but never in the middle of a fullscreen game or presentation.
+        fn restart_due(&mut self) -> bool {
+            let now = Instant::now();
+            if now - self.last_update_look < UPDATE_EVERY {
+                return false;
+            }
+            self.last_update_look = now;
+            let status = self.updater.status();
+            if status != self.update {
+                if matches!(status, update::Status::Ready(_)) {
+                    self.update_ready_at = Some(now);
+                }
+                self.update = status;
+                self.sync_menu();
+            }
+            let Some(ready) = self.update_ready_at else { return false };
+            if crate::governor::fullscreen().is_some() {
+                return false;
+            }
+            let away = self.governor.locked
+                || self.governor.display_off
+                || self.wallpaper.is_none()
+                || self.governor.reason() == "desktop covered";
+            if away || now - ready >= RESTART_WITHIN {
+                log::info!(
+                    "restarting to update ({})",
+                    if away { "desktop out of sight" } else { "waited long enough" }
+                );
+                return true;
+            }
+            false
         }
 
         /// Gives up the running world, once confirmed, and starts another.
@@ -309,6 +403,9 @@ mod app {
                 hotkey: self.hotkey.then(|| self.cfg.chronicle_hotkey.clone()),
                 speed: self.speed,
                 held: self.held,
+                update: self.update.describe(),
+                update_can_check: self.update.can_check(),
+                update_ready: self.update_ready_at.is_some(),
             });
         }
 
@@ -403,7 +500,10 @@ mod app {
         /// Draws the monitors that can be seen, if a frame is due. Returns the
         /// frame rate in effect, 0 when nothing should be drawn.
         fn frame(&mut self) -> u32 {
-            let note = self.speed_note();
+            let mut note = self.speed_note();
+            if self.update_ready_at.is_some() {
+                note.push_str(" \u{b7} update ready");
+            }
             let (Some(wallpaper), Some(gpu)) = (self.wallpaper.as_mut(), self.gpu.as_mut()) else {
                 return 0;
             };

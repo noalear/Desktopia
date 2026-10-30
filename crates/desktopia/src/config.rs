@@ -25,6 +25,29 @@ pub struct Config {
     pub exposure: f32,
     /// Keys that open the chronicle, like "Win+Alt+V". Empty turns them off.
     pub chronicle_hotkey: String,
+    /// Fetch and install new builds from GitHub by itself.
+    pub auto_update: bool,
+    /// The GitHub repository whose "latest" release holds the builds.
+    pub update_repo: String,
+    /// A GitHub token that can read that repository, needed while it is private.
+    pub update_token: Secret,
+}
+
+/// A string kept out of the log.
+#[derive(Clone, Default, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn get(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(if self.0.trim().is_empty() { "none" } else { "set" })
+    }
 }
 
 impl Default for Config {
@@ -38,6 +61,9 @@ impl Default for Config {
             hdr: true,
             exposure: 1.0,
             chronicle_hotkey: "Win+Alt+V".into(),
+            auto_update: true,
+            update_repo: "noalear/Desktopia".into(),
+            update_token: Secret::default(),
         }
     }
 }
@@ -68,6 +94,13 @@ exposure = 1.0
 
 # Keys that open the chronicle, like \"Win+Alt+V\" or \"Ctrl+Shift+F12\". Empty turns them off.
 chronicle_hotkey = \"Win+Alt+V\"
+
+# Fetch new builds from GitHub and restart into them by itself.
+auto_update = true
+
+# While the repository is private, updates need a GitHub token that can read
+# it: a fine-grained token with read-only Contents access to this repository.
+update_token = \"\"
 ";
 
 /// Modifier flags as `RegisterHotKey` takes them.
@@ -144,6 +177,15 @@ mod tests {
         assert_eq!(cfg.fast_cpu_percent, def.fast_cpu_percent);
         assert_eq!(cfg.exposure, def.exposure);
         assert_eq!(cfg.chronicle_hotkey, def.chronicle_hotkey);
+        assert_eq!(cfg.auto_update, def.auto_update);
+        assert_eq!(cfg.update_token.get(), "");
+    }
+
+    #[test]
+    fn the_token_stays_out_of_the_log() {
+        let cfg: super::Config = toml::from_str("update_token = \"github_pat_123\"").unwrap();
+        assert_eq!(cfg.update_token.get(), "github_pat_123");
+        assert!(!format!("{cfg:?}").contains("github_pat"));
     }
 
     #[test]
