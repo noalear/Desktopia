@@ -165,7 +165,7 @@ impl PlantGenome {
             glow: 0.0,
             heat_tolerance: 0.5,
             cold_tolerance: 0.3,
-            lifespan: rng.range(1200.0, 2400.0),
+            lifespan: rng.range(1500.0, 3000.0),
             growth: 1.0,
             mutation: 1.0,
             look,

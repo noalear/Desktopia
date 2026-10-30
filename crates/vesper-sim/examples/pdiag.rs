@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Plant species over time: how many, how big, how well, and what they look
 //! like, for tuning plant evolution.
 //!

@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 //! Who starves and why: per way of moving, energy, effort, food in reach.
 use std::collections::BTreeMap;
 use vesper_sim::Sim;

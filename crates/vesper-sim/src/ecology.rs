@@ -121,7 +121,7 @@ fn crowd(w: &World, x: f32, depth: f32) -> usize {
 }
 
 /// Gap dynamics: in a full stand a seed can still take root where a
-/// neighbour is failing. The frailest dying, wasted or senescent plant
+/// neighbour is failing. The frailest dying or wasted plant
 /// nearby gives way (it dies on the next pass), so a stand turns over
 /// and new variants keep getting their chance instead of the first
 /// comers holding the ground until they die of age. A kind that already
@@ -137,12 +137,13 @@ fn gap(w: &mut World, species: SpeciesId, x: f32, depth: f32) -> bool {
         }
         near += 1;
         kin += (p.species == species) as u32;
-        // How close to giving up: sick, wasted away, or near the end of its
-        // days. (Vigor is not used: it follows the daylight.)
+        // How close to giving up: sick, or wasted away for its age. (Vigor
+        // is not used, it follows the daylight; and the old are left to die
+        // in their own time, since they are the stand's bulk.)
         let life = p.age / p.genome.lifespan;
         let due = p.adult_matter * 0.7 * life.min(1.0);
         let wasted = if life > 0.1 { 1.0 - p.matter / due.max(1e-9) } else { 0.0 };
-        let frailty = (1.0 - p.health).max(wasted).max((life - 0.7) * 3.0);
+        let frailty = (1.0 - p.health).max(wasted);
         if frailty > 0.6 && worst.is_none_or(|(_, f)| frailty > f) {
             worst = Some((j, frailty));
         }
