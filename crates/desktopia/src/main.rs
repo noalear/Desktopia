@@ -15,6 +15,7 @@ mod host;
 mod living;
 #[cfg(windows)]
 mod logger;
+mod speed;
 #[cfg(windows)]
 mod system;
 #[cfg(windows)]
@@ -73,6 +74,7 @@ mod app {
             return;
         };
         system::be_polite();
+        vesper_sim::on_helper_start(system::lower_thread_priority);
         let cfg = config::load();
         log::info!("config: {cfg:?}");
 
@@ -111,6 +113,9 @@ mod app {
             life_batch: LifeBatch::new(),
             plants_uploaded: false,
             hotkey: false,
+            speed: crate::speed::load(),
+            pace: None,
+            held: None,
         };
         app.hotkey = app.host.register_hotkey(&app.cfg.chronicle_hotkey);
         app.sync_menu();
@@ -155,6 +160,12 @@ mod app {
         plants_uploaded: bool,
         /// The chronicle hotkey is registered.
         hotkey: bool,
+        /// The speed chosen from the tray, in sim seconds per real second.
+        speed: f32,
+        /// The speed and helper threads the world was last given.
+        pace: Option<(f32, usize)>,
+        /// Why the world is held at real time instead, if it is.
+        held: Option<&'static str>,
     }
 
     impl App {
@@ -169,6 +180,7 @@ mod app {
                     }
                 }
                 self.maintain();
+                self.pace();
 
                 let fps = self.frame();
                 let wait = match fps {
@@ -222,6 +234,13 @@ mod app {
                 }
                 Event::OpenChronicle => crate::chronicle::show(),
                 Event::NewWorld => self.new_world(),
+                Event::SetSpeed(speed) => {
+                    log::info!("speed set to {}", crate::speed::label(speed));
+                    self.speed = speed;
+                    crate::speed::store(speed);
+                    self.pace();
+                    self.sync_menu();
+                }
                 Event::Quit => return false,
             }
             true
@@ -244,7 +263,39 @@ mod app {
             ));
             self.plants_uploaded = false;
             self.force_frame = true;
+            self.pace = None;
             self.governor.poke();
+        }
+
+        /// Runs the world at the chosen speed, or in real time while the PC
+        /// needs itself, borrowing idle cores only for a faster world.
+        fn pace(&mut self) {
+            let held = if self.speed > 1.0 { self.governor.speed_hold(&self.cfg) } else { None };
+            let pace = match held {
+                Some(_) => (1.0, 0),
+                None if self.speed > 1.0 => (self.speed, crate::speed::helpers()),
+                None => (self.speed, 0),
+            };
+            if self.pace != Some(pace)
+                && let Some(life) = &self.life
+            {
+                log::info!("world runs at {} sim s per s, {} helper threads", pace.0, pace.1);
+                life.set_pace(pace.0, pace.1);
+                self.pace = Some(pace);
+            }
+            if held != self.held {
+                self.held = held;
+                self.sync_menu();
+            }
+        }
+
+        /// What the tooltip says about the world's speed, when it isn't real time.
+        fn speed_note(&self) -> String {
+            match (self.speed > 1.0, self.held, &self.life) {
+                (false, _, _) | (_, _, None) => String::new(),
+                (true, Some(why), _) => format!(" \u{b7} world at real time ({why})"),
+                (true, None, Some(life)) => format!(" \u{b7} world at {}", crate::speed::describe_rate(life.rate())),
+            }
         }
 
         fn schedule_rebuild(&mut self) {
@@ -256,6 +307,8 @@ mod app {
                 paused: self.governor.user_paused,
                 autostart: self.autostart,
                 hotkey: self.hotkey.then(|| self.cfg.chronicle_hotkey.clone()),
+                speed: self.speed,
+                held: self.held,
             });
         }
 
@@ -350,13 +403,14 @@ mod app {
         /// Draws the monitors that can be seen, if a frame is due. Returns the
         /// frame rate in effect, 0 when nothing should be drawn.
         fn frame(&mut self) -> u32 {
+            let note = self.speed_note();
             let (Some(wallpaper), Some(gpu)) = (self.wallpaper.as_mut(), self.gpu.as_mut()) else {
                 return 0;
             };
             let decision = self.governor.decide(&self.cfg, &wallpaper.monitors).clone();
             let tip = match decision.fps {
-                0 => format!("Desktopia: resting ({})", decision.reason),
-                fps => format!("Desktopia: {fps} fps ({})", decision.reason),
+                0 => format!("Desktopia: resting ({}){note}", decision.reason),
+                fps => format!("Desktopia: {fps} fps ({}){note}", decision.reason),
             };
             if tip != self.last_tip {
                 self.host.set_tooltip(&tip);

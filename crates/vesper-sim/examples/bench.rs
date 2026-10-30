@@ -16,6 +16,8 @@ fn main() {
     };
     let steps: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(200);
     let n = sim.world().creatures.len();
+    // HELPERS=3 shares the physics over three more threads.
+    sim.set_helpers(std::env::var("HELPERS").ok().and_then(|h| h.parse().ok()).unwrap_or(0));
     sim.enable_profile();
     let t = Instant::now();
     for _ in 0..steps {

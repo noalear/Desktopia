@@ -12,7 +12,7 @@ use crate::society;
 use crate::species::{self, Registry};
 use crate::think::{self, Percept};
 use crate::world::{self, COLS, DEPTH, Env, MAX_CREATURES, PLANT_EVERY, ROWS, TICK, World};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use vesper_terrain::{self as terrain, WORLD_W};
 
@@ -24,6 +24,8 @@ pub struct Sim {
     pub(crate) w: World,
     percepts: Vec<Percept>,
     profile: Option<[f64; PHASES]>,
+    /// Extra threads that may share the bodies' physics each tick.
+    helpers: usize,
 }
 
 impl Sim {
@@ -76,7 +78,7 @@ impl Sim {
             }
         }
         w.ground.refresh(w.env.river);
-        let mut sim = Self { w, percepts: Vec::new(), profile: None };
+        let mut sim = Self { w, percepts: Vec::new(), profile: None, helpers: 0 };
         sim.genesis();
         sim.w.matter_total = sim.w.matter_now();
         sim
@@ -150,7 +152,7 @@ impl Sim {
     }
 
     pub(crate) fn from_world(w: World) -> Self {
-        Self { w, percepts: Vec::new(), profile: None }
+        Self { w, percepts: Vec::new(), profile: None, helpers: 0 }
     }
 
     /// A snapshot for the renderer.
@@ -186,6 +188,12 @@ impl Sim {
     /// simulating every limb, which is far cheaper and not worth watching.
     pub fn set_coarse(&mut self, coarse: bool) {
         self.w.coarse = coarse;
+    }
+
+    /// Lets up to `n` more threads share the work of each tick, for running
+    /// faster than one core can. The world turns out the same either way.
+    pub fn set_helpers(&mut self, n: usize) {
+        self.helpers = n;
     }
 
     /// Runs up to `seconds` of sim time, stopping early if `budget` of real
@@ -235,7 +243,7 @@ impl Sim {
         think::think(w, &mut self.percepts);
         probe.at(w, 5);
         act::movement(w, &self.percepts);
-        act::physics(w);
+        act::physics(w, self.helpers);
         probe.at(w, 6);
         act::actions(w, &self.percepts);
         probe.at(w, 7);
@@ -471,6 +479,43 @@ fn renew(w: &mut World) {
             ecology::sow(w, &seed, x, d, 0.2, 0.0);
         }
     }
+}
+
+static HELPER_START: OnceLock<fn()> = OnceLock::new();
+
+/// Runs on every helper thread as it starts, e.g. to lower its priority.
+pub fn on_helper_start(f: fn()) {
+    let _ = HELPER_START.set(f);
+}
+
+/// Calls `f` on every item, sharing them out over `helpers` more threads
+/// when there are enough to be worth it. Items are handed out a few at a
+/// time, so a thread that draws big bodies doesn't hold the others up.
+pub(crate) fn share<T: Send>(items: &mut [T], helpers: usize, f: impl Fn(&mut T) + Sync) {
+    const CHUNK: usize = 4;
+    let helpers = helpers.min(items.len() / (CHUNK * 2));
+    if helpers == 0 {
+        items.iter_mut().for_each(f);
+        return;
+    }
+    let queue = Mutex::new(items.chunks_mut(CHUNK));
+    let work = || {
+        loop {
+            let Some(chunk) = queue.lock().unwrap().next() else { break };
+            chunk.iter_mut().for_each(&f);
+        }
+    };
+    std::thread::scope(|s| {
+        for _ in 0..helpers {
+            s.spawn(|| {
+                if let Some(start) = HELPER_START.get() {
+                    start();
+                }
+                work();
+            });
+        }
+        work();
+    });
 }
 
 #[cfg(test)]

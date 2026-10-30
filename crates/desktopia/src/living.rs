@@ -304,6 +304,18 @@ impl Living {
         Some((at, c.scale * c.body.extent * shrink))
     }
 
+    /// Sets how fast the world runs, in sim seconds per real second, and how
+    /// many more threads it may borrow when one can't keep up.
+    pub fn set_pace(&self, speed: f32, helpers: usize) {
+        self.runner.set_helpers(helpers);
+        self.runner.set_speed(speed);
+    }
+
+    /// How fast the world has really been running lately.
+    pub fn rate(&self) -> f32 {
+        self.runner.rate()
+    }
+
     /// Saves and stops the simulation.
     pub fn stop(self) {
         self.runner.stop();

@@ -13,7 +13,7 @@ use crate::mind::{self, Grief, PlaceKind, creature_bin, plant_bin};
 use crate::physics::{self, AIR, Drive, MOTOR_COST, Medium, Rig, STEP, STEPS_PER_TICK, WATER};
 use crate::think::{Food, Percept, season_quarter};
 use crate::world::{
-    ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, Env, TICK, World, col_of, dist3, pair_mut, wrap_angle,
+    ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, Env, Remains, TICK, World, col_of, dist3, pair_mut, wrap_angle,
 };
 use vesper_terrain::WORLD_W;
 
@@ -252,63 +252,66 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
 
 /// Runs the bodies of every creature and corpse through one tick of physics,
 /// and moves each through the world by however far its body carried it.
-pub fn physics(w: &mut World) {
+/// Bodies don't touch each other here, so `helpers` extra threads can share
+/// them out with the same result as one thread.
+pub fn physics(w: &mut World, helpers: usize) {
     if w.coarse {
         return coarse(w);
     }
     let World { creatures, remains, env, ground, .. } = w;
-    for c in creatures.iter_mut() {
-        let mask = physics::present(&c.body, c.maturity, c.lost);
-        let scale = c.scale();
-        if mask != c.rig.mask || (scale / c.rig.scale - 1.0).abs() > 0.04 {
-            c.rig = c.rig.rebuild(&c.body, mask, scale);
+    let (env, ground) = (&*env, &*ground);
+    crate::sim::share(creatures, helpers, |c| body(c, env, ground));
+    crate::sim::share(remains, helpers.min(1), |r| corpse(r, env, ground));
+}
+
+fn body(c: &mut Creature, env: &Env, ground: &Ground) {
+    let mask = physics::present(&c.body, c.maturity, c.lost);
+    let scale = c.scale();
+    if mask != c.rig.mask || (scale / c.rig.scale - 1.0).abs() > 0.04 {
+        c.rig = c.rig.rebuild(&c.body, mask, scale);
+    }
+    c.rig.ensure_pairs(&c.body);
+    c.moments.clear();
+    c.moments.push(Moment::of(&c.rig, c.pos, c.heading));
+    for _ in 0..STEPS_PER_TICK {
+        let held = c.action == Action::Held || c.doom.is_some();
+        let drive = Drive { power: c.drive[0], rise: c.drive[1], hz: c.genome.gait_hz, limp: held };
+        let before = c.rig.parts.first().map_or(0.0, |p| p.pos[1]);
+        let du = carry(&mut c.rig, &mut c.pos, &c.heading, drive, env, ground);
+        let (s, co) = c.heading.sin_cos();
+        let vy = (c.rig.parts.first().map_or(0.0, |p| p.pos[1]) - before) / STEP;
+        c.vel = [du * co / STEP, du * s / STEP, vy];
+        let work = std::mem::take(&mut c.rig.work);
+        c.energy -= work * MOTOR_COST;
+        if drive.power.abs() > 0.3 && !held {
+            let made = du / STEP / c.length().max(1e-5) / drive.power.abs();
+            let learnt = if drive.power > 0.0 { &mut c.stride } else { &mut c.back };
+            *learnt += (made - *learnt) * 0.02;
+            c.toil += (work / STEP / drive.power.abs() - c.toil) * 0.02;
         }
-        c.rig.ensure_pairs(&c.body);
-        c.moments.clear();
+        if drive.rise.abs() > 0.3 && !held && !c.rig.grounded {
+            c.climb += (vy / drive.rise - c.climb) * 0.02;
+        }
+        c.gait = c.rig.clock * std::f32::consts::TAU;
         c.moments.push(Moment::of(&c.rig, c.pos, c.heading));
     }
-    for r in remains.iter_mut() {
-        r.moments.clear();
-        if let Some(rig) = &mut r.rig {
-            if rig.still > 3.0 {
-                continue;
-            }
-            rig.ensure_pairs(&r.body);
-            r.moments.push(Moment::of(rig, r.pos, r.heading));
-        }
+}
+
+fn corpse(r: &mut Remains, env: &Env, ground: &Ground) {
+    r.moments.clear();
+    let Some(rig) = &mut r.rig else { return };
+    if rig.still > 3.0 {
+        return;
     }
+    rig.ensure_pairs(&r.body);
+    r.moments.push(Moment::of(rig, r.pos, r.heading));
     for _ in 0..STEPS_PER_TICK {
-        for c in creatures.iter_mut() {
-            let held = c.action == Action::Held || c.doom.is_some();
-            let drive = Drive { power: c.drive[0], rise: c.drive[1], hz: c.genome.gait_hz, limp: held };
-            let before = c.rig.parts.first().map_or(0.0, |p| p.pos[1]);
-            let du = carry(&mut c.rig, &mut c.pos, &c.heading, drive, env, ground);
-            let (s, co) = c.heading.sin_cos();
-            let vy = (c.rig.parts.first().map_or(0.0, |p| p.pos[1]) - before) / STEP;
-            c.vel = [du * co / STEP, du * s / STEP, vy];
-            let work = std::mem::take(&mut c.rig.work);
-            c.energy -= work * MOTOR_COST;
-            if drive.power.abs() > 0.3 && !held {
-                let made = du / STEP / c.length().max(1e-5) / drive.power.abs();
-                let learnt = if drive.power > 0.0 { &mut c.stride } else { &mut c.back };
-                *learnt += (made - *learnt) * 0.02;
-                c.toil += (work / STEP / drive.power.abs() - c.toil) * 0.02;
-            }
-            if drive.rise.abs() > 0.3 && !held && !c.rig.grounded {
-                c.climb += (vy / drive.rise - c.climb) * 0.02;
-            }
-            c.gait = c.rig.clock * std::f32::consts::TAU;
-            c.moments.push(Moment::of(&c.rig, c.pos, c.heading));
+        if rig.still > 3.0 {
+            break;
         }
-        for r in remains.iter_mut() {
-            let Some(rig) = &mut r.rig else { continue };
-            if rig.still > 3.0 {
-                continue;
-            }
-            let limp = Drive { limp: true, ..Default::default() };
-            carry(rig, &mut r.pos, &r.heading, limp, env, ground);
-            r.moments.push(Moment::of(rig, r.pos, r.heading));
-        }
+        let limp = Drive { limp: true, ..Default::default() };
+        carry(rig, &mut r.pos, &r.heading, limp, env, ground);
+        r.moments.push(Moment::of(rig, r.pos, r.heading));
     }
 }
 

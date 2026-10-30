@@ -5,6 +5,10 @@
 //! locked session or a sleeping display. A monitor covered by a maximized or
 //! fullscreen window is skipped. The frame cap drops on battery and when the
 //! CPU is busy with other work.
+//!
+//! It also says when a world set to run faster than real time must slow back
+//! down: for a fullscreen game or app, a presentation, battery power, or
+//! other programs using the CPU, and for half a minute after.
 
 use crate::config::Config;
 use crate::desktop::Monitor;
@@ -12,8 +16,10 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{FILETIME, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
-use windows::Win32::System::Threading::GetSystemTimes;
-use windows::Win32::UI::Shell::{QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
+use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes, GetSystemTimes};
+use windows::Win32::UI::Shell::{
+    QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GetClassNameW, GetWindowLongW, IsIconic, IsWindowVisible, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
@@ -22,6 +28,8 @@ use windows::core::BOOL;
 
 const CHECK_EVERY: Duration = Duration::from_millis(500);
 const CPU_EVERY: Duration = Duration::from_secs(2);
+/// How long the PC must have been quiet before a faster world speeds up again.
+const HOLD_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decision {
@@ -40,6 +48,9 @@ pub struct Governor {
     last_check: Option<Instant>,
     decision: Decision,
     cpu: CpuMeter,
+    /// Why the world must run in real time, and when that was last seen.
+    hold: Option<(&'static str, Instant)>,
+    last_hold_check: Option<Instant>,
 }
 
 impl Governor {
@@ -51,6 +62,8 @@ impl Governor {
             last_check: None,
             decision: Decision { fps: 0, visible: Vec::new(), reason: "starting" },
             cpu: CpuMeter::new(),
+            hold: None,
+            last_hold_check: None,
         }
     }
 
@@ -72,6 +85,43 @@ impl Governor {
             self.decision = d;
         }
         &self.decision
+    }
+
+    /// Why the world may not run faster than real time now, if it may not.
+    pub fn speed_hold(&mut self, cfg: &Config) -> Option<&'static str> {
+        let now = Instant::now();
+        if self.last_hold_check.is_none_or(|t| now - t >= CHECK_EVERY) {
+            self.last_hold_check = Some(now);
+            if let Some(reason) = self.busy(cfg) {
+                if self.hold.is_none_or(|(r, _)| r != reason) {
+                    log::info!("governor: world held at real time ({reason})");
+                }
+                self.hold = Some((reason, now));
+            } else if self.hold.is_some_and(|(_, seen)| now - seen >= HOLD_AFTER) {
+                log::info!("governor: the PC is quiet; the world may run fast again");
+                self.hold = None;
+            }
+        }
+        self.hold.map(|(r, _)| r)
+    }
+
+    /// What the PC is busy with that a fast world would get in the way of.
+    fn busy(&mut self, cfg: &Config) -> Option<&'static str> {
+        if let Ok(state) = unsafe { SHQueryUserNotificationState() } {
+            match state {
+                QUNS_RUNNING_D3D_FULL_SCREEN => return Some("fullscreen game"),
+                QUNS_PRESENTATION_MODE => return Some("presentation mode"),
+                QUNS_BUSY => return Some("fullscreen app"),
+                _ => {}
+            }
+        }
+        if on_battery() {
+            return Some("on battery");
+        }
+        if self.cpu.sample().is_some_and(|load| load > cfg.fast_cpu_percent) {
+            return Some("PC busy");
+        }
+        None
     }
 
     fn evaluate(&mut self, cfg: &Config, monitors: &[Monitor]) -> Decision {
@@ -124,7 +174,8 @@ fn on_battery() -> bool {
     s.ACLineStatus == 0 || s.SystemStatusFlag == 1
 }
 
-/// Total CPU use across all cores, from the change in system times.
+/// CPU use by other programs across all cores, from the change in system
+/// times less Desktopia's own, so a fast world doesn't count as the PC being busy.
 struct CpuMeter {
     last: Option<(Instant, u64, u64)>,
     load: Option<f32>,
@@ -143,8 +194,14 @@ impl CpuMeter {
         let (mut idle, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default());
         unsafe { GetSystemTimes(Some(&mut idle), Some(&mut kernel), Some(&mut user)) }.ok()?;
         let ft = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+        let (mut created, mut exited, mut own_kernel, mut own_user) =
+            (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        let own =
+            unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut exited, &mut own_kernel, &mut own_user) }
+                .map_or(0, |()| ft(own_kernel) + ft(own_user));
         // Kernel time includes idle time.
-        let (busy, total) = (ft(kernel) + ft(user) - ft(idle), ft(kernel) + ft(user));
+        let total = ft(kernel) + ft(user);
+        let busy = (total - ft(idle)).saturating_sub(own);
         if let Some((_, b0, t0)) = self.last {
             let dt = total.saturating_sub(t0);
             if dt > 0 {
