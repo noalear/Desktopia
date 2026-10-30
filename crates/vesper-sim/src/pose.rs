@@ -1,16 +1,17 @@
 //! Turns bodies into drawable pieces in screen-world coordinates: capsules
 //! for segments and triangles for membranes, posed by gait, effort, injury
-//! and decay. The host calls this at render rate, interpolating between the
-//! last two sim frames, so the simulation itself never animates anything.
+//! and decay (see `motion::posture`). The host calls this at render rate,
+//! interpolating between the last two sim frames, so the simulation itself
+//! never animates anything.
 //!
 //! Coordinates are the shaders': x along the band, y screen height (0 bottom
 //! .. 1 top), both in monitor heights.
 
 use crate::body::{Body, Segment};
-use crate::creature::Action;
-use crate::frame::{CreatureView, Moment, PartPose, PlantView, RemainsView};
+use crate::frame::{CreatureView, Moment, PlantView, RemainsView};
 use crate::genome::Tissue;
 use crate::history::Locomotion;
+use crate::motion::{self, Stance};
 use crate::world::DEPTH;
 use vesper_terrain as terrain;
 
@@ -87,16 +88,6 @@ pub fn blend(a: &CreatureView, b: &CreatureView, t: f32) -> CreatureView {
     c.flash = a.flash + (b.flash - a.flash) * t;
     c.scale = a.scale + (b.scale - a.scale) * t;
     c
-}
-
-pub(crate) fn gone(body: &Body, lost: u64) -> u64 {
-    let mut g = lost;
-    for (i, s) in body.segments.iter().enumerate() {
-        if s.parent >= 0 && g & (1 << s.parent) != 0 {
-            g |= 1 << i;
-        }
-    }
-    g
 }
 
 pub(crate) struct Place {
@@ -237,43 +228,8 @@ fn emit(
     draw(body, skip, keep, damage, sway, &base, &tip, place.scale, place.face.signum(), out);
 }
 
-/// A body's pose `t` of the way (0..1) through its tick.
-pub fn sample(motion: &[Moment], t: f32) -> Option<Moment> {
-    match motion.len() {
-        0 => None,
-        1 => Some(motion[0].clone()),
-        n => {
-            let f = t.clamp(0.0, 1.0) * (n - 1) as f32;
-            let i = (f as usize).min(n - 2);
-            let k = f - i as f32;
-            let (a, b) = (&motion[i], &motion[i + 1]);
-            if a.parts.len() != b.parts.len() || a.parts.iter().zip(&b.parts).any(|(p, q)| p.seg != q.seg) {
-                return Some(if k < 0.5 { a.clone() } else { b.clone() });
-            }
-            let lerp = |x: f32, y: f32| x + (y - x) * k;
-            let turn = |x: f32, y: f32| x + crate::world::wrap_angle(y - x) * k;
-            Some(Moment {
-                pos: [lerp(a.pos[0], b.pos[0]), lerp(a.pos[1], b.pos[1])],
-                heading: turn(a.heading, b.heading),
-                face: lerp(a.face, b.face),
-                scale: lerp(a.scale, b.scale),
-                parts: a
-                    .parts
-                    .iter()
-                    .zip(&b.parts)
-                    .map(|(p, q)| PartPose {
-                        seg: p.seg,
-                        u: lerp(p.u, q.u),
-                        alt: lerp(p.alt, q.alt),
-                        angle: turn(p.angle, q.angle),
-                    })
-                    .collect(),
-            })
-        }
-    }
-}
-
-/// Lays out a body from its physical pose and emits it.
+/// Lays out a body from its posed moment and emits it where the moment
+/// stands in the world.
 pub(crate) fn physical(
     body: &Body,
     m: &Moment,
@@ -288,6 +244,22 @@ pub(crate) fn physical(
     // Turned toward or away from us, a body is seen shortened, but never so
     // much that it vanishes into a line.
     let fore = m.face * m.heading.cos().abs().max(0.45);
+    physical_at(body, m, at, shrink, fore, keep, damage, out);
+}
+
+/// Lays out a posed moment around screen point `at`, `shrink` screen units
+/// per world unit, seen `fore` of its length (signed by facing).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn physical_at(
+    body: &Body,
+    m: &Moment,
+    at: [f32; 2],
+    shrink: f32,
+    fore: f32,
+    keep: impl Fn(usize, &Segment) -> bool,
+    damage: impl Fn(usize, &Segment) -> f32,
+    out: &mut Pose,
+) {
     let n = body.segments.len();
     let mut base = vec![[0.0f32; 2]; n];
     let mut tip = vec![[0.0f32; 2]; n];
@@ -302,19 +274,51 @@ pub(crate) fn physical(
         tip[i] = screen(p.u + ca * half, p.alt + sa * half);
         mask |= 1 << i;
     }
-    let hand = if m.face < 0.0 { -1.0 } else { 1.0 };
+    let hand = if fore < 0.0 { -1.0 } else { 1.0 };
     draw(body, !mask, keep, damage, |_| 0.0, &base, &tip, m.scale * shrink, hand, out);
 }
 
-/// Poses a living creature `t` of the way (0..1) through the tick its view
-/// came from, from the physics of its body.
-pub fn creature(c: &CreatureView, t: f32, out: &mut Pose) {
-    out.clear();
-    if let Some(m) = sample(&c.motion, t) {
-        physical(&c.body, &m, |_, _| true, wounds(c), out);
-        return;
+/// The stance a creature's snapshot describes, for `motion::posture`.
+pub fn stance(c: &CreatureView, time: f32) -> Stance {
+    let speed = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1]).sqrt();
+    let aloft = matches!(c.locomotion, Locomotion::Swim | Locomotion::Glide | Locomotion::Drift);
+    let tilt = if aloft && (speed > 1e-4 || c.vel[2].abs() > 1e-4) {
+        (c.vel[2].atan2(speed.max(1e-4)) * 0.5).clamp(-0.5, 0.5)
+    } else {
+        0.0
+    };
+    Stance {
+        mode: c.locomotion,
+        gait: c.gait,
+        effort: c.effort,
+        pace: c.pace,
+        tilt,
+        settle: c.settle,
+        dead: None,
+        face: c.face,
+        heading: c.heading,
+        scale: c.scale,
+        alt: c.pos[2],
+        pos: [c.pos[0], c.pos[1] * DEPTH],
+        salt: (c.id % 97) as f32 / 97.0,
+        time,
     }
-    scripted(c, out);
+}
+
+/// A living creature's body posed at this moment of its gait. `time` is any
+/// steady clock, for the small fidgets of a body at rest.
+pub fn moment(c: &CreatureView, time: f32) -> Moment {
+    motion::posture(&c.body, c.body.present(c.maturity, c.lost), &stance(c, time))
+}
+
+/// Poses a living creature. `t` (0..1 through its tick) is kept for callers
+/// that interpolate snapshots; the gait phase in the snapshot already says
+/// where in its stride it is.
+pub fn creature(c: &CreatureView, t: f32, out: &mut Pose) {
+    let _ = t;
+    out.clear();
+    let m = moment(c, 0.0);
+    physical(&c.body, &m, |_, _| true, wounds(c), out);
 }
 
 /// How damaged each segment of a living creature looks.
@@ -325,52 +329,6 @@ pub(crate) fn wounds(c: &CreatureView) -> impl Fn(usize, &Segment) -> f32 + '_ {
         let stump = body_has_lost_child(&c.body, c.lost, i);
         (wounded * 0.6 + if stump { 0.8 } else { 0.0 } + c.bleeding * 0.3).min(1.0)
     }
-}
-
-/// A creature without physics, posed from its gait alone.
-fn scripted(c: &CreatureView, out: &mut Pose) {
-    let time = 0.0;
-    let (at, shrink, z) = project(c.pos);
-    let speed = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1]).sqrt();
-    let climb = if speed > 1e-4 || c.vel[2].abs() > 1e-4 { (c.vel[2]).atan2(speed.max(1e-4)) * 0.4 } else { 0.0 };
-    let place = Place {
-        origin: at,
-        scale: c.scale * shrink,
-        face: if c.heading.cos() >= 0.0 { 1.0 } else { -1.0 },
-        fore: c.heading.cos().abs().max(0.45),
-        tilt: climb.clamp(-0.5, 0.5),
-    };
-    out.z = z;
-    out.at = at;
-    out.shrink = shrink;
-    let skip = gone(&c.body, c.lost);
-    let swim = matches!(c.locomotion, Locomotion::Swim | Locomotion::Crawl | Locomotion::Burrow);
-    let effort = c.effort.max(0.15);
-    let idle = (time * 0.7 + (c.id % 97) as f32).sin() * 0.06;
-    let strike = matches!(c.action, Action::Attacking | Action::Eating) as u8 as f32;
-    let wounded = 1.0 - c.health;
-    let bend = |_: usize, s: &Segment| -> f32 {
-        let phase = c.gait - s.depth as f32 * 0.9;
-        match s.tissue {
-            Tissue::Muscle => {
-                let pair = if s.side > 0 { std::f32::consts::PI } else { 0.0 };
-                let amp = if swim { 0.45 } else { 0.35 } * effort;
-                (phase + pair).sin() * amp + idle
-            }
-            Tissue::Mouth => strike * (time * 9.0).sin().abs() * 0.5,
-            Tissue::LightFilm | Tissue::Float => (phase * 0.5).sin() * 0.12 * effort + idle,
-            _ if s.parent >= 0 && swim => (phase).sin() * 0.12 * effort,
-            _ => idle * 0.5,
-        }
-    };
-    let keep = |_: usize, s: &Segment| s.onset <= c.maturity;
-    let damage = |i: usize, s: &Segment| {
-        // Stumps where a limb was torn off, and a general toll from wounds.
-        let stump = body_has_lost_child(&c.body, c.lost, i);
-        let _ = s;
-        (wounded * 0.6 + if stump { 0.8 } else { 0.0 } + c.bleeding * 0.3).min(1.0)
-    };
-    emit(&c.body, skip, bend, keep, damage, |_| 0.0, &place, out);
 }
 
 pub(crate) fn body_has_lost_child(body: &Body, lost: u64, i: usize) -> bool {
@@ -384,9 +342,14 @@ pub fn at_rest(body: &Body, at: [f32; 2], scale: f32, face: f32, plant: bool, ou
     out.clear();
     out.at = at;
     out.shrink = 1.0;
+    if !plant {
+        let m = motion::standing(body, scale, face);
+        physical_at(body, &m, at, 1.0, face, |_, _| true, |_, _| 0.0, out);
+        return;
+    }
     let place = Place { origin: at, scale, face, fore: 1.0, tilt: 0.0 };
     let max_depth = body.segments.iter().map(|s| s.depth).max().unwrap_or(1).max(1) as f32;
-    let sway = |s: &Segment| if plant { s.depth as f32 / max_depth } else { 0.0 };
+    let sway = |s: &Segment| s.depth as f32 / max_depth;
     emit(body, 0, |_, _| 0.0, |_, _| true, |_, _| 0.0, sway, &place, out);
 }
 
@@ -418,34 +381,43 @@ pub fn plant_at(p: &PlantView, pos: [f32; 3], out: &mut Pose) {
     emit(&p.body, 0, bend, keep, damage, sway, &place, out);
 }
 
+/// The stance of a body or piece of one lying where it fell.
+pub fn remains_stance(r: &RemainsView, time: f32) -> Stance {
+    let settle = (r.age / 6.0).min(1.0);
+    Stance {
+        mode: Locomotion::Crawl,
+        gait: 0.0,
+        effort: 0.0,
+        pace: 0.0,
+        // It keels over as it settles.
+        tilt: -0.3 * settle,
+        settle,
+        dead: Some(r.decay),
+        face: if r.heading.cos() >= 0.0 { 1.0 } else { -1.0 },
+        heading: r.heading,
+        scale: r.scale,
+        alt: r.pos[2],
+        pos: [r.pos[0], r.pos[1] * DEPTH],
+        salt: (r.id % 97) as f32 / 97.0,
+        time,
+    }
+}
+
+/// A corpse's body posed as it lies.
+pub fn remains_moment(r: &RemainsView, time: f32) -> Moment {
+    let present = r.body.present(1.0, r.missing);
+    motion::posture(&r.body, present, &remains_stance(r, time))
+}
+
 /// Poses a body or piece of one, lying where it fell and falling apart.
 pub fn remains(r: &RemainsView, t: f32, out: &mut Pose) {
+    let _ = t;
     out.clear();
-    if let Some(m) = sample(&r.motion, t) {
-        let d = r.decay;
-        let keep = |_: usize, s: &Segment| d < lasts(s.tissue);
-        physical(&r.body, &m, keep, |_, _| (0.3 + d).min(1.0), out);
-        return;
-    }
-    let (at, shrink, z) = project(r.pos);
-    let settle = (r.age / 6.0).min(1.0);
-    let place = Place {
-        origin: at,
-        scale: r.scale * shrink,
-        face: if r.heading.cos() >= 0.0 { 1.0 } else { -1.0 },
-        fore: r.heading.cos().abs().max(0.45),
-        tilt: -0.25 * settle,
-    };
-    out.z = z;
-    out.at = at;
-    out.shrink = shrink;
-    let skip = gone(&r.body, r.missing);
+    let m = remains_moment(r, 0.0);
     let d = r.decay;
-    // Limbs go slack, then soft tissue rots away before shell and frame.
-    let bend = |_: usize, s: &Segment| if s.parent >= 0 { -0.35 * settle * s.angle.signum() } else { 0.0 };
+    // Soft tissue rots away before shell and frame.
     let keep = |_: usize, s: &Segment| d < lasts(s.tissue);
-    let damage = |_: usize, _: &Segment| (0.3 + d).min(1.0);
-    emit(&r.body, skip, bend, keep, damage, |_| 0.0, &place, out);
+    physical(&r.body, &m, keep, |_, _| (0.3 + d).min(1.0), out);
 }
 
 /// How far into decay each tissue lasts: soft tissue goes first, then shell and frame.

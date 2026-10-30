@@ -8,8 +8,8 @@ use crate::genetics;
 use crate::genome::{Genome, Tissue};
 use crate::history::{Behavior, CreatureId, DeathCause, Fact, SpeciesId, StrainId};
 use crate::mind::{self, Mind, PlaceKind, creature_bin};
+use crate::motion::Motion;
 use crate::organ::Fare;
-use crate::physics::{self, Rig};
 use crate::strain::{Infection, Strain};
 use crate::think::season_quarter;
 use crate::world::{
@@ -117,20 +117,12 @@ pub fn new_creature(
         target: None,
         focus: None,
         doom: None,
-        rig: Rig::empty(),
+        motion: Motion::new(heading),
         drive: [0.0; 2],
-        // Hopeful about both ways at first, so it tries each.
-        stride: 0.5,
-        back: 0.5,
-        toil: 0.0,
-        climb: 0.0,
         exposure: Default::default(),
         venom: 0.0,
-        moments: Vec::new(),
     };
     c.refresh();
-    c.rig = Rig::new(&c.body, physics::present(&c.body, c.maturity, 0), c.scale(), pos[2]);
-    c.rig.face = if heading.cos() < 0.0 { -1.0 } else { 1.0 };
     c.energy = c.abil.energy_cap * 0.6;
     c
 }
@@ -226,7 +218,7 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
             def.tally.scars += 1;
             def.bleeding += 0.3;
             def.refresh();
-            chunk = Some((sub, m, def.body.clone(), def.scale(), def.genome.look, def.rig.piece(&def.body, sub)));
+            chunk = Some((sub, m, def.body.clone(), def.scale(), def.genome.look));
         }
     }
     let killed = def.health <= 0.0 && def.doom.is_none();
@@ -264,7 +256,7 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
         let kin_meat = if att_species == def_species { 0.4 } else { 0.0 };
         digest_meat(w, ai, eaten, eff, bin, toxin * 1.5 + kin_meat);
     }
-    if let Some((sub, m, body, scale, look, chunk_rig)) = chunk {
+    if let Some((sub, m, body, scale, look)) = chunk {
         let id = w.id();
         w.remains.push(Remains {
             id,
@@ -283,8 +275,6 @@ pub fn attack(w: &mut World, ai: usize, di: usize, drive: f32) {
             toxin,
             strain: None,
             offered_to: None,
-            rig: Some(chunk_rig),
-            moments: Vec::new(),
         });
     }
     // Group against group.
@@ -931,8 +921,6 @@ pub fn bury(w: &mut World) {
             toxin: c.genome.toxin,
             strain,
             offered_to: offered,
-            rig: Some(c.rig),
-            moments: Vec::new(),
         });
         if let Some(seed) = c.seed {
             crate::ecology::sow(w, &seed, c.pos[0], c.pos[1], 0.0, 0.0);
@@ -946,7 +934,7 @@ pub fn decay(w: &mut World, dt: f32) {
     while i < w.remains.len() {
         let r = &mut w.remains[i];
         r.age += dt;
-        if r.pos[2] > 0.0 && r.rig.is_none() {
+        if r.pos[2] > 0.0 {
             r.pos[2] = (r.pos[2] - 0.008 * dt).max(0.0);
         }
         if r.age > 150.0 {

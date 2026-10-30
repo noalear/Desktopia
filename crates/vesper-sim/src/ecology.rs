@@ -48,7 +48,7 @@ fn plant_seed(w: &mut World, seed: &Seed, x: f32, depth: f32, alt: f32, matter: 
         && if floats {
             crowd_aloft(w, x, depth, alt) < 3 && w.plants.iter().filter(|p| p.genome.floats()).count() < MAX_MATS
         } else {
-            crowd(w, x, depth) < 7
+            crowd(w, x, depth) < 7 || gap(w, seed.species, x, depth)
         };
     if !ok {
         w.to_soil(x, depth, matter);
@@ -118,6 +118,45 @@ fn crowd(w: &World, x: f32, depth: f32) -> usize {
         }
     });
     n
+}
+
+/// Gap dynamics: in a full stand a seed can still take root where a
+/// neighbour is failing. The frailest dying, wasted or senescent plant
+/// nearby gives way (it dies on the next pass), so a stand turns over
+/// and new variants keep getting their chance instead of the first
+/// comers holding the ground until they die of age. A kind that already
+/// fills the stand gets no such gaps: its own pests and the grazers that
+/// learn it keep the commonest plant from crowding every other kind out.
+fn gap(w: &mut World, species: SpeciesId, x: f32, depth: f32) -> bool {
+    let mut worst: Option<(usize, f32)> = None;
+    let (mut near, mut kin) = (0u32, 0u32);
+    w.pgrid.near([x, depth, 0.0], 0.025, |j| {
+        let p = &w.plants[j];
+        if p.alt >= 0.05 || p.health <= 0.0 || (p.x - x).abs() >= 0.025 || (p.depth - depth).abs() >= 0.08 {
+            return;
+        }
+        near += 1;
+        kin += (p.species == species) as u32;
+        // How close to giving up: sick, wasted away, or near the end of its
+        // days. (Vigor is not used: it follows the daylight.)
+        let life = p.age / p.genome.lifespan;
+        let due = p.adult_matter * 0.7 * life.min(1.0);
+        let wasted = if life > 0.1 { 1.0 - p.matter / due.max(1e-9) } else { 0.0 };
+        let frailty = (1.0 - p.health).max(wasted).max((life - 0.7) * 3.0);
+        if frailty > 0.6 && worst.is_none_or(|(_, f)| frailty > f) {
+            worst = Some((j, frailty));
+        }
+    });
+    if near > 0 && kin * 2 > near {
+        return false;
+    }
+    match worst {
+        Some((j, _)) => {
+            w.plants[j].health = 0.0;
+            true
+        }
+        None => false,
+    }
 }
 
 /// Floating mats near a spot in the air, which shade and starve each other.

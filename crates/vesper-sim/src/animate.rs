@@ -1,6 +1,6 @@
-//! Behaviour drawn on top of physics. The simulation says what each creature
-//! is doing and its body's physics says how it stands and walks; this bends
-//! that physical pose by the act. Heads dip to feed and yank to tear, hunters
+//! Behaviour drawn on top of gait. The simulation says what each creature
+//! is doing and `motion::posture` says how it stands and walks; this bends
+//! that pose by the act. Heads dip to feed and yank to tear, hunters
 //! wind up and lunge, the threatened rear up, gape and bristle, the bitten
 //! flinch, givers heave food up for beggars, partners press and rock
 //! together, layers squat and strain, the sick shiver and retch, the trapped
@@ -213,9 +213,10 @@ impl Animator {
 
     /// Poses a living creature as `pose::creature` does, acting out what it is doing.
     pub fn creature(&self, c: &CreatureView, t: f32, out: &mut Pose) {
-        let (Some(mut m), Some(a)) = (pose::sample(&c.motion, t), self.acts.get(&c.id)) else {
+        let Some(a) = self.acts.get(&c.id) else {
             return pose::creature(c, t, out);
         };
+        let mut m = pose::moment(c, self.time());
         out.clear();
         let mut swell = [1.0f32; 12];
         if let Some(mut p) = Puppet::new(&c.body, &mut m) {
@@ -231,7 +232,8 @@ impl Animator {
 
     /// Poses a body as `pose::remains` does, with the spasms of a fresh death.
     pub fn remains(&self, r: &RemainsView, t: f32, out: &mut Pose) {
-        let Some(mut m) = pose::sample(&r.motion, t) else { return pose::remains(r, t, out) };
+        let _ = t;
+        let mut m = pose::remains_moment(r, self.time());
         out.clear();
         if let Some(mut p) = Puppet::new(&r.body, &mut m) {
             throes(&mut p, r, self.time());
@@ -391,17 +393,18 @@ impl<'a> Puppet<'a> {
             .fold(f32::MAX, f32::min)
     }
 
-    /// Picks out head, neck, mouths, tail, legs and fins from the body at rest.
+    /// Picks out head, neck, mouths, tail, legs and fins from the body's roles.
     fn cast(&self) -> Roles {
+        use crate::body::Role;
         let segs = &self.body.segments;
         let mut r = Roles::default();
         let present = |s: usize| self.has(s);
-        let front = |kind: Option<Tissue>| {
+        r.head = (0..segs.len()).find(|&s| present(s) && segs[s].role == Role::Head).or_else(|| {
+            // Headless: the foremost piece of the axis stands in.
             (0..segs.len())
-                .filter(|&s| present(s) && kind.is_none_or(|k| segs[s].tissue == k))
+                .filter(|&s| present(s) && segs[s].role == Role::Trunk)
                 .max_by(|&a, &b| segs[a].tip[0].total_cmp(&segs[b].tip[0]))
-        };
-        r.head = front(Some(Tissue::Mouth)).or_else(|| front(Some(Tissue::Sense))).or_else(|| front(None));
+        });
         let mut in_chain = vec![false; segs.len()];
         if let Some(h) = r.head {
             let mut s = h as i16;
@@ -412,31 +415,22 @@ impl<'a> Puppet<'a> {
             }
             r.chain.reverse();
         }
-        let extent = self.body.extent;
         for (i, s) in segs.iter().enumerate() {
             if !present(i) || s.parent < 0 || in_chain[i] {
                 continue;
             }
-            if s.tissue == Tissue::Mouth {
-                r.mouths.push(i);
+            match s.role {
+                Role::Mouth => r.mouths.push(i),
+                Role::Spine | Role::Horn => {
+                    r.spines.push(i);
+                    r.fans.push(i);
+                }
+                Role::Fin | Role::Wing | Role::Float | Role::Film | Role::Glow => r.fans.push(i),
+                Role::Leg if s.joint == 0 => r.legs.push((i, s.base[0] < 0.0)),
+                Role::Arm if s.joint == 0 => r.legs.push((i, false)),
+                Role::Tail => r.tail.push(i),
+                _ => {}
             }
-            let (sin, cos) = s.dir.sin_cos();
-            if s.tissue == Tissue::Spine {
-                r.spines.push(i);
-                r.fans.push(i);
-            } else if matches!(s.tissue, Tissue::LightFilm | Tissue::Float) || s.membrane {
-                r.fans.push(i);
-            } else if sin < -0.45 {
-                r.legs.push((i, s.base[0] < 0.0));
-            } else if s.side == 0 && cos < -0.4 && s.base[0] < extent * 0.1 {
-                r.tail.push(i);
-            }
-        }
-        if let Some(h) = r.head
-            && segs[h].tissue == Tissue::Mouth
-            && segs[h].parent >= 0
-        {
-            r.mouths.push(h);
         }
         r
     }

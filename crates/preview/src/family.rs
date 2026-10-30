@@ -9,7 +9,6 @@ use vesper_render::{LifeBatch, OutputConfig, OutputMode, Renderer};
 use vesper_sim::creature::Action;
 use vesper_sim::frame::CreatureView;
 use vesper_sim::pose::{self, Pose};
-use vesper_sim::world::DEPTH;
 
 const COLS: usize = 6;
 const ROWS: usize = 3;
@@ -88,12 +87,11 @@ pub fn render(renderer: &mut Renderer, args: &Args, minutes: f64) {
 fn stage(c: &CreatureView) -> CreatureView {
     let mut c = c.clone();
     let alt = c.pos[2];
-    let mut m = c.motion.last().cloned().unwrap_or_default();
-    m.face = if m.face < 0.0 { -1.0 } else { 1.0 };
-    m.heading = if m.face < 0.0 { std::f32::consts::PI } else { 0.0 };
-    m.pos = [STAGE[0], STAGE[1] * DEPTH];
-    c.heading = m.heading;
-    c.motion = vec![m];
+    c.face = if c.face < 0.0 { -1.0 } else { 1.0 };
+    c.heading = if c.face < 0.0 { std::f32::consts::PI } else { 0.0 };
+    c.vel = [0.0; 3];
+    c.pace = 0.0;
+    c.settle = 0.0;
     c.pos = [STAGE[0], STAGE[1], alt];
     c.action = Action::Idle;
     c.target = None;

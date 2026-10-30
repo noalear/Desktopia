@@ -354,11 +354,14 @@ mod tests {
     fn drawn(form: Form, seed: u64) -> (Body, Pose) {
         let mut rng = Rng::new(seed);
         let mut g = Genome::founder(Founder::Grazer, &mut rng);
-        for p in g.parts.iter_mut() {
-            p.form = form;
-            p.curl = 0.8;
-            p.detail = 0.9;
+        for m in g.plan.modules.iter_mut() {
+            m.form = form;
+            m.curl = 0.8;
+            m.detail = 0.9;
         }
+        g.plan.trunk.form = form;
+        g.plan.trunk.tail_form = form;
+        g.plan.trunk.head_form = form;
         let body = Body::develop(&g);
         let mut pose = Pose::default();
         crate::pose::at_rest(&body, [1.0, 0.3], 0.1, -1.0, false, &mut pose);
@@ -381,10 +384,15 @@ mod tests {
     fn forms_stay_joined_to_what_grows_from_them() {
         for (k, &form) in Form::ALL.iter().enumerate() {
             let (body, pose) = drawn(form, 10 + k as u64);
-            let mut base = Vec::new();
-            let mut tip = Vec::new();
-            let place = crate::pose::Place { origin: [1.0, 0.3], scale: 0.1, face: -1.0, fore: 1.0, tilt: 0.0 };
-            crate::pose::layout(&body, |_, _| 0.0, &place, &mut base, &mut tip);
+            // Where each segment's base lands, laid out as `at_rest` lays it.
+            let m = crate::motion::standing(&body, 0.1, -1.0);
+            let mut base = vec![[0.0f32; 2]; body.segments.len()];
+            for p in &m.parts {
+                let s = &body.segments[p.seg as usize];
+                let half = s.length * m.scale * 0.5;
+                let (sa, ca) = p.angle.sin_cos();
+                base[p.seg as usize] = [1.0 + (p.u - ca * half) * -1.0, 0.3 + (p.alt - sa * half)];
+            }
             // Wherever a part carries on from another's tip, some piece of
             // the parent still reaches that point.
             for (i, s) in body.segments.iter().enumerate() {

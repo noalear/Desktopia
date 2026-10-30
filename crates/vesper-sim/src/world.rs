@@ -245,11 +245,6 @@ pub struct Remains {
     pub strain: Option<StrainId>,
     /// A parent's body, given as food to its own young (the parent's id).
     pub offered_to: Option<CreatureId>,
-    /// The body as a physical thing while it falls and settles.
-    #[serde(default)]
-    pub rig: Option<crate::physics::Rig>,
-    #[serde(skip)]
-    pub moments: Vec<crate::frame::Moment>,
 }
 
 impl Remains {

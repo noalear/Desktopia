@@ -1,16 +1,15 @@
-//! Creature genomes. A genome is a growth program, not a blueprint: a small
-//! graph of part genes that development unrolls into a body, plus the starting
-//! wiring of a brain and the genes for life history, looks and immunity.
+//! Creature genomes: a body plan (see `plan`) that development unrolls
+//! into a body, the starting wiring of a brain, and the genes for life
+//! history, looks and immunity.
 
 use crate::brain::{NI, NO};
 use crate::genetics::{self, COMPAT};
+pub use crate::plan::{BodyPlan, Kind, Module, Trunk};
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub const LOOK_GENES: usize = 16;
-pub const MAX_PARTS: usize = 10;
-pub const MAX_LINKS: usize = 4;
 pub const MAX_HIDDEN: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -178,101 +177,6 @@ impl Form {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LinkGene {
-    /// Which part gene grows here.
-    pub to: u8,
-    /// Angle from the parent's direction, radians.
-    pub angle: f32,
-    /// Where along the parent it attaches, 0 base .. 1 tip.
-    pub along: f32,
-    /// Size relative to the parent.
-    pub scale: f32,
-    /// Grows as a near and far pair, like legs seen from the side.
-    pub pair: bool,
-    /// Copies fanned out from the same spot (1..=3).
-    pub repeat: u8,
-    /// Maturity 0..1 at which it grows, so young can look unlike adults.
-    pub onset: f32,
-    /// Only grows from the last repetition of a recursive part.
-    pub tip_only: bool,
-    /// A web of membrane spans between this part and its parent.
-    pub membrane: bool,
-    /// How the joint here is driven.
-    pub motor: Motor,
-}
-
-/// A joint's drive: each joint swings on the body's rhythm, at its own
-/// timing, so gaits, strokes and waves are all heritable.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Motor {
-    /// Swing either side of rest at full drive, radians.
-    pub amp: f32,
-    /// Timing after the joint it grows from, cycles. Repeated down a chain,
-    /// this makes a travelling wave.
-    pub phase: f32,
-    /// Timing added for the far one of a pair, cycles.
-    pub pair: f32,
-    /// How far it bends when the brain wants to rise, radians.
-    pub lift: f32,
-}
-
-impl Motor {
-    fn random(rng: &mut Rng) -> Self {
-        Self {
-            amp: if rng.chance(0.5) { rng.range(0.0, 0.6) } else { 0.0 },
-            phase: rng.f32(),
-            pair: if rng.chance(0.6) { 0.5 } else { rng.f32() },
-            lift: rng.signed() * 0.3,
-        }
-    }
-
-    fn mutate(&mut self, rng: &mut Rng, r: f32) {
-        if rng.chance(0.08 * r) {
-            self.amp = (self.amp + rng.normal() * 0.1).clamp(0.0, 1.2);
-        }
-        if rng.chance(0.08 * r) {
-            self.phase = (self.phase + rng.normal() * 0.08).rem_euclid(1.0);
-        }
-        if rng.chance(0.04 * r) {
-            self.pair = (self.pair + rng.normal() * 0.08).rem_euclid(1.0);
-        }
-        if rng.chance(0.05 * r) {
-            self.lift = (self.lift + rng.normal() * 0.08).clamp(-1.0, 1.0);
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PartGene {
-    pub tissue: Tissue,
-    /// Length in body units.
-    pub length: f32,
-    /// Thickness relative to length.
-    pub width: f32,
-    /// How many times it may repeat into itself, making chains like tails and trunks.
-    pub recursion: u8,
-    pub links: Vec<LinkGene>,
-    /// Which ancestral gene this one descends from. Copies of a part made by
-    /// duplication get a new origin, so two genomes can tell a shared
-    /// (homologous) gene from one that only sits in the same place.
-    pub origin: u32,
-    /// How strongly this copy is expressed over the other parent's copy,
-    /// 0..255; 128 is equal (codominant).
-    pub dom: u8,
-    /// Tip thickness over base thickness: below 1 it narrows to a point or
-    /// a tail, above 1 it swells into a club or bulb.
-    pub taper: f32,
-    /// The shape it grows into.
-    pub form: Form,
-    /// How it bows along its length, radians end to end; for hooks and
-    /// coils, which way and how hard the tip curls.
-    pub curl: f32,
-    /// How elaborate its form is, 0..1: how many beads, barbs, rays, plates
-    /// or hairs, how wide a blade, how big a bulb.
-    pub detail: f32,
-}
-
 /// The starting wiring of a brain and its learning rule. Weights are stored as
 /// small integers (value / 32) so genomes stay compact.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -311,12 +215,13 @@ pub struct BrainGenes {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Genome {
-    pub parts: Vec<PartGene>,
+    pub plan: BodyPlan,
     pub brain: BrainGenes,
     /// World units per body unit when fully grown.
     pub adult_scale: f32,
-    /// The body's rhythm at full drive, cycles per second.
-    pub gait_hz: f32,
+    /// How fast it lives and moves: stride and stroke rate over what its
+    /// build would set, 0.6 slow and thrifty .. 1.6 quick and hungry.
+    pub tempo: f32,
     /// Fastest possible time from hatching to adulthood, in seconds. Food usually limits it more.
     pub growth_time: f32,
     /// How fast damage builds with age; higher lives faster and dies sooner.
@@ -565,223 +470,227 @@ impl BrainGenes {
     }
 }
 
-impl LinkGene {
-    fn random(rng: &mut Rng, parts: usize) -> Self {
-        Self {
-            to: rng.below(parts) as u8,
-            angle: rng.signed() * 2.4,
-            along: rng.range(0.3, 1.0),
-            scale: rng.range(0.4, 1.0),
-            pair: rng.chance(0.5),
-            repeat: if rng.chance(0.8) { 1 } else { 2 + rng.below(2) as u8 },
-            onset: if rng.chance(0.7) { 0.0 } else { rng.range(0.0, 0.8) },
-            tip_only: rng.chance(0.2),
-            membrane: rng.chance(0.15),
-            motor: Motor::random(rng),
-        }
-    }
-}
-
-impl PartGene {
-    fn random(rng: &mut Rng, parts: usize) -> Self {
-        let tissue = *rng.pick(&Tissue::ALL);
-        let mut p = Self {
-            tissue,
-            length: rng.range(0.4, 1.6),
-            width: rng.range(0.15, 0.7),
-            recursion: if rng.chance(0.7) { 0 } else { 1 + rng.below(4) as u8 },
-            links: Vec::new(),
-            origin: rng.next_u64() as u32,
-            dom: 128,
-            taper: tissue.taper(),
-            form: Form::random(rng),
-            curl: rng.signed() * 0.6,
-            detail: rng.f32(),
-        };
-        for _ in 0..rng.below(3) {
-            p.links.push(LinkGene::random(rng, parts));
-        }
-        p
-    }
-}
-
 /// A body plan the founders start from, so the first creatures can feed and move.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Founder {
-    /// Small floating light-feeder.
+    /// A gas-filled bag with sails and a sieve, feeding on light and specks.
     Drifter,
-    /// Ground grazer with legs and a mouth.
+    /// A four-legged ground grazer with grinding teeth, eyes and ears.
     Grazer,
-    /// Swimming filter-feeder with a tail.
+    /// A finned, bladdered swimmer through the thick air with a fluked tail.
     Swimmer,
-    /// Slow crawling detritus feeder.
+    /// A short-legged, plated scavenger that scoops rot out of the soil.
     Crawler,
-    /// Long-legged hunter with eyes, fangs and talons.
+    /// A long-legged hunter with fangs, eyes and taloned arms.
     Stalker,
+    /// A winged fruit-and-egg thief with a beak and perching claws.
+    Flier,
 }
 
 impl Founder {
-    pub const ALL: [Founder; 5] =
-        [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler, Founder::Stalker];
+    pub const ALL: [Founder; 6] =
+        [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler, Founder::Stalker, Founder::Flier];
 }
 
 impl Genome {
-    /// A founder genome: a working body plan with random details and a random brain.
     /// A founder exactly as designed, before the variety every founder gets.
     pub fn founder_plan(kind: Founder, rng: &mut Rng) -> Self {
-        use Tissue::*;
-        let link = |to: u8, angle: f32, along: f32, scale: f32, pair: bool| LinkGene {
-            to,
-            angle,
-            along,
-            scale,
-            pair,
-            repeat: 1,
-            onset: 0.0,
-            tip_only: false,
-            membrane: false,
-            motor: Motor::default(),
-        };
-        // A driven joint: swing, timing, and the far one of a pair's offset.
-        let drive = |l: LinkGene, amp: f32, phase: f32, pair: f32| LinkGene {
-            motor: Motor { amp, phase, pair, lift: 0.0 },
-            ..l
-        };
-        let part = |tissue, length, width, recursion, links| PartGene {
-            tissue,
-            length,
-            width,
-            recursion,
-            links,
-            origin: 0,
-            dom: 128,
-            taper: Tissue::taper(tissue),
-            form: Form::Tube,
-            curl: 0.0,
-            detail: 0.5,
-        };
-        let (parts, scale, diet, hidden) = match kind {
-            Founder::Drifter => (
-                vec![
-                    part(
-                        Float,
-                        1.0,
-                        0.8,
-                        0,
-                        vec![link(1, 0.0, 1.0, 0.6, false), drive(link(2, 2.3, 0.6, 0.7, true), 0.5, 0.0, 0.0)],
-                    ),
-                    part(Gut, 0.8, 0.6, 0, vec![link(3, 0.3, 1.0, 0.5, false), link(4, -0.5, 0.9, 0.45, false)]),
-                    part(LightFilm, 1.2, 0.2, 0, vec![]),
-                    part(Sense, 0.5, 0.4, 0, vec![]),
-                    // A sieve that strains the drifting specks.
-                    part(Mouth, 0.5, 0.3, 0, vec![]),
-                ],
-                0.0045,
-                0.05,
-                4,
-            ),
-            Founder::Grazer => (
-                vec![
-                    part(
-                        Frame,
-                        1.4,
-                        0.45,
-                        0,
-                        vec![
-                            link(1, 0.0, 1.0, 0.5, false),
-                            drive(link(2, -1.7, 0.25, 0.75, true), 1.2, 0.83, 0.14),
-                            drive(link(2, -1.25, 0.8, 0.75, true), 0.5, 0.35, 0.5),
-                            link(3, 3.1, 0.0, 0.7, false),
-                        ],
-                    ),
-                    part(Mouth, 0.6, 0.5, 0, vec![link(4, 0.6, 0.3, 0.6, false), link(5, 1.4, 0.1, 0.5, false)]),
-                    part(Muscle, 1.0, 0.2, 1, vec![drive(link(2, 0.85, 1.0, 0.8, false), 0.7, 0.26, 0.5)]),
-                    part(Gut, 0.9, 0.7, 0, vec![]),
-                    part(Sense, 0.5, 0.4, 0, vec![]),
-                    // Ears or feelers on the head.
-                    part(Sense, 0.4, 0.3, 0, vec![]),
-                ],
-                0.009,
-                0.15,
-                8,
-            ),
-            Founder::Stalker => (
-                vec![
-                    part(
-                        Frame,
-                        1.3,
-                        0.38,
-                        0,
-                        vec![
-                            link(1, 0.15, 1.0, 0.5, false),
-                            drive(link(2, -1.7, 0.25, 0.8, true), 1.2, 0.83, 0.14),
-                            drive(link(2, -1.25, 0.8, 0.8, true), 0.5, 0.35, 0.5),
-                            link(3, 3.1, 0.0, 0.6, false),
-                        ],
-                    ),
-                    part(Mouth, 0.65, 0.45, 0, vec![link(4, 0.7, 0.4, 0.55, false), link(5, 1.5, 0.15, 0.5, false)]),
-                    part(Muscle, 1.05, 0.18, 1, vec![drive(link(2, 0.85, 1.0, 0.8, false), 0.7, 0.26, 0.5)]),
-                    part(Gut, 0.7, 0.55, 0, vec![]),
-                    part(Sense, 0.45, 0.45, 0, vec![]),
-                    part(Sense, 0.4, 0.3, 0, vec![]),
-                ],
-                0.0105,
-                0.85,
-                10,
-            ),
-            Founder::Swimmer => (
-                vec![
-                    part(
-                        Float,
-                        1.1,
-                        0.5,
-                        0,
-                        vec![
-                            drive(link(1, 3.05, 0.0, 0.8, false), 0.9, 0.5, 0.0),
-                            link(2, 0.0, 1.0, 0.6, false),
-                            link(4, -2.2, 0.4, 0.6, true),
-                        ],
-                    ),
-                    part(Muscle, 0.8, 0.35, 3, vec![drive(link(1, -0.1, 1.0, 0.8, false), 1.0, 0.8, 0.0)]),
-                    part(Mouth, 0.5, 0.5, 0, vec![link(3, 0.4, 0.2, 0.7, false)]),
-                    part(Sense, 0.5, 0.4, 0, vec![]),
-                    part(Gut, 0.7, 0.5, 0, vec![]),
-                ],
-                0.006,
-                0.25,
-                6,
-            ),
-            Founder::Crawler => (
-                vec![
-                    part(
-                        Gut,
-                        1.0,
-                        0.6,
-                        0,
-                        vec![
-                            drive(link(1, 2.8, 0.0, 0.9, false), 0.3, 0.06, 0.0),
-                            link(2, 0.0, 1.0, 0.6, false),
-                            drive(link(3, -1.3, 0.5, 0.5, true), 1.05, 0.68, 0.75),
-                        ],
-                    ),
-                    part(
-                        Armor,
-                        0.9,
-                        0.55,
-                        3,
-                        vec![
-                            drive(link(1, 0.2, 1.0, 0.9, false), 1.2, 0.18, 0.0),
-                            drive(link(3, -1.55, 0.5, 0.5, true), 0.8, 0.37, 0.9),
-                        ],
-                    ),
-                    part(Mouth, 0.5, 0.6, 0, vec![link(4, 0.0, 1.0, 0.6, false)]),
-                    part(Muscle, 0.5, 0.25, 1, vec![drive(link(3, 0.45, 1.0, 0.8, false), 0.35, 0.6, 0.0)]),
-                    part(Sense, 0.4, 0.3, 0, vec![]),
-                ],
-                0.006,
-                0.2,
-                4,
-            ),
+        use Form::*;
+        use Kind::*;
+        let module =
+            |kind: Kind, form: Form, zone: f32, size: f32, rng: &mut Rng| Module::new(kind, form, zone, size, rng);
+        let mut trunk = Trunk::plain();
+        let mut modules: Vec<Module> = Vec::new();
+        let (scale, diet, hidden) = match kind {
+            Founder::Drifter => {
+                trunk.segments = 2;
+                trunk.length = 0.8;
+                trunk.girth = 0.6;
+                trunk.profile = [0.8, 1.0, 0.8];
+                trunk.tissue = Tissue::Float;
+                trunk.form = Bulb;
+                trunk.head = 0.12;
+                trunk.head_width = 0.8;
+                trunk.head_form = Bulb;
+                trunk.gut = 0.25;
+                trunk.brood = 0.1;
+                let mut sieve = module(Mouth, Frond, 1.0, 0.35, rng);
+                sieve.width = 0.5;
+                sieve.angle = -0.6;
+                modules.push(sieve);
+                let mut film = module(Film, Frond, 0.3, 0.55, rng);
+                film.count = 2;
+                film.spacing = 0.3;
+                film.paired = true;
+                modules.push(film);
+                let mut sail = module(Float, Fan, 0.5, 0.45, rng);
+                sail.width = 0.35;
+                modules.push(sail);
+                let mut fins = module(Fin, Paddle, 0.6, 0.25, rng);
+                fins.angle = -0.3;
+                modules.push(fins);
+                let mut eye = module(Sense, Tube, 0.7, 0.07, rng);
+                eye.width = 0.8;
+                modules.push(eye);
+                (0.0045, 0.05, 4)
+            }
+            Founder::Grazer => {
+                trunk.segments = 3;
+                trunk.girth = 0.32;
+                trunk.head = 0.3;
+                trunk.head_width = 0.6;
+                trunk.neck = 0.25;
+                trunk.neck_angle = 0.45;
+                trunk.tail = 0.4;
+                trunk.tail_width = 0.25;
+                trunk.tail_form = Tuft;
+                trunk.gut = 0.45;
+                let mut legs = module(Leg, Tube, 0.2, 0.6, rng);
+                legs.count = 2;
+                legs.spacing = 0.5;
+                modules.push(legs);
+                let mut mouth = module(Mouth, Plates, 1.0, 0.26, rng);
+                mouth.width = 0.6;
+                modules.push(mouth);
+                let mut eyes = module(Sense, Bulb, 0.6, 0.1, rng);
+                eyes.width = 0.8;
+                modules.push(eyes);
+                let mut ears = module(Sense, Paddle, 0.3, 0.14, rng);
+                ears.width = 0.5;
+                modules.push(ears);
+                (0.009, 0.15, 8)
+            }
+            Founder::Stalker => {
+                trunk.segments = 3;
+                trunk.girth = 0.24;
+                trunk.profile = [1.0, 0.9, 0.8];
+                trunk.head = 0.3;
+                trunk.head_width = 0.55;
+                trunk.neck = 0.3;
+                trunk.neck_angle = 0.35;
+                trunk.tail = 0.7;
+                trunk.tail_width = 0.2;
+                trunk.tail_segments = 3;
+                trunk.gut = 0.3;
+                let mut legs = module(Leg, Tube, 0.25, 0.7, rng);
+                legs.count = 2;
+                legs.spacing = 0.5;
+                legs.width = 0.18;
+                modules.push(legs);
+                let mut arms = module(Arm, Hook, 0.05, 0.35, rng);
+                arms.curl = 0.8;
+                modules.push(arms);
+                let mut mouth = module(Mouth, Fork, 1.0, 0.28, rng);
+                mouth.width = 0.55;
+                modules.push(mouth);
+                let mut eyes = module(Sense, Bulb, 0.6, 0.12, rng);
+                eyes.width = 0.8;
+                modules.push(eyes);
+                let mut nose = module(Sense, Beads, 0.85, 0.2, rng);
+                nose.width = 0.3;
+                modules.push(nose);
+                (0.0105, 0.85, 10)
+            }
+            Founder::Swimmer => {
+                trunk.segments = 4;
+                trunk.girth = 0.28;
+                trunk.profile = [0.9, 1.0, 0.7];
+                trunk.head = 0.25;
+                trunk.head_width = 0.7;
+                trunk.tail = 0.9;
+                trunk.tail_width = 0.3;
+                trunk.tail_segments = 3;
+                trunk.tail_form = Fan;
+                trunk.gut = 0.45;
+                let mut fins = module(Fin, Paddle, 0.3, 0.3, rng);
+                fins.width = 0.4;
+                modules.push(fins);
+                let mut floats = module(Float, Bulb, 0.3, 0.4, rng);
+                floats.count = 2;
+                floats.spacing = 0.4;
+                floats.width = 0.9;
+                modules.push(floats);
+                let mut mouth = module(Mouth, Tube, 1.0, 0.28, rng);
+                mouth.width = 0.6;
+                modules.push(mouth);
+                let mut eyes = module(Sense, Bulb, 0.6, 0.1, rng);
+                eyes.width = 0.8;
+                modules.push(eyes);
+                let mut gills = module(Gill, Frond, 0.1, 0.15, rng);
+                gills.width = 0.5;
+                modules.push(gills);
+                (0.006, 0.25, 6)
+            }
+            Founder::Crawler => {
+                trunk.segments = 6;
+                trunk.length = 1.2;
+                trunk.girth = 0.33;
+                trunk.profile = [0.8, 1.0, 0.8];
+                trunk.tissue = Tissue::Armor;
+                trunk.form = Plates;
+                trunk.head = 0.15;
+                trunk.head_width = 0.9;
+                trunk.head_form = Plates;
+                trunk.tail = 0.2;
+                trunk.tail_tissue = Tissue::Armor;
+                trunk.tail_width = 0.5;
+                trunk.tail_segments = 1;
+                trunk.gut = 0.5;
+                trunk.fat = 0.1;
+                let mut legs = module(Leg, Tube, 0.15, 0.22, rng);
+                legs.count = 3;
+                legs.spacing = 0.3;
+                legs.width = 0.25;
+                modules.push(legs);
+                let mut mouth = module(Mouth, Paddle, 1.0, 0.3, rng);
+                mouth.angle = -0.6;
+                mouth.width = 0.6;
+                modules.push(mouth);
+                let mut feelers = module(Sense, Beads, 0.8, 0.22, rng);
+                feelers.width = 0.3;
+                modules.push(feelers);
+                let mut spines = module(Spine, Tube, 0.4, 0.18, rng);
+                spines.count = 2;
+                spines.spacing = 0.3;
+                spines.paired = false;
+                modules.push(spines);
+                (0.006, 0.2, 4)
+            }
+            Founder::Flier => {
+                trunk.segments = 2;
+                trunk.length = 0.8;
+                trunk.girth = 0.26;
+                trunk.form = Frond;
+                trunk.head = 0.3;
+                trunk.head_width = 0.7;
+                trunk.head_form = Bulb;
+                trunk.neck = 0.2;
+                trunk.neck_angle = 0.5;
+                trunk.tail = 0.5;
+                trunk.tail_width = 0.25;
+                trunk.tail_segments = 2;
+                trunk.tail_form = Fan;
+                trunk.gut = 0.3;
+                let mut wings = module(Wing, Fan, 0.35, 1.2, rng);
+                wings.width = 0.08;
+                wings.detail = 0.7;
+                modules.push(wings);
+                let mut legs = module(Leg, Hook, 0.75, 0.4, rng);
+                legs.width = 0.15;
+                legs.curl = 0.9;
+                modules.push(legs);
+                let mut mouth = module(Mouth, Hook, 1.0, 0.26, rng);
+                mouth.width = 0.55;
+                modules.push(mouth);
+                let mut eyes = module(Sense, Bulb, 0.6, 0.12, rng);
+                eyes.width = 0.8;
+                modules.push(eyes);
+                let mut float = module(Float, Bulb, 0.6, 0.22, rng);
+                float.width = 0.8;
+                float.paired = false;
+                modules.push(float);
+                (0.007, 0.45, 8)
+            }
         };
         let mut look = [0.0; LOOK_GENES];
         for v in look.iter_mut() {
@@ -792,10 +701,10 @@ impl Genome {
             *m = rng.below(256) as u8;
         }
         let mut g = Self {
-            parts,
+            plan: BodyPlan { trunk, modules },
             brain: BrainGenes::random(rng, hidden),
             adult_scale: scale * rng.range(0.85, 1.2),
-            gait_hz: rng.range(1.2, 2.5),
+            tempo: rng.range(0.85, 1.15),
             growth_time: rng.range(60.0, 180.0),
             aging: rng.range(0.8, 1.2),
             diet: diet + rng.signed() * 0.05,
@@ -832,17 +741,8 @@ impl Genome {
             palate: rng.f32(),
             breadth: rng.range(0.8, 1.0),
         };
-        for p in g.parts.iter_mut() {
-            p.origin = rng.next_u64() as u32;
-        }
         g.mate_pref.copy_from_slice(&g.look[..4]);
-        // Each plan's gait was tuned at about this rhythm.
-        g.gait_hz = match kind {
-            Founder::Drifter => g.gait_hz,
-            Founder::Grazer | Founder::Stalker => rng.range(3.2, 4.0),
-            Founder::Crawler => rng.range(2.3, 2.9),
-            Founder::Swimmer => rng.range(2.6, 3.2),
-        };
+        g.dress(kind);
         g
     }
 
@@ -855,89 +755,77 @@ impl Genome {
     /// A founding lineage that has drifted `rounds` further from its kind's
     /// plan, as if it had evolved apart somewhere else.
     pub fn founder_diverged(kind: Founder, rounds: u32, rng: &mut Rng) -> Self {
-        let plan = {
-            let mut g = Self::founder_plan(kind, rng);
-            g.dress(kind);
-            g
-        };
+        let plan = Self::founder_plan(kind, rng);
         // Founders are already a little varied, but still have the organs
-        // their way of life needs: a mouth, or light film for a drifter.
+        // their way of life needs: a mouth, and legs or wings or fins.
         let mut g = plan.clone();
         for attempt in 0..8 {
             g = plan.clone();
-            for _ in 0..3 + rounds {
+            for _ in 0..1 + rounds {
                 g.mutate(rng, 1.0);
             }
-            let body = crate::body::Body::develop(&g);
-            let needs = if matches!(kind, Founder::Drifter) { Tissue::LightFilm } else { Tissue::Mouth };
-            if attempt == 7 || body.segments.iter().any(|s| s.tissue == needs) {
+            let whole = g.plan.has(Kind::Mouth)
+                && match kind {
+                    Founder::Drifter => g.plan.has(Kind::Film),
+                    Founder::Flier => g.plan.has(Kind::Wing),
+                    Founder::Swimmer => g.plan.has(Kind::Float),
+                    _ => g.plan.has(Kind::Leg),
+                };
+            if attempt == 7 || whole {
                 break;
             }
         }
         genetics::found(g, rng)
     }
 
-    /// Gives a founder's parts forms of their own, from those that suit each
-    /// part's job in its plan, so the first lineages differ in shape as well
-    /// as in size and colour. The choice is drawn from the founder's own
-    /// mother line rather than the world's random stream, so every founder
-    /// is otherwise built exactly as before.
+    /// Varies a founder's details within what its way of life allows, so
+    /// the first lineages differ in shape as well as in size and colour.
+    /// The choice is drawn from the founder's own mother line rather than
+    /// the world's random stream.
     fn dress(&mut self, kind: Founder) {
         let rng = &mut Rng::new(u64::from_le_bytes(self.marker) ^ 0xD8E5_5F0E);
-        use Form::*;
-        // Per part, in plan order, the forms it may take: each makes a
-        // different organ of the part's tissue (see `organ::Organ::of`).
-        let choices: &[&[Form]] = match kind {
-            Founder::Drifter => &[
-                &[Tube, Bulb, Beads],
-                &[Tube, Bulb, Frond],
-                &[Tube, Fan, Frond, Paddle],
-                &[Bulb, Bulb, Frond, Fork, Tuft],
-                &[Frond, Tuft],
-            ],
-            Founder::Grazer => &[
-                &[Tube, Plates, Tuft, Tuft],
-                &[Plates, Plates, Pincer, Tube, Hook],
-                &[Tube, Tube, Beads, Hook],
-                &[Tube, Bulb],
-                &[Bulb, Bulb, Fork, Frond],
-                &[Paddle, Paddle, Fan, Tuft, Fork],
-            ],
-            Founder::Swimmer => &[
-                &[Tube, Plates, Beads],
-                &[Tube, Beads, Fan, Paddle],
-                &[Tube, Hook, Fork, Frond, Bulb, Coil],
-                &[Bulb, Frond, Fork, Paddle],
-                &[Frond, Tube, Bulb],
-            ],
-            Founder::Crawler => &[
-                &[Tube, Beads, Bulb],
-                &[Plates, Plates, Coil, Beads, Tube],
-                &[Beads, Paddle, Pincer, Plates],
-                &[Tube, Hook, Fork, Beads],
-                &[Fork, Frond, Tuft, Bulb, Coil],
-            ],
-            Founder::Stalker => &[
-                &[Tube, Tuft, Plates],
-                &[Fork, Fork, Pincer, Tube, Hook],
-                &[Hook, Hook, Tube],
-                &[Tube, Bulb],
-                &[Bulb, Bulb, Fork],
-                &[Paddle, Fork, Bulb, Tuft],
-            ],
-        };
-        for (p, forms) in self.parts.iter_mut().zip(choices) {
-            p.form = *rng.pick(forms);
-            p.detail = rng.f32();
-            if p.form != Tube || rng.chance(0.3) {
-                p.curl = rng.signed() * 0.8;
+        let t = &mut self.plan.trunk;
+        t.length *= rng.range(0.85, 1.15);
+        t.girth *= rng.range(0.85, 1.2);
+        t.arch = rng.signed() * 0.3;
+        t.detail = rng.f32();
+        t.head *= rng.range(0.8, 1.25);
+        t.tail *= rng.range(0.7, 1.4);
+        t.tail_curl = rng.signed() * 0.8;
+        if !matches!(kind, Founder::Drifter | Founder::Crawler) && rng.chance(0.5) {
+            t.form = *rng.pick(&[Form::Tube, Form::Beads, Form::Plates, Form::Tuft, Form::Frond]);
+        }
+        if rng.chance(0.4) {
+            t.head_form = *rng.pick(&Trunk::HEAD_FORMS);
+        }
+        if t.tail > 0.0 && rng.chance(0.5) {
+            t.tail_form = *rng.pick(&Trunk::TAIL_FORMS);
+        }
+        for m in self.plan.modules.iter_mut() {
+            m.size *= rng.range(0.8, 1.25);
+            m.width *= rng.range(0.85, 1.2);
+            m.detail = rng.f32();
+            m.curl += rng.signed() * 0.5;
+            m.angle += rng.signed() * 0.2;
+            // Mouths and feet take the forms their work allows.
+            if rng.chance(0.35) {
+                m.form = match (kind, m.kind) {
+                    (Founder::Grazer, Kind::Mouth) => *rng.pick(&[Form::Plates, Form::Pincer, Form::Tube, Form::Beads]),
+                    (Founder::Stalker, Kind::Mouth) => *rng.pick(&[Form::Fork, Form::Pincer, Form::Hook, Form::Tube]),
+                    (Founder::Swimmer, Kind::Mouth) => *rng.pick(&[Form::Tube, Form::Fork, Form::Bulb, Form::Frond]),
+                    (Founder::Crawler, Kind::Mouth) => *rng.pick(&[Form::Paddle, Form::Beads, Form::Plates]),
+                    (Founder::Flier, Kind::Mouth) => *rng.pick(&[Form::Hook, Form::Coil, Form::Tube]),
+                    (Founder::Drifter, Kind::Mouth) => *rng.pick(&[Form::Frond, Form::Tuft]),
+                    (_, Kind::Leg) => *rng.pick(&[Form::Tube, Form::Tube, Form::Hook, Form::Fork, Form::Beads]),
+                    (_, Kind::Sense) if m.form == Form::Bulb => Form::Bulb,
+                    (_, Kind::Sense) => *rng.pick(&[Form::Beads, Form::Fork, Form::Frond, Form::Tuft, Form::Paddle]),
+                    (_, Kind::Fin) => *rng.pick(&[Form::Paddle, Form::Fan]),
+                    _ => m.form,
+                };
             }
         }
     }
 
-    /// One member of a founding population: drawn from the founder's genes
-    /// with the variety a wild population carries, so the first generations
-    /// have something for selection to work on.
     pub fn wild(&self, rng: &mut Rng) -> Self {
         let [a, b] = genetics::haplotypes(self);
         let mut gametes = [genetics::recombine(&a, &b, rng), genetics::recombine(&a, &b, rng)];
@@ -1002,7 +890,7 @@ impl Genome {
             }
         };
         nudge(&mut self.adult_scale, 0.0006, 0.002, 0.035, rng);
-        nudge(&mut self.gait_hz, 0.15, 0.2, 6.0, rng);
+        nudge(&mut self.tempo, 0.05, 0.6, 1.6, rng);
         if rng.chance(0.15 * r) {
             self.growth_time = (self.growth_time * (1.0 + genetics::effect(rng) * 0.1)).clamp(20.0, 30000.0);
         }
@@ -1045,126 +933,9 @@ impl Genome {
                 nudge(v, 0.04, 0.0, 1.0, rng);
             }
         }
-        self.mutate_body(rng, r);
+        self.plan.mutate(rng, r);
     }
 
-    fn mutate_body(&mut self, rng: &mut Rng, r: f32) {
-        let n = self.parts.len();
-        for p in &mut self.parts {
-            if rng.chance(0.08 * r) {
-                p.length = (p.length * (1.0 + genetics::effect(rng) * 0.12)).clamp(0.2, 3.0);
-            }
-            if rng.chance(0.08 * r) {
-                p.width = (p.width * (1.0 + genetics::effect(rng) * 0.12)).clamp(0.08, 1.5);
-            }
-            if rng.chance(0.03 * r) {
-                p.dom = (p.dom as f32 + rng.normal() * 24.0).clamp(1.0, 255.0) as u8;
-            }
-            if rng.chance(0.05 * r) {
-                p.taper = (p.taper + genetics::effect(rng) * 0.06).clamp(0.12, 1.5);
-            }
-            if rng.chance(0.01 * r) {
-                p.tissue = *rng.pick(&Tissue::ALL);
-            }
-            if rng.chance(0.006 * r) {
-                p.form = Form::random(rng);
-            }
-            if rng.chance(0.06 * r) {
-                p.curl = (p.curl + genetics::effect(rng) * 0.12).clamp(-2.5, 2.5);
-            }
-            if rng.chance(0.06 * r) {
-                p.detail = (p.detail + genetics::effect(rng) * 0.08).clamp(0.0, 1.0);
-            }
-            if rng.chance(0.01 * r) {
-                p.recursion = (p.recursion as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(0, 5) as u8;
-            }
-            for l in &mut p.links {
-                if rng.chance(0.06 * r) {
-                    l.angle += genetics::effect(rng) * 0.2;
-                }
-                if rng.chance(0.04 * r) {
-                    l.along = (l.along + rng.normal() * 0.1).clamp(0.0, 1.0);
-                }
-                if rng.chance(0.04 * r) {
-                    l.scale = (l.scale + rng.normal() * 0.08).clamp(0.2, 1.3);
-                }
-                if rng.chance(0.01 * r) {
-                    l.pair = !l.pair;
-                }
-                if rng.chance(0.01 * r) {
-                    l.repeat = (l.repeat as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(1, 3) as u8;
-                }
-                if rng.chance(0.02 * r) {
-                    l.onset = (l.onset + rng.normal() * 0.15).clamp(0.0, 0.9);
-                }
-                if rng.chance(0.01 * r) {
-                    l.membrane = !l.membrane;
-                }
-                if rng.chance(0.01 * r) {
-                    l.tip_only = !l.tip_only;
-                }
-                if rng.chance(0.008 * r) {
-                    l.to = rng.below(n) as u8;
-                }
-                l.motor.mutate(rng, r);
-            }
-            // Losing a link is as likely as gaining one, so bodies don't
-            // grow ever more complex for no reason but chance.
-            if rng.chance(0.012 * r) && !p.links.is_empty() {
-                let i = rng.below(p.links.len());
-                p.links.remove(i);
-            }
-            if rng.chance(0.012 * r) && p.links.len() < MAX_LINKS {
-                p.links.push(LinkGene::random(rng, n));
-            }
-        }
-        // Duplicate a part: the classic route to new organs. The copy starts
-        // out as a twin of its source, links and all (serial homology), and
-        // drifts or takes on a new tissue from there. When the genome is full,
-        // it lands on a gene nothing grows any more.
-        if rng.chance(0.01 * r) {
-            let slot = if n < MAX_PARTS { Some(n) } else { (1..n).find(|&i| !self.grows(i)) };
-            if let Some(slot) = slot {
-                let src = rng.below(n);
-                let mut copy = self.parts[src].clone();
-                copy.origin = rng.next_u64() as u32;
-                if rng.chance(0.25) {
-                    copy.tissue = *rng.pick(&Tissue::ALL);
-                }
-                if slot == n {
-                    self.parts.push(copy);
-                } else {
-                    self.parts[slot] = copy;
-                }
-                let host = rng.below(n);
-                if self.parts[host].links.len() < MAX_LINKS {
-                    let mut l = LinkGene::random(rng, self.parts.len());
-                    l.to = slot as u8;
-                    self.parts[host].links.push(l);
-                }
-            }
-        }
-        // Brand new part.
-        if rng.chance(0.004 * r) && self.parts.len() < MAX_PARTS {
-            let len = self.parts.len();
-            self.parts.push(PartGene::random(rng, len + 1));
-            let host = rng.below(len);
-            if self.parts[host].links.len() < MAX_LINKS {
-                let mut l = LinkGene::random(rng, len + 1);
-                l.to = len as u8;
-                self.parts[host].links.push(l);
-            }
-        }
-    }
-
-    /// Whether any link still grows part `i`; the others are silent genes
-    /// that drift freely until a new link wakes them.
-    pub fn grows(&self, i: usize) -> bool {
-        i == 0 || self.parts.iter().any(|p| p.links.iter().any(|l| l.to as usize % self.parts.len() == i))
-    }
-
-    /// How well its gut gets the good out of a plant of hue `chem`: best for
-    /// what it is tuned to, and the narrower the tuning the better there and
     /// the worse elsewhere.
     pub fn digests(&self, chem: f32) -> f32 {
         let d = (self.palate - chem).rem_euclid(1.0);

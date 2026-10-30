@@ -54,17 +54,16 @@ fn damaged_saves_are_refused() {
 #[test]
 fn genomes_stay_growable_under_heavy_mutation() {
     let mut rng = Rng::new(5);
-    for kind in [Founder::Drifter, Founder::Grazer, Founder::Swimmer, Founder::Crawler] {
+    for kind in Founder::ALL {
         let mut g = Genome::founder(kind, &mut rng);
         for _ in 0..2000 {
             g.mutate(&mut rng, 2.5);
             let body = Body::develop(&g);
             assert!(!body.segments.is_empty());
             assert!(body.segments.len() <= vesper_sim::body::MAX_SEGMENTS);
-            for p in &g.parts {
-                for l in &p.links {
-                    assert!((l.to as usize) < g.parts.len() + 1);
-                }
+            assert!(g.plan.modules.len() <= vesper_sim::plan::MAX_MODULES);
+            for s in &body.segments {
+                assert!(s.length.is_finite() && s.width.is_finite() && s.base.iter().all(|v| v.is_finite()));
             }
         }
     }
