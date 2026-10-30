@@ -20,7 +20,8 @@
 //! - Immune genes. Both copies are expressed, so a host with two different
 //!   alleles fends off more strains, and rare alleles are worth having.
 
-use crate::genome::{BrainGenes, Genome, MAX_PARTS, PartGene};
+use crate::genome::{BrainGenes, Genome, Module, Trunk};
+use crate::plan::MAX_MODULES;
 use crate::rng::{Rng, hash01};
 use std::sync::Arc;
 
@@ -64,7 +65,7 @@ pub(crate) fn loci(g: &Genome) -> [f32; LOCI] {
         g.adult_scale,
         g.growth_time,
         g.aging,
-        g.gait_hz,
+        g.tempo,
         g.invest,
         g.clutch,
         g.live_birth,
@@ -127,7 +128,7 @@ pub(crate) fn loci_mut(g: &mut Genome) -> [&mut f32; LOCI] {
         &mut g.adult_scale,
         &mut g.growth_time,
         &mut g.aging,
-        &mut g.gait_hz,
+        &mut g.tempo,
         &mut g.invest,
         &mut g.clutch,
         &mut g.live_birth,
@@ -193,8 +194,13 @@ fn place_load(bit: usize) -> (usize, f32) {
     (bit % CHROMOSOMES, ((bit / CHROMOSOMES) as f32 + 0.5) / 64usize.div_ceil(CHROMOSOMES) as f32)
 }
 
-fn place_part(i: usize) -> (usize, f32) {
-    (BODY, (i as f32 + 0.5) / MAX_PARTS as f32)
+fn place_module(i: usize) -> (usize, f32) {
+    (BODY, (i as f32 + 1.5) / (MAX_MODULES + 1) as f32)
+}
+
+/// The trunk's genes sit at the head of the body chromosome.
+fn place_trunk() -> (usize, f32) {
+    (BODY, 0.5 / (MAX_MODULES + 1) as f32)
 }
 
 /// Haplotypes don't carry wiring of their own.
@@ -258,12 +264,14 @@ fn assemble(src: [&Genome; 2], pick: impl Fn(usize, f32) -> usize) -> Genome {
             src[pick(c, pos)].dominance.get(i).copied().unwrap_or(128)
         })
         .collect();
-    let n = src[0].parts.len().max(src[1].parts.len());
-    out.parts = (0..n)
+    let (c, pos) = place_trunk();
+    out.plan.trunk = src[pick(c, pos)].plan.trunk.clone();
+    let n = src[0].plan.modules.len().max(src[1].plan.modules.len());
+    out.plan.modules = (0..n)
         .filter_map(|i| {
-            let (c, pos) = place_part(i);
+            let (c, pos) = place_module(i);
             let s = pick(c, pos);
-            src[s].parts.get(i).or(src[1 - s].parts.get(i)).cloned()
+            src[s].plan.modules.get(i).or(src[1 - s].plan.modules.get(i)).cloned()
         })
         .collect();
     for k in 0..COMPAT {
@@ -446,7 +454,7 @@ pub(crate) fn express(h: [Genome; 2], brain: BrainGenes, marker: [u8; 8], rng: &
     // Both immune alleles work side by side.
     g.immune = h[0].immune;
     g.immune_b = h[1].immune;
-    g.parts = express_parts(&h[0].parts, &h[1].parts);
+    g.plan = express_plan(&h[0].plan, &h[1].plan);
     g.brain = brain;
     g.marker = marker;
     g.dominance = Vec::new();
@@ -476,61 +484,83 @@ pub(crate) fn vigor_of(a: u64, b: u64) -> f32 {
 /// genomes buffer it; broken genes make it worse.
 fn develop_noise(g: &mut Genome, rng: &mut Rng) {
     let sd = 0.07 * (1.0 - g.canalization.clamp(0.0, 1.0)) + 0.15 * (1.0 - g.vigor);
-    for p in g.parts.iter_mut() {
-        p.length = (p.length * (1.0 + rng.normal() * sd)).max(0.05);
-        p.width = (p.width * (1.0 + rng.normal() * sd)).max(0.02);
-        p.taper = (p.taper * (1.0 + rng.normal() * sd)).clamp(0.1, 1.6);
-        p.curl += rng.normal() * sd * 0.5;
-        p.detail = (p.detail + rng.normal() * sd * 0.5).clamp(0.0, 1.0);
-        for l in p.links.iter_mut() {
-            l.angle += rng.normal() * sd * 0.6;
-            l.scale = (l.scale * (1.0 + rng.normal() * sd)).max(0.1);
-        }
+    let t = &mut g.plan.trunk;
+    t.length = (t.length * (1.0 + rng.normal() * sd)).max(0.2);
+    t.girth = (t.girth * (1.0 + rng.normal() * sd)).clamp(0.05, 1.0);
+    t.head = (t.head * (1.0 + rng.normal() * sd)).max(0.0);
+    t.tail = (t.tail * (1.0 + rng.normal() * sd)).max(0.0);
+    t.arch += rng.normal() * sd * 0.5;
+    for m in g.plan.modules.iter_mut() {
+        m.size = (m.size * (1.0 + rng.normal() * sd)).max(0.02);
+        m.width = (m.width * (1.0 + rng.normal() * sd)).max(0.05);
+        m.taper = (m.taper * (1.0 + rng.normal() * sd)).clamp(0.1, 1.6);
+        m.curl += rng.normal() * sd * 0.5;
+        m.angle += rng.normal() * sd * 0.6;
+        m.detail = (m.detail + rng.normal() * sd * 0.5).clamp(0.0, 1.0);
     }
     for v in g.look.iter_mut().skip(4) {
         *v = (*v + rng.normal() * sd * 0.5).clamp(0.0, 1.0);
     }
 }
 
-/// The body plan two haplotypes make. Part genes that descend from the same
-/// ancestral gene blend, the stronger copy deciding the tissue, form and wiring;
-/// where the two differ in kind, the stronger one wins outright.
-fn express_parts(a: &[PartGene], b: &[PartGene]) -> Vec<PartGene> {
-    let n = a.len().max(b.len());
-    (0..n)
-        .map(|i| match (a.get(i), b.get(i)) {
-            (Some(p), Some(q)) if p.origin == q.origin => blend_part(p, q),
+/// The body plan two haplotypes make. Modules that descend from the same
+/// ancestral gene blend, the stronger copy deciding kind and form; where the
+/// two differ in descent, the stronger one wins outright. The trunk blends
+/// likewise.
+fn express_plan(a: &crate::genome::BodyPlan, b: &crate::genome::BodyPlan) -> crate::genome::BodyPlan {
+    let n = a.modules.len().max(b.modules.len());
+    let modules = (0..n)
+        .map(|i| match (a.modules.get(i), b.modules.get(i)) {
+            (Some(p), Some(q)) if p.origin == q.origin => blend_module(p, q),
             (Some(p), Some(q)) => if p.dom >= q.dom { p } else { q }.clone(),
             (Some(p), None) | (None, Some(p)) => p.clone(),
             (None, None) => unreachable!(),
         })
-        .collect()
+        .collect();
+    crate::genome::BodyPlan { trunk: blend_trunk(&a.trunk, &b.trunk), modules }
 }
 
-fn blend_part(p: &PartGene, q: &PartGene) -> PartGene {
+fn blend_module(p: &Module, q: &Module) -> Module {
     let (d, r) = if p.dom >= q.dom { (p, q) } else { (q, p) };
     let (wd, wr) = (weight(Some(&d.dom)), weight(Some(&r.dom)));
     let t = wr / (wd + wr);
     let mix = |x: f32, y: f32| x + (y - x) * t;
-    let turn = |x: f32, y: f32| (x + ((y - x + 0.5).rem_euclid(1.0) - 0.5) * t).rem_euclid(1.0);
     let mut out = d.clone();
-    out.length = mix(d.length, r.length);
+    out.zone = mix(d.zone, r.zone);
+    out.size = mix(d.size, r.size);
     out.width = mix(d.width, r.width);
-    out.taper = mix(d.taper, r.taper);
+    out.angle = mix(d.angle, r.angle);
     out.curl = mix(d.curl, r.curl);
     out.detail = mix(d.detail, r.detail);
-    for (k, l) in out.links.iter_mut().enumerate() {
-        if let Some(m) = r.links.get(k).filter(|m| m.to == l.to) {
-            l.angle = mix(l.angle, m.angle);
-            l.along = mix(l.along, m.along);
-            l.scale = mix(l.scale, m.scale);
-            l.onset = mix(l.onset, m.onset);
-            l.motor.amp = mix(l.motor.amp, m.motor.amp);
-            l.motor.phase = turn(l.motor.phase, m.motor.phase);
-            l.motor.pair = turn(l.motor.pair, m.motor.pair);
-            l.motor.lift = mix(l.motor.lift, m.motor.lift);
-        }
+    out.taper = mix(d.taper, r.taper);
+    out.spacing = mix(d.spacing, r.spacing);
+    out.onset = mix(d.onset, r.onset);
+    out
+}
+
+fn blend_trunk(p: &Trunk, q: &Trunk) -> Trunk {
+    let (d, r) = if p.dom >= q.dom { (p, q) } else { (q, p) };
+    let (wd, wr) = (weight(Some(&d.dom)), weight(Some(&r.dom)));
+    let t = wr / (wd + wr);
+    let mix = |x: f32, y: f32| x + (y - x) * t;
+    let mut out = d.clone();
+    out.length = mix(d.length, r.length);
+    out.girth = mix(d.girth, r.girth);
+    for i in 0..3 {
+        out.profile[i] = mix(d.profile[i], r.profile[i]);
     }
+    out.arch = mix(d.arch, r.arch);
+    out.detail = mix(d.detail, r.detail);
+    out.head = mix(d.head, r.head);
+    out.head_width = mix(d.head_width, r.head_width);
+    out.neck = mix(d.neck, r.neck);
+    out.neck_angle = mix(d.neck_angle, r.neck_angle);
+    out.tail = mix(d.tail, r.tail);
+    out.tail_width = mix(d.tail_width, r.tail_width);
+    out.tail_curl = mix(d.tail_curl, r.tail_curl);
+    out.gut = mix(d.gut, r.gut);
+    out.fat = mix(d.fat, r.fat);
+    out.brood = mix(d.brood, r.brood);
     out
 }
 
@@ -712,20 +742,23 @@ mod tests {
     fn part_forms_follow_the_stronger_copy() {
         let (g, mut rng) = founder(12, Founder::Crawler);
         let [mut a, mut b] = haplotypes(&g);
-        a.parts[1].form = crate::genome::Form::Plates;
-        b.parts[1].form = crate::genome::Form::Coil;
-        (a.parts[1].curl, b.parts[1].curl) = (0.0, 1.0);
-        (a.parts[1].dom, b.parts[1].dom) = (200, 60);
+        a.plan.modules[1].form = crate::genome::Form::Plates;
+        b.plan.modules[1].form = crate::genome::Form::Coil;
+        (a.plan.modules[1].curl, b.plan.modules[1].curl) = (0.0, 1.0);
+        (a.plan.modules[1].dom, b.plan.modules[1].dom) = (200, 60);
         let child = express([a.clone(), b.clone()], g.brain.clone(), g.marker, &mut rng);
-        assert_eq!(child.parts[1].form, crate::genome::Form::Plates);
-        assert!(child.parts[1].curl > 0.0 && child.parts[1].curl < 0.5, "curl blends toward the stronger copy");
+        assert_eq!(child.plan.modules[1].form, crate::genome::Form::Plates);
+        assert!(
+            child.plan.modules[1].curl > 0.0 && child.plan.modules[1].curl < 0.5,
+            "curl blends toward the stronger copy"
+        );
         // Carried quietly, the weaker form comes back in a quarter of selfed young.
         let n = 2000;
         let parent = express([a, b], g.brain.clone(), g.marker, &mut rng);
         let coils = (0..n)
             .filter(|_| {
                 let [x, y] = [gamete(&parent, &mut rng), gamete(&parent, &mut rng)];
-                express([x, y], g.brain.clone(), g.marker, &mut rng).parts[1].form == crate::genome::Form::Coil
+                express([x, y], g.brain.clone(), g.marker, &mut rng).plan.modules[1].form == crate::genome::Form::Coil
             })
             .count() as f32
             / n as f32;
@@ -783,7 +816,7 @@ mod tests {
                 let child = if round % 3 == 0 { pop[i].bud(&mut rng) } else { pop[i].mate(&pop[j], &mut rng) };
                 let body = crate::body::Body::develop(&child);
                 assert!(!body.segments.is_empty());
-                assert!(child.parts.len() <= MAX_PARTS);
+                assert!(child.plan.modules.len() <= MAX_MODULES);
                 pop[rng.below(8)] = child;
             }
         }

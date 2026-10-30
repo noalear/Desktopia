@@ -14,7 +14,6 @@ use vesper_sim::creature::Action;
 use vesper_sim::frame::{CreatureView, Frame, InfectionView, RemainsView};
 use vesper_sim::history::DeathCause;
 use vesper_sim::pose::{self, Pose};
-use vesper_sim::world::DEPTH;
 
 pub const CELLS: [&str; 18] = [
     "idle",
@@ -237,12 +236,12 @@ fn cast(sim: &vesper_sim::Sim, n: usize, stage: f32) -> Vec<Actor> {
             continue;
         }
         let mut base = c.clone();
-        let mut m = c.motion.last().cloned().unwrap_or_default();
         // Square on to us, not caught mid-turn.
-        m.face = if m.face < 0.0 { -1.0 } else { 1.0 };
-        m.heading = if m.face < 0.0 { std::f32::consts::PI } else { 0.0 };
-        base.heading = m.heading;
-        base.motion = vec![m];
+        base.face = if c.face < 0.0 { -1.0 } else { 1.0 };
+        base.heading = if base.face < 0.0 { std::f32::consts::PI } else { 0.0 };
+        base.vel = [0.0; 3];
+        base.pace = 0.0;
+        base.settle = 0.0;
         base.action = Action::Idle;
         base.target = None;
         base.focus = None;
@@ -261,7 +260,7 @@ fn cast(sim: &vesper_sim::Sim, n: usize, stage: f32) -> Vec<Actor> {
             .map(|s| (s.a[0] + s.b[0]) * 0.5)
             .collect();
         let dir = if head.is_empty() {
-            base.motion[0].face.signum()
+            base.face.signum()
         } else if head.iter().sum::<f32>() / head.len() as f32 >= pose.at[0] {
             1.0
         } else {
@@ -313,18 +312,7 @@ fn place(a: &Actor, id: u64, x: f32, flip: bool, size: f32) -> CreatureView {
     c.scale *= size;
     if flip {
         c.heading = std::f32::consts::PI - c.heading;
-    }
-    for m in &mut c.motion {
-        m.pos = [x, STAGE_DEPTH * DEPTH];
-        m.scale *= size;
-        if flip {
-            m.face = -m.face;
-            m.heading = std::f32::consts::PI - m.heading;
-        }
-        for p in &mut m.parts {
-            p.u *= size;
-            p.alt = (p.alt - alt) * size + alt;
-        }
+        c.face = -c.face;
     }
     c
 }
@@ -373,9 +361,6 @@ fn scene(a: &Actor, cell: usize, row: usize, k: u64, time: f32) -> (Vec<Creature
                 let at = x + a.dir * a.len * 1.0;
                 let dx = at - a.corpse[0].pos[0];
                 r.pos = [r.pos[0] + dx, STAGE_DEPTH, r.pos[2]];
-                for m in &mut r.motion {
-                    m.pos = [m.pos[0] + dx, STAGE_DEPTH * DEPTH];
-                }
                 me.focus = Some([at, STAGE_DEPTH, 0.0]);
                 remains.push(r);
             }
@@ -433,9 +418,6 @@ fn scene(a: &Actor, cell: usize, row: usize, k: u64, time: f32) -> (Vec<Creature
                 r.age = time - DIES_AT;
                 let dx = x - a.corpse[0].pos[0];
                 r.pos = [r.pos[0] + dx, STAGE_DEPTH, r.pos[2]];
-                for m in &mut r.motion {
-                    m.pos = [m.pos[0] + dx, STAGE_DEPTH * DEPTH];
-                }
                 remains.push(r);
                 return (Vec::new(), remains);
             }

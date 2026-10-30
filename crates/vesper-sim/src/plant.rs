@@ -588,17 +588,17 @@ impl PlantGenome {
     fn mutate_at(&mut self, rng: &mut Rng, k: f32) {
         let r = self.mutation.clamp(0.3, 2.5) * k;
         let nudge = |v: &mut f32, sd: f32, lo: f32, hi: f32, rng: &mut Rng| {
-            if rng.chance(0.15 * r) {
+            if rng.chance(0.2 * r) {
                 *v = (*v + genetics::effect(rng) * sd).clamp(lo, hi);
             }
         };
         nudge(&mut self.adult_scale, 0.0015, 0.004, 0.07, rng);
-        nudge(&mut self.stem_length, 0.08, 0.2, 2.5, rng);
+        nudge(&mut self.stem_length, 0.12, 0.2, 2.5, rng);
         nudge(&mut self.stem_width, 0.015, 0.04, 0.4, rng);
         nudge(&mut self.curl, 0.05, -0.8, 0.8, rng);
-        nudge(&mut self.branch_angle, 0.08, 0.1, 2.2, rng);
+        nudge(&mut self.branch_angle, 0.12, 0.1, 2.2, rng);
         nudge(&mut self.branch_scale, 0.05, 0.3, 1.0, rng);
-        nudge(&mut self.leaf, 0.06, 0.05, 2.0, rng);
+        nudge(&mut self.leaf, 0.09, 0.05, 2.0, rng);
         nudge(&mut self.root, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.vent, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.thirst, 0.04, 0.0, 1.0, rng);
@@ -612,7 +612,7 @@ impl PlantGenome {
         nudge(&mut self.glow, 0.03, 0.0, 1.0, rng);
         nudge(&mut self.heat_tolerance, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.cold_tolerance, 0.04, 0.0, 1.0, rng);
-        nudge(&mut self.lifespan, 150.0, 300.0, 20000.0, rng);
+        nudge(&mut self.lifespan, 150.0, 300.0, 12000.0, rng);
         nudge(&mut self.growth, 0.05, 0.3, 2.0, rng);
         nudge(&mut self.mutation, 0.05, 0.3, 2.5, rng);
         nudge(&mut self.induce, 0.04, 0.0, 1.0, rng);
@@ -623,7 +623,7 @@ impl PlantGenome {
         nudge(&mut self.mast, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.selfing, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.nectar, 0.03, 0.0, 1.0, rng);
-        nudge(&mut self.leaf_width, 0.05, 0.0, 1.0, rng);
+        nudge(&mut self.leaf_width, 0.07, 0.0, 1.0, rng);
         nudge(&mut self.leaf_split, 0.05, 0.0, 1.0, rng);
         nudge(&mut self.knots, 0.04, 0.0, 1.0, rng);
         nudge(&mut self.zigzag, 0.05, 0.0, 1.0, rng);
@@ -639,13 +639,13 @@ impl PlantGenome {
                 nudge(v, 0.04, 0.0, 1.0, rng);
             }
         }
-        if rng.chance(0.03 * r) {
+        if rng.chance(0.06 * r) {
             self.stem_segments = (self.stem_segments as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(1, 6) as u8;
         }
-        if rng.chance(0.03 * r) {
+        if rng.chance(0.06 * r) {
             self.branches = (self.branches as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(0, 3) as u8;
         }
-        if rng.chance(0.03 * r) {
+        if rng.chance(0.06 * r) {
             self.leaves = (self.leaves as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(1, 4) as u8;
         }
     }
@@ -751,7 +751,7 @@ impl PlantGenome {
             }
         }
         if b.segs.is_empty() {
-            return Body { segments: Vec::new(), extent: 0.3 };
+            return Body { segments: Vec::new(), extent: 0.3, innards: [0.0; 3], stance: 0.0 };
         }
         let len = self.stem_length;
         if self.floats() {
@@ -792,7 +792,7 @@ impl PlantGenome {
             s.tip = [base[0] + s.dir.cos() * s.length, base[1] + s.dir.sin() * s.length];
         }
         let extent = segs.iter().map(|s| s.tip[1]).fold(0.3, f32::max);
-        Body { segments: segs, extent }
+        Body { segments: segs, extent, innards: [0.0; 3], stance: 0.0 }
     }
 
     /// One leaf of length `l`: a broad blade, a feathery frond of leaflets,
@@ -881,13 +881,13 @@ impl Sprout {
             base: [0.0; 2],
             tip: [0.0; 2],
             dir: 0.0,
-            amp: 0.0,
-            phase: 0.0,
-            lift: 0.0,
             taper: tissue.taper(),
             form: Form::Tube,
             curl: 0.0,
             detail: 0.5,
+            role: crate::body::Role::Trunk,
+            joint: 0,
+            index: 0,
         });
         (self.segs.len() - 1) as i16
     }

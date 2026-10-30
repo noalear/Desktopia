@@ -52,7 +52,7 @@ pub struct InfectionView {
     pub symbiont: bool,
 }
 
-/// A body's pose at one physics step.
+/// A body's pose at one moment.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Moment {
     /// x along the band, depth on the ground plane (world units), and the
@@ -74,22 +74,6 @@ pub struct PartPose {
     pub u: f32,
     pub alt: f32,
     pub angle: f32,
-}
-
-impl Moment {
-    pub fn of(rig: &crate::physics::Rig, pos: [f32; 3], heading: f32) -> Self {
-        Self {
-            pos: [pos[0], pos[1]],
-            heading,
-            face: rig.face,
-            scale: rig.scale,
-            parts: rig
-                .parts
-                .iter()
-                .map(|p| PartPose { seg: p.seg, u: p.pos[0], alt: p.pos[1], angle: p.angle })
-                .collect(),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -130,9 +114,11 @@ pub struct CreatureView {
     pub infection: Option<InfectionView>,
     pub group: Option<u64>,
     pub leader: bool,
-    /// The body through this tick: where it was when the tick began, then at
-    /// each physics step. Drawing samples along it.
-    pub motion: Vec<Moment>,
+    /// Which way it is drawn facing, -1 or 1, and how settled down it is, 0..1.
+    pub face: f32,
+    pub settle: f32,
+    /// How fast it is going as a share of its top speed, -1..1.
+    pub pace: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -178,8 +164,6 @@ pub struct RemainsView {
     pub decay: f32,
     /// Seconds since death.
     pub age: f32,
-    /// The body through this tick, while it is still falling or settling.
-    pub motion: Vec<Moment>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,11 +203,6 @@ pub struct Frame {
     pub air: Vec<f32>,
 }
 
-/// The moments of a body's last tick, or where it is now if it didn't move.
-fn motion(moments: &[Moment], rig: &crate::physics::Rig, pos: [f32; 3], heading: f32) -> Vec<Moment> {
-    if moments.len() >= 2 { moments.to_vec() } else { vec![Moment::of(rig, pos, heading)] }
-}
-
 impl Frame {
     pub fn of(w: &World) -> Self {
         let e = &w.env;
@@ -260,7 +239,7 @@ impl Frame {
                 lost: c.lost,
                 maturity: c.maturity,
                 look: c.genome.look,
-                locomotion: c.abil.locomotion.unwrap_or(Locomotion::Crawl),
+                locomotion: c.motion.mode,
                 gait: c.gait,
                 effort: c.effort,
                 action: c.action,
@@ -283,7 +262,9 @@ impl Frame {
                 }),
                 group: c.group.map(|g| g.0),
                 leader: leaders.contains(&c.id.0),
-                motion: motion(&c.moments, &c.rig, c.pos, c.heading),
+                face: c.motion.face,
+                settle: c.motion.settle,
+                pace: (c.motion.speed / crate::motion::top(&c.abil, c.motion.mode).max(1e-5)).clamp(-1.0, 1.0),
             })
             .collect();
         let plants = w
@@ -323,7 +304,6 @@ impl Frame {
                 look: r.look,
                 decay: r.decay01(),
                 age: r.age,
-                motion: r.rig.as_ref().map(|rig| motion(&r.moments, rig, r.pos, r.heading)).unwrap_or_default(),
             })
             .collect();
         let eggs = w

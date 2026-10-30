@@ -3,20 +3,14 @@
 
 use crate::brain::o;
 use crate::creature::{Action, Creature};
-use crate::frame::Moment;
 use crate::genetics;
 use crate::genome::{Genome, Tissue};
-use crate::ground::Ground;
 use crate::history::{Behavior, CreatureId, DeathCause};
 use crate::life;
 use crate::mind::{self, Grief, PlaceKind, creature_bin, plant_bin};
 use crate::organ::Fare;
-use crate::physics::{self, AIR, Drive, MOTOR_COST, Medium, Rig, STEP, STEPS_PER_TICK, WATER};
 use crate::think::{Food, Percept, season_quarter};
-use crate::world::{
-    ALT_MAX, DEPTH, E_DETRITUS, E_MEAT, E_PLANT, Env, Remains, TICK, World, col_of, dist3, pair_mut, wrap_angle,
-};
-use vesper_terrain::WORLD_W;
+use crate::world::{E_DETRITUS, E_MEAT, E_PLANT, TICK, World, col_of, dist3, pair_mut, wrap_angle};
 
 /// Above this a creature will mate when it can, even if it also breeds alone.
 const FACULTATIVE: f32 = 0.25;
@@ -209,8 +203,6 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
         }
         let weary = 1.0 - m.tired * 0.4;
         let guarding = out[o::GUARD] > 0.3;
-        // Its rhythm run whichever way has carried it further.
-        let way = if c.back > c.stride { -1.0 } else { 1.0 };
         // Chilled bodies stiffen and slow; parched or choking ones flag.
         let torpor = 1.0
             - 0.5 * c.exposure.chill.min(1.0)
@@ -218,7 +210,7 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
             - 0.25 * (c.exposure.grit - 0.4).clamp(0.0, 1.0)
             - 0.5 * c.venom.min(1.0);
         let torpor = torpor.max(0.1);
-        let power = effort * way * (0.5 + 0.5 * c.health) * weary * torpor * if guarding { 0.3 } else { 1.0 };
+        let power = effort * (0.5 + 0.5 * c.health) * weary * torpor * if guarding { 0.3 } else { 1.0 };
         c.drive = [power, (out[o::RISE] + dir[2]).clamp(-1.0, 1.0) * if resting { 0.2 } else { 1.0 }];
         c.effort = effort;
         let v = (c.vel[0] * c.vel[0] + c.vel[1] * c.vel[1] + c.vel[2] * c.vel[2]).sqrt();
@@ -254,133 +246,9 @@ pub fn movement(w: &mut World, percepts: &[Percept]) {
     }
 }
 
-/// Runs the bodies of every creature and corpse through one tick of physics,
-/// and moves each through the world by however far its body carried it.
-/// Bodies don't touch each other here, so `helpers` extra threads can share
-/// them out with the same result as one thread.
+/// Moves every creature by what its body can do and its brain asked.
 pub fn physics(w: &mut World, helpers: usize) {
-    if w.coarse {
-        return coarse(w);
-    }
-    let World { creatures, remains, env, ground, .. } = w;
-    let (env, ground) = (&*env, &*ground);
-    crate::sim::share(creatures, helpers, |c| body(c, env, ground));
-    crate::sim::share(remains, helpers.min(1), |r| corpse(r, env, ground));
-}
-
-fn body(c: &mut Creature, env: &Env, ground: &Ground) {
-    let mask = physics::present(&c.body, c.maturity, c.lost);
-    let scale = c.scale();
-    if mask != c.rig.mask || (scale / c.rig.scale - 1.0).abs() > 0.04 {
-        c.rig = c.rig.rebuild(&c.body, mask, scale);
-    }
-    c.rig.ensure_pairs(&c.body);
-    c.moments.clear();
-    c.moments.push(Moment::of(&c.rig, c.pos, c.heading));
-    for _ in 0..STEPS_PER_TICK {
-        let held = c.action == Action::Held || c.doom.is_some();
-        let drive = Drive { power: c.drive[0], rise: c.drive[1], hz: c.genome.gait_hz, limp: held };
-        let before = c.rig.parts.first().map_or(0.0, |p| p.pos[1]);
-        let du = carry(&mut c.rig, &mut c.pos, &c.heading, drive, env, ground);
-        let (s, co) = c.heading.sin_cos();
-        let vy = (c.rig.parts.first().map_or(0.0, |p| p.pos[1]) - before) / STEP;
-        c.vel = [du * co / STEP, du * s / STEP, vy];
-        let work = std::mem::take(&mut c.rig.work);
-        c.energy -= work * MOTOR_COST;
-        if drive.power.abs() > 0.3 && !held {
-            let made = du / STEP / c.length().max(1e-5) / drive.power.abs();
-            let learnt = if drive.power > 0.0 { &mut c.stride } else { &mut c.back };
-            *learnt += (made - *learnt) * 0.02;
-            c.toil += (work / STEP / drive.power.abs() - c.toil) * 0.02;
-        }
-        if drive.rise.abs() > 0.3 && !held && !c.rig.grounded {
-            c.climb += (vy / drive.rise - c.climb) * 0.02;
-        }
-        c.gait = c.rig.clock * std::f32::consts::TAU;
-        c.moments.push(Moment::of(&c.rig, c.pos, c.heading));
-    }
-}
-
-fn corpse(r: &mut Remains, env: &Env, ground: &Ground) {
-    r.moments.clear();
-    let Some(rig) = &mut r.rig else { return };
-    if rig.still > 3.0 {
-        return;
-    }
-    rig.ensure_pairs(&r.body);
-    r.moments.push(Moment::of(rig, r.pos, r.heading));
-    for _ in 0..STEPS_PER_TICK {
-        if rig.still > 3.0 {
-            break;
-        }
-        let limp = Drive { limp: true, ..Default::default() };
-        carry(rig, &mut r.pos, &r.heading, limp, env, ground);
-        r.moments.push(Moment::of(rig, r.pos, r.heading));
-    }
-}
-
-/// Fast-forward: each body goes as far as its learned gait would take it,
-/// paying what that gait costs, without moving a limb.
-fn coarse(w: &mut World) {
-    let World { creatures, remains, .. } = w;
-    for c in creatures.iter_mut() {
-        c.moments.clear();
-        let mask = physics::present(&c.body, c.maturity, c.lost);
-        let scale = c.scale();
-        if mask != c.rig.mask || (scale / c.rig.scale - 1.0).abs() > 0.04 {
-            c.rig = c.rig.rebuild(&c.body, mask, scale);
-        }
-        if c.action == Action::Held || c.doom.is_some() {
-            c.vel = [0.0; 3];
-            continue;
-        }
-        let [power, rise] = c.drive;
-        let speed = if power > 0.0 { c.stride } else { c.back } * power.abs() * c.length();
-        let (s, co) = c.heading.sin_cos();
-        let du = speed * TICK;
-        c.pos[0] += du * co;
-        c.pos[1] += du * s;
-        c.pos[0] = c.pos[0].clamp(0.02, WORLD_W - 0.02);
-        c.pos[1] = c.pos[1].clamp(0.004, DEPTH - 0.004);
-        let vy = if c.rig.grounded { 0.0 } else { c.climb * rise };
-        let alt = (c.pos[2] + vy * TICK).clamp(0.0, ALT_MAX);
-        c.rig.raise(alt - c.pos[2]);
-        c.rig.turn_to(c.heading, TICK);
-        c.pos[2] = alt;
-        c.vel = [speed * co, speed * s, vy];
-        c.energy -= c.toil * power.abs() * TICK * MOTOR_COST;
-        c.gait = (c.gait + c.genome.gait_hz * power * TICK * std::f32::consts::TAU) % std::f32::consts::TAU;
-    }
-    // Bodies lie where they fell.
-    for r in remains.iter_mut() {
-        r.moments.clear();
-    }
-}
-
-/// One physics step for a body in its plane, then the plane moved along with
-/// it so the body stays at its origin. Returns how far it went.
-fn carry(rig: &mut Rig, pos: &mut [f32; 3], heading: &f32, drive: Drive, env: &Env, ground: &Ground) -> f32 {
-    let (s, c) = heading.sin_cos();
-    let wet = pos[2] < 0.01 && ground.in_river(pos[0], pos[1] / DEPTH);
-    let mut flow = env.wind_at(pos[0], pos[2]);
-    if wet {
-        flow -= 0.004 * (1.0 + env.river.flood * 2.0);
-    }
-    let medium = Medium { density: if wet { WATER } else { AIR }, flow: [flow * c, 0.0], ceiling: ALT_MAX };
-    rig.step(drive, medium);
-    let du = rig.parts.first().map_or(0.0, |p| p.pos[0]);
-    rig.shift(-du);
-    pos[0] += du * c;
-    pos[1] += du * s;
-    // At the edges of the world it slides along them; turning it round
-    // would only have it turn back next tick, flickering.
-    pos[0] = pos[0].clamp(0.02, WORLD_W - 0.02);
-    pos[1] = pos[1].clamp(0.004, DEPTH - 0.004);
-    pos[2] = rig.lowest().clamp(0.0, ALT_MAX);
-    if !drive.limp {
-        rig.turn_to(*heading, STEP);
-    }
-    du
+    crate::motion::step(w, helpers);
 }
 
 /// Eats some matter: energy from it now, growth from it if there's room,
@@ -1193,12 +1061,13 @@ mod tests {
         sim
     }
 
-    /// Two creatures of one species and one of another, side by side.
+    /// Two creatures of one species and one of another, side by side. The
+    /// first is big enough to leave a body.
     fn trio(w: &mut World) -> (usize, usize, usize) {
-        let a = 0;
+        let a = (0..w.creatures.len()).find(|&i| w.creatures[i].matter > 0.003).unwrap();
         let sp = w.creatures[a].species;
-        let b = (1..w.creatures.len()).find(|&i| w.creatures[i].species == sp).unwrap();
-        let k = (1..w.creatures.len()).find(|&i| w.creatures[i].species != sp).unwrap();
+        let b = (0..w.creatures.len()).find(|&i| i != a && w.creatures[i].species == sp).unwrap();
+        let k = (0..w.creatures.len()).find(|&i| w.creatures[i].species != sp).unwrap();
         for (n, &i) in [a, b, k].iter().enumerate() {
             let c = &mut w.creatures[i];
             c.pos = [1.5 + n as f32 * 0.01, 0.1, 0.0];

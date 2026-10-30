@@ -240,34 +240,7 @@ pub fn creature_gap(a: &Genome, b: &Genome) -> f32 {
 
 /// How far apart two creature genomes are.
 pub fn distance(a: &Genome, b: &Genome) -> f32 {
-    let mut d = 0.0;
-    let n = a.parts.len().max(b.parts.len());
-    for i in 0..n {
-        match (a.parts.get(i), b.parts.get(i)) {
-            (Some(p), Some(q)) => {
-                if p.tissue != q.tissue {
-                    d += 1.0;
-                }
-                if p.form != q.form {
-                    d += 0.8;
-                }
-                d += (p.curl - q.curl).abs() * 0.2 + (p.detail - q.detail).abs() * 0.4;
-                d += (p.length - q.length).abs() * 0.5 + (p.width - q.width).abs();
-                d += (p.recursion as f32 - q.recursion as f32).abs() * 0.3;
-                d += (p.links.len() as f32 - q.links.len() as f32).abs() * 0.5;
-                for (l, m) in p.links.iter().zip(&q.links) {
-                    if l.to != m.to {
-                        d += 0.4;
-                    }
-                    if l.pair != m.pair {
-                        d += 0.3;
-                    }
-                    d += (l.angle - m.angle).abs() * 0.1;
-                }
-            }
-            _ => d += 1.5,
-        }
-    }
+    let mut d = a.plan.distance(&b.plan);
     d += ((a.adult_scale / b.adult_scale).ln()).abs() * 2.0;
     d += (a.diet - b.diet).abs() * 3.0;
     d += ((a.sexual > 0.5) != (b.sexual > 0.5)) as u8 as f32 * 1.5;

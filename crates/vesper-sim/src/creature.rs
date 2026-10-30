@@ -2,25 +2,24 @@
 
 use crate::body::{Body, Phenotype};
 use crate::brain::{Brain, NO};
-use crate::frame::Moment;
 use crate::genome::{Form, Genome, Tissue};
 use crate::history::{CreatureId, DeathCause, GroupId, Life, Locomotion, MindSketch, SpeciesId};
 use crate::mind::Mind;
+use crate::motion::{AFLOAT, GRAVITY, Motion};
 use crate::organ::{FARES, Fare, Organ, mouth_takes, strikes};
-use crate::physics::Rig;
 use crate::plant::Seed;
 use crate::strain::Infection;
 use crate::world::{BASAL, BRAIN_COST, E_DETRITUS, E_MEAT, E_PER_MATTER, E_PLANT, MATTER_DENSITY};
 
 /// Matter a mouth that is the whole body would take in per second, per
 /// unit of body matter, before diminishing returns.
-pub const INTAKE: f32 = 0.3;
+pub const INTAKE: f32 = 0.45;
 /// Matter of toughness 1 a gut that is the whole body would deal with per
 /// second, per unit of body matter.
-pub const DIGEST: f32 = 0.075;
+pub const DIGEST: f32 = 0.12;
 /// Matter torn off per second by striking organs that are the whole body,
 /// per unit of body matter.
-pub const STRIKE: f32 = 0.6;
+pub const STRIKE: f32 = 0.35;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -57,11 +56,21 @@ pub struct Abilities {
     pub length: f32,
     /// Matter this body holds when whole at its current growth.
     pub body_matter: f32,
+    /// How it naturally gets about; the medium can change it (see `motion`).
     pub locomotion: Option<Locomotion>,
     /// Lift from float bladders against weight; 1 hovers.
     pub buoyancy: f32,
-    /// Top speed, world units per second.
+    /// Top speed its natural way, world units per second; and on the ground
+    /// (walking, crawling or burrowing), swimming (0 if it can't) and flying
+    /// (0 if its wings can't carry it).
     pub speed: f32,
+    pub walk: f32,
+    pub swim: f32,
+    pub fly: f32,
+    /// How fast it can rise or sink when something holds it up.
+    pub climb: f32,
+    /// Hip to foot, world units.
+    pub leg: f32,
     /// Matter torn off per second of fighting, by jaws, claws, horns and clubs.
     pub strike: f32,
     /// Matter of each food (see `organ::Fare`) its mouths can take in per second.
@@ -223,32 +232,17 @@ pub struct Creature {
     /// Set when it dies this tick; the body is laid out at the end of the tick.
     #[serde(skip)]
     pub doom: Option<DeathCause>,
-    /// The body as a physical thing.
-    pub rig: Rig,
+    /// How its body is carrying itself: stride clock, speed, facing.
+    #[serde(default)]
+    pub motion: Motion,
     /// What the brain asks of the body: power (-1..1) and rise (-1..1).
     pub drive: [f32; 2],
-    /// Body lengths per second along its heading it has been making per unit
-    /// of power, running its rhythm forward and in reverse; it uses whichever
-    /// has served it better, as it has no other way to know which way its own
-    /// body carries it.
-    pub stride: f32,
-    #[serde(default)]
-    pub back: f32,
-    /// Muscle work per second at full power, and altitude gained per second
-    /// at full rise, as it has found them; for moving it when fast-forwarding.
-    #[serde(default)]
-    pub toil: f32,
-    #[serde(default)]
-    pub climb: f32,
     /// What the weather has worn into it.
     #[serde(default)]
     pub exposure: Exposure,
     /// Venom working in its body, 0..about 1: it hurts, and it numbs and slows.
     #[serde(default)]
     pub venom: f32,
-    /// Its pose at each physics step this tick, the first being where the tick began.
-    #[serde(skip)]
-    pub moments: Vec<Moment>,
 }
 
 impl Creature {
@@ -415,40 +409,58 @@ pub fn abilities(g: &Genome, body: &Body, p: &Phenotype, scale: f32, neurons: us
     let muscle = p.frac(Tissue::Muscle);
     let o = |x: Organ| p.organ(x);
     let buoyancy = p.area[Tissue::Float.index()] * 3.5 / mass;
-    let flat = p.membrane / p.total_area.max(0.05);
+    let total = p.total_area.max(0.05);
+    let armor_cover = o(Organ::Plating) + o(Organ::Shell) + o(Organ::Scales) * 0.5 + o(Organ::Frill) * 0.4;
+    let slow = 1.0 - armor_cover.min(1.0) * 0.5;
+    let muscle_k = (0.6 + 2.0 * muscle).min(1.4);
+    let leg = p.leg * scale;
+    let digger = o(Organ::Digger) > 0.03;
+    // On the ground: stride length sets speed (Froude scaling), so long legs
+    // are fast and short ones scurry; a legless body inches by waves of
+    // squeezing, as worms do.
+    let walk = if p.legs >= 2 {
+        let gait_k = match p.legs {
+            2 => 0.85,
+            3..=4 => 1.0,
+            5..=6 => 0.9,
+            _ => 0.8,
+        };
+        0.6 * (GRAVITY * leg).sqrt() * gait_k * muscle_k * slow
+    } else {
+        length * (0.1 + 0.4 * muscle + 0.15 * p.form_frac(Form::Beads)) * slow * if digger { 0.6 } else { 1.0 }
+    };
+    // Through air or water: a fluked tail and fins push, a thick muscular
+    // tail most of all.
+    let thrust = (p.tail + p.fluke * 1.5 + p.fins) / total;
+    let swim = if thrust > 0.0 { length * (0.4 + 2.5 * thrust.min(0.5)) * muscle_k } else { 0.0 };
+    // In the air: enough wing for the weight, and muscle to beat it.
+    let load = mass * (1.0 - buoyancy).max(0.0) / p.membrane.max(1e-6);
+    let fly = if p.wings > 0.0 && load < 3.0 && muscle > 0.08 {
+        length * (3.0 + 5.0 * (p.wings / total).min(0.4)) * (1.0 - load / 3.0).powf(0.3) * muscle_k
+    } else {
+        0.0
+    };
+    let (walk, swim, fly) = (walk.clamp(0.002, 0.1), swim.min(0.1), fly.min(0.12));
+    let climb = (swim.max(fly) * 0.6).max(length * 0.5);
     let locomotion = if p.segments == 0 {
         None
-    } else if buoyancy >= 1.0 {
-        Some(if flat > 0.25 {
-            Locomotion::Glide
-        } else if muscle > 0.12 || p.tail > 0.0 {
-            Locomotion::Swim
-        } else {
-            Locomotion::Drift
-        })
-    } else if buoyancy >= 0.55 && (p.tail > 0.0 || flat > 0.15) && muscle > 0.15 {
-        Some(Locomotion::Swim)
+    } else if buoyancy >= AFLOAT {
+        Some(if swim > 0.0 { Locomotion::Swim } else { Locomotion::Drift })
+    } else if fly > 0.0 {
+        Some(Locomotion::Glide)
     } else if p.legs >= 2 {
         Some(Locomotion::Walk)
-    } else if o(Organ::Digger) > 0.05 || (p.frac(Tissue::Armor) + p.frac(Tissue::Frame) > 0.6 && muscle > 0.05) {
+    } else if digger || (p.frac(Tissue::Armor) > 0.5 && muscle > 0.05) {
         Some(Locomotion::Burrow)
     } else {
         Some(Locomotion::Crawl)
     };
-    let armor_cover = o(Organ::Plating) + o(Organ::Shell) + o(Organ::Scales) * 0.5 + o(Organ::Frill) * 0.4;
-    // Body lengths per second.
-    let mut bls = 0.12 + 2.2 * muscle;
-    match locomotion {
-        Some(Locomotion::Walk) => bls += 0.25 * (p.legs as f32 / 2.0).min(3.0),
-        Some(Locomotion::Swim) => bls += 0.6 * (p.tail / p.total_area).min(0.5) + 0.8 * flat.min(0.4),
-        Some(Locomotion::Glide) => bls += 0.4,
-        Some(Locomotion::Drift) => bls *= 0.5,
-        // A ringed body crawls by waves of squeezing, as worms do.
-        Some(Locomotion::Crawl) | Some(Locomotion::Burrow) => bls *= 0.5 + 0.8 * p.form_frac(Form::Beads).min(0.5),
-        _ => {}
-    }
-    bls *= 1.0 - armor_cover.min(1.0) * 0.6;
-    let speed = (bls * length).clamp(0.002, 0.09);
+    let speed = match locomotion {
+        Some(Locomotion::Swim) => swim,
+        Some(Locomotion::Drift) => swim.max(walk * 0.3),
+        Some(Locomotion::Glide) => fly,
+        _ => walk,
+    };
     let body_matter = mass * s2 * MATTER_DENSITY;
     let m = matter.max(body_matter * 0.3).max(1e-4);
     let power = 0.6 + muscle * 2.0;
@@ -498,6 +510,11 @@ pub fn abilities(g: &Genome, body: &Body, p: &Phenotype, scale: f32, neurons: us
         locomotion,
         buoyancy,
         speed,
+        walk,
+        swim,
+        fly,
+        climb,
+        leg,
         strike: strike * power * body_matter * STRIKE,
         takes,
         gut,
@@ -552,11 +569,15 @@ mod tests {
         (p, a)
     }
 
-    /// The founder plan with every part of one tissue given a form.
+    /// The founder plan with every part of one tissue given a form; for
+    /// frame, the skin of the trunk itself.
     fn with(kind: Founder, tissue: Tissue, form: Form) -> Genome {
         let mut g = Genome::founder_plan(kind, &mut Rng::new(4));
-        for p in g.parts.iter_mut().filter(|p| p.tissue == tissue) {
-            p.form = form;
+        if tissue == Tissue::Frame {
+            g.plan.trunk.form = form;
+        }
+        for m in g.plan.modules.iter_mut().filter(|m| m.kind.tissue() == tissue) {
+            m.form = form;
         }
         g
     }
@@ -599,14 +620,13 @@ mod tests {
 
     #[test]
     fn stingers_and_shells_defend() {
-        let sting = with(Founder::Crawler, Tissue::Armor, Form::Plates);
-        let mut sting = sting;
+        let mut sting = Genome::founder_plan(Founder::Crawler, &mut Rng::new(4));
         sting.toxin = 0.8;
-        for p in sting.parts.iter_mut().filter(|p| p.tissue == Tissue::Muscle) {
-            p.tissue = Tissue::Spine;
-            p.form = Form::Coil;
+        for m in sting.plan.modules.iter_mut().filter(|m| m.kind == crate::genome::Kind::Spine) {
+            m.form = Form::Coil;
         }
-        let shell = with(Founder::Crawler, Tissue::Armor, Form::Coil);
+        let mut shell = Genome::founder_plan(Founder::Crawler, &mut Rng::new(4));
+        shell.plan.trunk.form = Form::Coil;
         let (_, a) = grown(&sting);
         let (_, b) = grown(&shell);
         assert!(a.sting > 0.0 && a.venom > 0.0);

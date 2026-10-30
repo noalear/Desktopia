@@ -141,7 +141,8 @@ impl Sim {
             (Founder::Grazer, 3),
             (Founder::Swimmer, 2),
             (Founder::Crawler, 2),
-            (Founder::Stalker, 2),
+            (Founder::Stalker, 1),
+            (Founder::Flier, 2),
         ];
         for (kind, lineages) in founders {
             for _ in 0..lineages {
@@ -353,6 +354,7 @@ fn found_lineage(w: &mut World, mut g: Genome, kind: Founder, n: usize, home: f3
     let alt = match kind {
         Founder::Drifter => 0.15,
         Founder::Swimmer => 0.08,
+        Founder::Flier => 0.05,
         _ => 0.0,
     };
     for _ in 0..n {
