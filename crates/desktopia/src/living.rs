@@ -152,6 +152,7 @@ impl Living {
             cloud: view.cloud_drift,
             ground: view.ground_drift,
             flow: view.river_flow,
+            fall: view.fall_drift,
             last: now,
         });
         let dt = (now - d.last).as_secs_f32().min(1.0);
@@ -159,10 +160,12 @@ impl Living {
         d.ground = (d.ground + e.wind_low * dt) % 4096.0;
         d.flow =
             (d.flow + vesper_render::rhythm::river_speed(e.river.flood) * dt) % vesper_render::rhythm::TIME_WRAP as f32;
+        d.fall = vesper_render::rhythm::fall_drift(d.fall, e.wind_low, dt as f64);
         d.last = now;
         view.cloud_drift = d.cloud;
         view.ground_drift = d.ground;
         view.river_flow = d.flow;
+        view.fall_drift = d.fall;
         view
     }
 
@@ -340,6 +343,7 @@ struct Drift {
     cloud: f32,
     ground: f32,
     flow: f32,
+    fall: f32,
     last: Instant,
 }
 
