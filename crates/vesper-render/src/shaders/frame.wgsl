@@ -252,7 +252,17 @@ fn curtains(p: vec2f, base: vec3f, floor_y: f32) -> vec3f {
     let fall = smoothstep(0.0, 0.55, air.y);
     let snow = air.z;
     let shafts = fbm(vec2f(xs * 22.0, P.time * 0.002 + 5.0), 3);
-    let streak = fbm(vec2f(xs * 260.0, p.y * mix(5.0, 1.5, snow) - P.time * mix(0.7, 0.12, snow)), 2);
+    // Rain streaks race down, snow drifts slowly. Each runs at its own fixed
+    // speed and the two are blended: one speed mixed from the snowy share
+    // made the streaks race or run backwards as the share changed, and
+    // tore them apart wherever it changed across the curtain.
+    var streak = 0.0;
+    if (snow < 0.99) {
+        streak = fbm(vec2f(xs * 260.0, p.y * 5.0 - P.time * 0.7), 2) * (1.0 - snow);
+    }
+    if (snow > 0.01) {
+        streak += fbm(vec2f(xs * 260.0, p.y * 1.5 - P.time * 0.12) + 17.0, 2) * snow;
+    }
     var dens = fall * smoothstep(0.25, 0.7, shafts + fall * 0.35) * mix(0.55 + 0.45 * streak, 0.85 + 0.15 * streak, snow);
     dens *= smoothstep(top, top - 0.025, p.y);
     let t = nightness(p.x);

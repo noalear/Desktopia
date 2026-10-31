@@ -31,6 +31,10 @@ struct Params {
     bake_jitter: vec2f, // bake only: where in the pixel this sample falls
     ground_drift: f32,  // how far the ground wind has carried things (integrated wind_low)
     river_flow: f32,    // how far the current has carried the ripples
+    fall_drift: f32,    // how far the ground wind has blown falling flakes, wraps at 1
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> P: Params;

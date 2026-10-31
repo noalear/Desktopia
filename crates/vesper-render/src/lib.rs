@@ -90,6 +90,11 @@ pub struct WorldView {
     /// How far the river's current has carried its ripples, integrated by
     /// the host from [`rhythm::river_speed`]. Wraps like `time`.
     pub river_flow: f32,
+    /// How far the ground wind has blown falling snow and ash sideways,
+    /// integrated by the host as [`rhythm::fall_drift`] and wrapped at 1 so
+    /// it keeps its precision. The flakes are drawn from this rather than
+    /// leaned with the wind, which warped them whenever the wind changed.
+    pub fall_drift: f32,
     pub exposure: f32,
     /// The weather column by column, as the simulation has it.
     pub sky: Sky,
@@ -151,6 +156,7 @@ impl WorldView {
             cloud_drift: time * rhythm::CALM_HIGH * 0.5,
             ground_drift: time * rhythm::CALM_LOW,
             river_flow: time * rhythm::river_speed(0.0),
+            fall_drift: rhythm::fall_drift(0.0, rhythm::CALM_LOW, unix_secs),
             exposure,
             sky: rhythm::sky(&w),
         }
@@ -189,6 +195,9 @@ struct Params {
     bake_jitter: [f32; 2],
     ground_drift: f32,
     river_flow: f32,
+    fall_drift: f32,
+    /// Keeps the block a multiple of 16 bytes.
+    _pad: [f32; 3],
 }
 
 pub struct Renderer {
@@ -877,6 +886,8 @@ fn params(output: &Output, world: &WorldView) -> Params {
         bake_jitter: output.bake_jitter(),
         ground_drift: world.ground_drift,
         river_flow: world.river_flow,
+        fall_drift: world.fall_drift,
+        _pad: [0.0; 3],
     }
 }
 
@@ -1058,6 +1069,14 @@ pub mod rhythm {
     /// whenever the speed falls.
     pub fn river_speed(flood: f32) -> f32 {
         0.6 + 0.6 * flood
+    }
+
+    /// `drift` carried on `secs` seconds by a ground wind of `wind_low`, for
+    /// [`WorldView::fall_drift`](crate::WorldView::fall_drift): half a unit
+    /// per world unit of wind, wrapped at 1. Each layer of flakes moves
+    /// a fixed number of its own cells per unit, so the wrap never shows.
+    pub fn fall_drift(drift: f32, wind_low: f32, secs: f64) -> f32 {
+        (drift as f64 + wind_low as f64 * 0.5 * secs).rem_euclid(1.0) as f32
     }
 
     /// Calm-air wind near the ground and up high, world units per second;

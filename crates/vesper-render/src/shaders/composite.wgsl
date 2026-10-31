@@ -135,15 +135,24 @@ fn streaks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, width: f32, seed
 }
 
 // One layer of drifting specks (snow, ash), each wobbling on its way down.
-fn specks(p: vec2f, scale: f32, vy: f32, s: f32, density: f32, size: f32, seed: f32) -> f32 {
-    let g = vec2f(p.x - s * p.y, p.y + fall_offset(vy, scale)) / scale;
-    let cell = vec2f(floor(g.x), floor(g.y) % WRAP);
+// The wind carries the layer sideways by `span` screen units per unit of
+// `P.fall_drift`, which the host integrates from the ground wind. The layer
+// repeats every `span` across (whole cells), so the drift's wrap at 1 never
+// shows. Leaning the cells with the local wind instead, as rain does,
+// stretched and folded the flakes into streaks wherever the wind changed
+// across the screen or over time.
+fn specks(p: vec2f, scale: f32, vy: f32, span: f32, density: f32, size: f32, seed: f32, stir: f32) -> f32 {
+    let n = round(span / scale);
+    let g = vec2f(p.x / scale - P.fall_drift * n, (p.y + fall_offset(vy, scale)) / scale);
+    let fx = floor(g.x);
+    let cell = vec2f(fx - n * floor(fx / n), floor(g.y) % WRAP);
     let h = pcg2(cell + seed);
     if (h.x > density) {
         return 0.0;
     }
-    let wob = vec2f(sin(P.time * (0.7 + h.y) + h.x * 40.0), cos(P.time * (0.5 + h.x) + h.y * 30.0)) * 0.18;
-    let d = length((fract(g) - 0.25 - 0.5 * pcg2(cell + seed + 9.0) - wob) * scale);
+    // Gusts toss the flakes about more, but never out of their cells.
+    let wob = vec2f(sin(P.time * (0.7 + h.y) + h.x * 40.0), cos(P.time * (0.5 + h.x) + h.y * 30.0)) * (0.13 + 0.05 * stir);
+    let d = length((fract(g) - 0.3 - 0.4 * pcg2(cell + seed + 9.0) - wob) * scale);
     let r = size * (0.5 + h.y);
     let rd = max(r, 0.8 / P.world_size.y);
     return exp(-d * d / (rd * rd)) * r * r / (rd * rd);
@@ -159,9 +168,11 @@ fn falling(p: vec2f, base: vec3f) -> vec3f {
     }
     let fall = smoothstep(0.0, 0.6, air.y);
     let snow = air.z;
-    let gust = 1.0 + more.z;
-    // Lean with the ground wind, harder in the gusts.
-    let s = clamp(-P.wind_low * 45.0 * gust, -0.9, 0.9);
+    // Rain leans with the ground wind. The lean is the same everywhere: one
+    // that followed the local gusts would bend the drops' grid across the
+    // screen and smear them.
+    let s = clamp(-P.wind_low * 55.0, -0.9, 0.9);
+    let stir = clamp(more.z, 0.0, 2.0) * 0.5;
     let light = air_light(p);
     var col = base;
     // Thinner against the sky, where there is less behind it to catch light.
@@ -176,10 +187,9 @@ fn falling(p: vec2f, base: vec3f) -> vec3f {
     }
     let flakes = fall * snow;
     if (flakes > 0.01) {
-        let ss = s * 1.8;
-        var f = specks(p, 0.03, 0.09, ss, flakes * 0.5, 0.0018, 3.0);
-        f += specks(p, 0.017, 0.065, ss * 0.9, flakes * 0.6, 0.0012, 17.0) * 0.8;
-        f += specks(p, 0.009, 0.045, ss * 0.8, flakes * 0.7, 0.0007, 59.0) * 0.6;
+        var f = specks(p, 0.03, 0.09, 14.6, flakes * 0.5, 0.0018, 3.0, stir);
+        f += specks(p, 0.017, 0.065, 9.4, flakes * 0.6, 0.0012, 17.0, stir) * 0.8;
+        f += specks(p, 0.009, 0.045, 5.8, flakes * 0.7, 0.0007, 59.0, stir) * 0.6;
         col = mix(col, light * 0.7, flakes * 0.3);
         col += (light * 1.6 + vec3f(0.02, 0.025, 0.05)) * f;
     }
@@ -188,7 +198,7 @@ fn falling(p: vec2f, base: vec3f) -> vec3f {
         col += (light * 2.0 + vec3f(0.08)) * h;
     }
     if (ash > 0.05) {
-        let a = specks(p, 0.022, 0.03, s * 2.5, ash * 0.5, 0.0013, 71.0) + specks(p, 0.012, 0.022, s * 2.0, ash * 0.6, 0.0008, 5.0);
+        let a = specks(p, 0.022, 0.03, 6.8, ash * 0.5, 0.0013, 71.0, stir) + specks(p, 0.012, 0.022, 4.0, ash * 0.6, 0.0008, 5.0, stir);
         col = mix(col, vec3f(0.03, 0.026, 0.025) + light * 0.15, min(a, 1.0) * 0.8);
     }
     return col;
