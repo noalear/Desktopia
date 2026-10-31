@@ -77,7 +77,10 @@ fn read_snapshot(dir: &Path) -> Option<SnapshotIn> {
     let path = dir.join(SNAPSHOT);
     let text = fs::read_to_string(&path).ok()?;
     match serde_json::from_str::<SnapshotIn>(&text) {
-        Ok(s) if s.version == VERSION => Some(s),
+        Ok(mut s) if s.version == VERSION => {
+            s.history.classify();
+            Some(s)
+        }
         Ok(s) => {
             log::warn!("chronicle snapshot is version {}, expected {VERSION}; starting over", s.version);
             None

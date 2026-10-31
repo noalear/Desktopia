@@ -263,6 +263,14 @@ pub struct Species {
     pub id: SpeciesId,
     pub parent: Option<SpeciesId>,
     pub children: Vec<SpeciesId>,
+    /// Its place in the order of life, broadest last: the order is every
+    /// species descended from one founder, a family a branch of it that went
+    /// its own way, a genus a closer knot of kin. Family and order names come
+    /// from the genus that started them, as on Earth.
+    #[serde(default)]
+    pub order: String,
+    #[serde(default)]
+    pub family: String,
     pub genus: String,
     pub epithet: String,
     /// Field-guide name, like "plated rust trudger".
@@ -301,6 +309,16 @@ impl Species {
 
     pub fn latin(&self) -> String {
         format!("{} {}", self.genus, self.epithet)
+    }
+
+    /// Its kingdom's name.
+    pub fn kingdom(&self) -> &'static str {
+        names::kingdom(self.founding.kingdom)
+    }
+
+    /// "Vesperozoa › Thithaeshida › Korridae › Thithaeshith".
+    pub fn classification(&self) -> String {
+        format!("{} › {} › {} › {}", self.kingdom(), self.order, self.family, self.genus)
     }
 }
 
@@ -423,6 +441,10 @@ pub struct History {
     pub matter: [f32; 3],
     pub deaths: u64,
     genera: BTreeMap<String, Traits>,
+    /// What each family's founder was like, for telling when a branch has
+    /// gone far enough to start another.
+    #[serde(default)]
+    families: BTreeMap<String, Traits>,
     feuds: Vec<Feud>,
     era_rival: Option<(SpeciesId, f64)>,
     /// What the annals mention: kept when it would otherwise be forgotten.
@@ -480,6 +502,11 @@ pub fn plural(name: &str) -> String {
     }
 }
 
+/// How far a species must be from its genus founder to start a new genus,
+/// and from its family founder to start a new family.
+const GENUS_GAP: f32 = 0.6;
+const FAMILY_GAP: f32 = 1.3;
+
 /// Distance between two trait sets, roughly 0..2; above 0.6 starts a new genus.
 fn distance(a: &Traits, b: &Traits) -> f32 {
     let mut d = (a.size.max(1e-4) / b.size.max(1e-4)).ln().abs() * 0.25
@@ -493,6 +520,13 @@ fn distance(a: &Traits, b: &Traits) -> f32 {
     }
     if a.kingdom != b.kingdom {
         d += 1.0;
+    }
+    // The parts it is built with: organs for creatures, leaves, flowers,
+    // trunks and the like for plants.
+    if !a.features.is_empty() || !b.features.is_empty() {
+        let shared = a.features.iter().filter(|f| b.features.contains(f)).count() as f32;
+        let all = (a.features.len() + b.features.len()) as f32 - shared;
+        d += (1.0 - shared / all.max(1.0)) * 0.4;
     }
     d
 }
@@ -557,22 +591,8 @@ impl History {
         if self.species.contains_key(&id) {
             return;
         }
+        let (order, family, genus) = self.place(parent, t, id);
         let parent_rec = parent.and_then(|p| self.species.get(&p));
-        // Stay in the parent's genus unless the body plan has wandered far from
-        // the genus founder.
-        let genus = match parent_rec {
-            Some(p) if self.genera.get(&p.genus).is_some_and(|g| distance(g, t) < 0.6) => p.genus.clone(),
-            _ => {
-                let mut g = names::genus(id.0);
-                let mut n = 0;
-                while self.genera.contains_key(&g) {
-                    n += 1;
-                    g = names::genus(id.0 ^ (n << 32));
-                }
-                self.genera.insert(g.clone(), t.clone());
-                g
-            }
-        };
         let depth = parent_rec.map_or(0, |p| p.depth + 1);
         let mut variant = 0;
         let common = loop {
@@ -586,6 +606,8 @@ impl History {
             id,
             parent,
             children: Vec::new(),
+            order,
+            family,
             genus,
             epithet: names::epithet(id.0),
             common,
@@ -621,6 +643,107 @@ impl History {
         }
     }
 
+    /// Where a new species sits in the order of life: in its parent's genus
+    /// unless its body has wandered far from the genus founder, in its
+    /// parent's family unless it has wandered far from the family founder,
+    /// and always in its parent's order. A founder starts all three.
+    fn place(&mut self, parent: Option<SpeciesId>, t: &Traits, id: SpeciesId) -> (String, String, String) {
+        let parent_rec = parent.and_then(|p| self.species.get(&p)).filter(|p| !p.family.is_empty());
+        let kin = parent_rec.map(|p| {
+            let family = self.families.get(&p.family).is_none_or(|f| distance(f, t) < FAMILY_GAP);
+            let genus = family && self.genera.get(&p.genus).is_some_and(|g| distance(g, t) < GENUS_GAP);
+            (p.order.clone(), p.family.clone(), p.genus.clone(), family, genus)
+        });
+        if let Some((order, family, genus, _, true)) = kin {
+            return (order, family, genus);
+        }
+        let genus = self.new_genus(id, t);
+        match kin {
+            Some((order, family, _, true, _)) => (order, family, genus),
+            Some((order, ..)) => {
+                let family = self.new_family(&genus, t);
+                (order, family, genus)
+            }
+            None => {
+                let family = self.new_family(&genus, t);
+                (names::order(&genus, t.kingdom), family, genus)
+            }
+        }
+    }
+
+    fn new_genus(&mut self, id: SpeciesId, t: &Traits) -> String {
+        let mut g = names::genus(id.0);
+        let mut n = 0;
+        while self.genera.contains_key(&g) {
+            n += 1;
+            g = names::genus(id.0 ^ (n << 32));
+        }
+        self.genera.insert(g.clone(), t.clone());
+        g
+    }
+
+    fn new_family(&mut self, genus: &str, t: &Traits) -> String {
+        let mut f = names::family(genus, t.kingdom);
+        let seed = genus.bytes().fold(0u64, |h, b| mix(h ^ b as u64));
+        let mut n = 0;
+        while self.families.contains_key(&f) {
+            n += 1;
+            f = names::family(&names::genus(seed ^ (n << 40)), t.kingdom);
+        }
+        self.families.insert(f.clone(), t.clone());
+        f
+    }
+
+    /// Gives an order and family to species recorded before there were any,
+    /// oldest first, by the same rules a new species follows. A species
+    /// keeps the genus it was already known by.
+    pub fn classify(&mut self) {
+        let ids: Vec<SpeciesId> = self.species.values().filter(|s| s.family.is_empty()).map(|s| s.id).collect();
+        for id in ids {
+            let s = &self.species[&id];
+            let (genus, t) = (s.genus.clone(), s.founding.clone());
+            let parent = s.parent.and_then(|p| self.species.get(&p)).filter(|p| !p.family.is_empty());
+            let placed = match parent {
+                Some(p) if p.genus == genus => (p.order.clone(), p.family.clone()),
+                Some(p) if self.families.get(&p.family).is_none_or(|f| distance(f, &t) < FAMILY_GAP) => {
+                    (p.order.clone(), p.family.clone())
+                }
+                Some(p) => {
+                    let order = p.order.clone();
+                    (order, self.new_family(&genus, &t))
+                }
+                None => (names::order(&genus, t.kingdom), self.new_family(&genus, &t)),
+            };
+            let s = self.species.get_mut(&id).unwrap();
+            (s.order, s.family) = placed;
+        }
+    }
+
+    /// Species that share this one's genus, family or order, as the ranks
+    /// it belongs to and their other members, nearest kin first.
+    pub fn kin(&self, id: SpeciesId) -> Vec<(&'static str, String, Vec<SpeciesId>)> {
+        let Some(s) = self.species.get(&id) else { return Vec::new() };
+        let mut seen = BTreeSet::from([id]);
+        let mut out = Vec::new();
+        type Rank<'a> = (&'static str, &'a str, fn(&Species) -> &str);
+        let ranks: [Rank; 3] = [
+            ("Genus", &s.genus, |o| &o.genus),
+            ("Family", &s.family, |o| &o.family),
+            ("Order", &s.order, |o| &o.order),
+        ];
+        for (rank, name, of) in ranks {
+            let members: Vec<SpeciesId> = self
+                .species
+                .values()
+                .filter(|o| !seen.contains(&o.id) && of(o) == name && o.founding.kingdom == s.founding.kingdom)
+                .map(|o| o.id)
+                .collect();
+            seen.extend(members.iter().copied());
+            out.push((rank, name.to_string(), members));
+        }
+        out
+    }
+
     /// Drops a branch that died before the annals told of it, and any such
     /// branches it leaves childless, so a long-lived world stays small.
     fn forget(&mut self, id: SpeciesId) {
@@ -628,11 +751,14 @@ impl History {
         if s.announced || s.alive() || !s.children.is_empty() {
             return;
         }
-        let (parent, genus) = (s.parent, s.genus.clone());
+        let (parent, genus, family) = (s.parent, s.genus.clone(), s.family.clone());
         self.species.remove(&id);
         self.likenesses.remove(&id);
         if !self.species.values().any(|o| o.genus == genus) {
             self.genera.remove(&genus);
+        }
+        if !self.species.values().any(|o| o.family == family) {
+            self.families.remove(&family);
         }
         if let Some(p) = parent.and_then(|p| self.species.get_mut(&p)) {
             p.children.retain(|c| *c != id);
@@ -664,7 +790,7 @@ impl History {
         let Some(p) = s.parent.and_then(|p| self.species.get(&p)) else { return };
         let s = &self.species[&id];
         let diff = names::difference(&s.founding, &p.traits);
-        let new_genus = p.genus != s.genus;
+        let new_genus = p.genus != s.genus || p.family != s.family;
         let title = format!("The {} appear", plural(&s.common));
         let mut text = format!(
             "{} branched off from {} in {} {} ago: {diff}.",
@@ -673,8 +799,10 @@ impl History {
             names::region(s.founding.zone),
             names::span(self.now - s.arose)
         );
-        if new_genus {
-            text.push_str(" Different enough to start a new genus.");
+        if p.family != s.family {
+            text.push_str(&format!(" Different enough to start a new family, the {}.", s.family));
+        } else if new_genus {
+            text.push_str(&format!(" Different enough to start a new genus, {}, within the {}.", s.genus, s.family));
         }
         text.push_str(&format!(" They have taken hold and number {}.", s.count));
         let refs = vec![Ref::Species(id), Ref::Species(p.id)];
@@ -2046,6 +2174,67 @@ mod tests {
             strains: vec![],
             standouts: vec![],
         }
+    }
+
+    #[test]
+    fn kin_share_their_names_up_the_ranks() {
+        let mut h = History::default();
+        let arise = |h: &mut History, id: u64, parent: Option<u64>, t: Traits| {
+            h.apply(0.0, 1.0, &Fact::SpeciesArose { id: SpeciesId(id), parent: parent.map(SpeciesId), traits: t });
+        };
+        arise(&mut h, 1, None, traits(0.5));
+        arise(&mut h, 2, Some(1), traits(0.52));
+        // A big change of body: a new genus, still in the family.
+        arise(&mut h, 3, Some(1), Traits { diet: 0.8, ..traits(0.5) });
+        // And far enough to start a family of its own.
+        arise(&mut h, 4, Some(3), Traits { diet: 0.95, armor: 0.9, locomotion: Locomotion::Glide, ..traits(0.5) });
+        arise(&mut h, 5, None, traits(0.5));
+        let s = |id: u64| &h.species[&SpeciesId(id)];
+        assert_eq!(s(2).genus, s(1).genus);
+        assert_eq!(s(2).family, s(1).family);
+        assert_ne!(s(3).genus, s(1).genus);
+        assert_eq!(s(3).family, s(1).family);
+        assert_ne!(s(4).family, s(1).family);
+        assert_eq!(s(4).order, s(1).order);
+        assert_ne!(s(5).order, s(1).order);
+        // Ranks are named after the genus that began them.
+        let stem = |name: &str, end: &str| name.strip_suffix(end).unwrap().to_string();
+        assert!(s(1).genus.starts_with(&stem(&s(1).family, "idae")));
+        assert!(s(1).genus.starts_with(&stem(&s(1).order, "ida")));
+        assert!(s(4).genus.starts_with(&stem(&s(4).family, "idae")));
+        let kin = h.kin(SpeciesId(2));
+        assert_eq!(kin[0].2, vec![SpeciesId(1)]);
+        assert_eq!(kin[1].2, vec![SpeciesId(3)]);
+        assert_eq!(kin[2].2, vec![SpeciesId(4)]);
+    }
+
+    #[test]
+    fn old_chronicles_are_classified_on_load() {
+        let mut h = History::default();
+        for (id, parent) in [(1, None), (2, Some(1)), (3, None)] {
+            h.apply(
+                0.0,
+                1.0,
+                &Fact::SpeciesArose { id: SpeciesId(id), parent: parent.map(SpeciesId), traits: traits(0.5) },
+            );
+        }
+        let names: Vec<_> = h.species.values().map(|s| (s.order.clone(), s.family.clone(), s.genus.clone())).collect();
+        // As a chronicle written before families were kept reads.
+        let mut json = serde_json::to_value(&h).unwrap();
+        json.as_object_mut().unwrap().remove("families");
+        for s in json["species"].as_object_mut().unwrap().values_mut() {
+            s.as_object_mut().unwrap().remove("family");
+            s.as_object_mut().unwrap().remove("order");
+        }
+        let mut old: History = serde_json::from_value(json).unwrap();
+        assert!(old.species.values().all(|s| s.family.is_empty()));
+        old.classify();
+        let again: Vec<_> =
+            old.species.values().map(|s| (s.order.clone(), s.family.clone(), s.genus.clone())).collect();
+        assert_eq!(names, again);
+        // And new species join the families they came from.
+        old.apply(1.0, 2.0, &Fact::SpeciesArose { id: SpeciesId(4), parent: Some(SpeciesId(2)), traits: traits(0.5) });
+        assert_eq!(old.species[&SpeciesId(4)].family, old.species[&SpeciesId(1)].family);
     }
 
     #[test]

@@ -74,6 +74,41 @@ pub fn genus(seed: u64) -> String {
     format!("{}{end}", stem(coin(seed, 2)))
 }
 
+/// Latin endings a genus may carry, longest first so the stem comes clean.
+const GENUS_ENDS: &[&str] = &["ura", "eth", "ith", "is", "on", "ax", "os", "a"];
+
+/// A genus without its ending, for building family and order names on.
+fn genus_stem(genus: &str) -> &str {
+    GENUS_ENDS.iter().find_map(|e| genus.strip_suffix(e).filter(|s| s.len() >= 3)).unwrap_or(genus)
+}
+
+/// The two kingdoms of Vesper's life.
+pub fn kingdom(k: Kingdom) -> &'static str {
+    match k {
+        Kingdom::Rooted => "Vesperophyta",
+        Kingdom::Motile => "Vesperozoa",
+    }
+}
+
+/// A family named for its first genus, the way Earth's are: plants end in
+/// -aceae, creatures in -idae.
+pub fn family(genus: &str, k: Kingdom) -> String {
+    let stem = genus_stem(genus);
+    match k {
+        Kingdom::Rooted => format!("{stem}aceae"),
+        Kingdom::Motile => format!("{stem}idae"),
+    }
+}
+
+/// An order named for its founding genus: plants end in -ales, creatures in -ida.
+pub fn order(genus: &str, k: Kingdom) -> String {
+    let stem = genus_stem(genus);
+    match k {
+        Kingdom::Rooted => format!("{stem}ales"),
+        Kingdom::Motile => format!("{stem}ida"),
+    }
+}
+
 /// A species epithet, lower case.
 pub fn epithet(seed: u64) -> String {
     let stem = stem(coin(seed ^ 0xe9, 2).to_lowercase());

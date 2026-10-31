@@ -31,10 +31,17 @@ fn render_every_page() {
     pages.extend(creature.map(|id| ("8-creature-page".into(), Page::Detail(Ref::Creature(id)))));
     pages.extend(group.map(|id| ("9-group-page".into(), Page::Detail(Ref::Group(id)))));
     // Every species with a portrait, to check them all.
-    pages.extend(h.likenesses.keys().map(|id| (format!("portrait-{}", id.0), Page::Detail(Ref::Species(*id)))));
+    let portraits = std::env::var("NO_PORTRAITS").is_err();
+    pages.extend(
+        h.likenesses
+            .keys()
+            .filter(|_| portraits)
+            .map(|id| (format!("portrait-{}", id.0), Page::Detail(Ref::Species(*id)))),
+    );
     for (name, page) in pages {
         let h = h.clone();
-        let mut harness = Harness::builder().with_size([1360.0, 880.0]).wgpu().build_eframe(move |cc| {
+        let tall: f32 = std::env::var("SHOT_H").ok().and_then(|v| v.parse().ok()).unwrap_or(880.0);
+        let mut harness = Harness::builder().with_size([1360.0, tall]).wgpu().build_eframe(move |cc| {
             let mut app = ChronicleApp::new(cc, Source::Fixed(Box::new(h)));
             app.open(page);
             app

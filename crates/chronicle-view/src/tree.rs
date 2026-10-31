@@ -94,21 +94,30 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
 
     let ids = order(h, st);
     let avail = ui.available_rect_before_wrap().shrink2(vec2(24.0, 8.0));
-    let label_w = 210.0;
+    let label_w = 300.0;
     let axis_h = 34.0;
     let era_h = 22.0;
     let rows = ids.len().max(1) as f32;
-    // Each kingdom gets a header strip above its rows.
-    let first_motile = ids.iter().position(|id| h.species.get(id).is_some_and(|s| s.traits.kingdom == Kingdom::Motile));
-    let both = first_motile.is_some_and(|f| f > 0);
-    let head = 16.0;
-    let heads = if both { 2.0 } else { 1.0 } * head;
-    let row_h = ((avail.height() - axis_h - era_h - heads) / rows).clamp(7.0, 30.0);
-    let content_h = rows * row_h + heads + axis_h + era_h;
-    let row_top = move |row: usize| {
-        let sections = if both && first_motile.is_some_and(|f| row >= f) { 2.0 } else { 1.0 };
-        sections * head + row as f32 * row_h
+    // Each kingdom gets a header strip above its rows, and each order (all
+    // that came from one founder) a thinner one naming it and its families.
+    let heads = headers(h, &ids);
+    let heads_h: f32 = heads.iter().map(|x| x.1.height()).sum();
+    let row_h = ((avail.height() - axis_h - era_h - heads_h) / rows).clamp(7.0, 30.0);
+    let content_h = rows * row_h + heads_h + axis_h + era_h;
+    let tops: Vec<f32> = {
+        let mut v = Vec::with_capacity(ids.len());
+        let (mut y, mut k) = (0.0, 0);
+        for row in 0..ids.len() {
+            while k < heads.len() && heads[k].0 == row {
+                y += heads[k].1.height();
+                k += 1;
+            }
+            v.push(y);
+            y += row_h;
+        }
+        v
     };
+    let row_top = |row: usize| tops.get(row).copied().unwrap_or(0.0);
 
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         ui.add_space(0.0);
@@ -117,7 +126,7 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
         let full = resp.rect.shrink2(vec2(24.0, 0.0));
         let plot = Rect::from_min_max(
             pos2(full.left(), full.top() + era_h),
-            pos2(full.right() - label_w, full.top() + era_h + heads + rows * row_h),
+            pos2(full.right() - label_w, full.top() + era_h + heads_h + rows * row_h),
         );
         p.rect_filled(Rect::from_min_max(full.min, pos2(plot.right(), plot.bottom())), CornerRadius::same(8), BG);
 
@@ -212,18 +221,32 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
         let mut hovered: Option<SpeciesId> = None;
         let mouse = resp.hover_pos();
 
-        // Kingdom headers.
-        let header = |y: f32, label: &str| {
-            p.hline(plot.x_range(), y, Stroke::new(1.0, LINE));
-            p.text(pos2(plot.left() + 6.0, y + 3.0), Align2::LEFT_TOP, label, crate::theme::bold(10.0), FAINT);
-        };
-        match first_motile {
-            Some(f) if f > 0 => {
-                header(plot.top(), "PLANTS");
-                header(plot.top() + row_top(f) - head, "CREATURES");
+        // Kingdom and order headers.
+        let mut y = plot.top();
+        let mut k = 0;
+        for row in 0..=ids.len() {
+            while k < heads.len() && heads[k].0 == row {
+                let head = &heads[k].1;
+                match head {
+                    Head::Kingdom(label) => {
+                        p.hline(plot.x_range(), y, Stroke::new(1.0, LINE));
+                        p.text(
+                            pos2(plot.left() + 6.0, y + 3.0),
+                            Align2::LEFT_TOP,
+                            label,
+                            crate::theme::bold(10.0),
+                            FAINT,
+                        );
+                    }
+                    Head::Order(label) => {
+                        p.hline(plot.x_range(), y + 1.0, Stroke::new(1.0, LINE.gamma_multiply(0.45)));
+                        p.text(pos2(plot.left() + 6.0, y + 2.0), Align2::LEFT_TOP, label, italic(11.0), FAINT);
+                    }
+                }
+                y += head.height();
+                k += 1;
             }
-            Some(_) => header(plot.top(), "CREATURES"),
-            None => header(plot.top(), "PLANTS"),
+            y += row_h;
         }
 
         for (row, id) in ids.iter().enumerate() {
@@ -294,12 +317,19 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
                 }
             }
 
-            // Name on the right for the living; beside the end for the gone.
+            // Names on the right for the living, the Latin first so kin line
+            // up; beside the end of the band for the gone.
             let size = (row_h * 0.75).clamp(8.5, 13.0);
             if s.alive() {
                 if row_h >= 8.0 {
-                    let name = capital(&s.common);
-                    p.text(pos2(plot.right() + 10.0, yc), Align2::LEFT_CENTER, name, FontId::proportional(size), color);
+                    let latin = p.layout_no_wrap(s.latin(), italic(size), color);
+                    let at = pos2(plot.right() + 10.0, yc - latin.size().y / 2.0);
+                    let w = latin.size().x;
+                    p.galley(at, latin, color);
+                    let common = p.layout_no_wrap(capital(&s.common), FontId::proportional(size * 0.92), DIM);
+                    if w + 18.0 + common.size().x < label_w - 10.0 {
+                        p.galley(pos2(at.x + w + 8.0, yc - common.size().y / 2.0), common, DIM);
+                    }
                 }
             } else if row_h >= 11.0 {
                 let x = x_of(end) + 6.0;
@@ -307,8 +337,8 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
                     p.text(
                         pos2(x, yc),
                         Align2::LEFT_CENTER,
-                        capital(&s.common),
-                        FontId::proportional(size * 0.92),
+                        format!("{} · {}", s.latin(), s.common),
+                        italic(size * 0.92),
                         FAINT,
                     );
                 }
@@ -350,9 +380,10 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
                 .map(|p| format!("\nFrom the {}", plural(&p.common)))
                 .unwrap_or_default();
             resp.clone().on_hover_text(format!(
-                "{}\n{}\nArose {}\n{status}\n{} at {} · peak {}{parent}",
+                "{}\n{}\n{}\nArose {}\n{status}\n{} at {} · peak {}{parent}",
                 capital(&s.common),
                 s.latin(),
+                s.classification(),
                 when(s.arose),
                 thousands(s.population.at(at) as u64),
                 when(at),
@@ -370,6 +401,55 @@ pub fn show(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut TreeState) {
         }
         let _ = Color32::TRANSPARENT;
     });
+}
+
+enum Head {
+    Kingdom(String),
+    Order(String),
+}
+
+impl Head {
+    fn height(&self) -> f32 {
+        match self {
+            Head::Kingdom(_) => 16.0,
+            Head::Order(_) => 15.0,
+        }
+    }
+}
+
+/// The headers above rows: a kingdom where one starts, an order where one
+/// starts, each before the row it heads. An order's header names the
+/// families in it that are shown.
+fn headers(h: &History, ids: &[SpeciesId]) -> Vec<(usize, Head)> {
+    let mut out = Vec::new();
+    let mut last: Option<(Kingdom, &str)> = None;
+    for (row, id) in ids.iter().enumerate() {
+        let Some(s) = h.species.get(id) else { continue };
+        let k = s.traits.kingdom;
+        if last.is_none_or(|l| l.0 != k) {
+            let word = if k == Kingdom::Rooted { "PLANTS" } else { "CREATURES" };
+            let kingdom = vesper_chronicle::names::kingdom(k).to_uppercase();
+            out.push((row, Head::Kingdom(format!("{word} · KINGDOM {kingdom}"))));
+        }
+        if last.is_none_or(|l| l.0 != k || l.1 != s.order) {
+            let mut families: Vec<&str> = Vec::new();
+            for o in ids[row..].iter().filter_map(|i| h.species.get(i)) {
+                if o.order != s.order || o.traits.kingdom != k {
+                    break;
+                }
+                if !families.contains(&o.family.as_str()) {
+                    families.push(&o.family);
+                }
+            }
+            let fam = match families.len() {
+                1 => format!("family {}", families[0]),
+                _ => format!("families {}", families.join(", ")),
+            };
+            out.push((row, Head::Order(format!("Order {} · {fam}", s.order))));
+        }
+        last = Some((k, &s.order));
+    }
+    out
 }
 
 /// A round time step near `raw` seconds.
