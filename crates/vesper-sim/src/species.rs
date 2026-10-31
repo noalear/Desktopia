@@ -105,6 +105,13 @@ impl Registry {
         if self.get(id).extinct.is_none() {
             return id;
         }
+        // Seeds of one lost kind that wake together come back as one kind,
+        // not one each.
+        if let Some(r) = self.list.iter().rev().find(|r| {
+            r.parent == Some(id) && r.extinct.is_none() && matches!(&r.rep, Rep::Plant(t) if t.look_gap(g) < DRIFT)
+        }) {
+            return r.id;
+        }
         self.add(Some(id), Rep::Plant(Arc::new(g.clone_shallow())), now, facts)
     }
 
@@ -160,14 +167,79 @@ pub(crate) fn speciate(w: &mut World) {
             let (x, y) = (&plants[a].genome, &plants[b].genome);
             x.distance(y) + x.compat_divergence(y) * COMPAT_GAP * 0.7
         };
-        let Some((leave, medoids)) = split(&members, gap, PLANT_SPLIT, &mut w.rng) else { continue };
-        let rep = Arc::new(w.plants[medoids[1]].genome.clone_shallow());
-        let new = w.species.add(Some(s), Rep::Plant(rep), now, &mut w.history);
-        for &i in &leave {
-            w.plants[i].species = new;
+        if let Some((leave, medoids)) = split(&members, gap, PLANT_SPLIT, &mut w.rng) {
+            let rep = Arc::new(w.plants[medoids[1]].genome.clone_shallow());
+            let new = w.species.add(Some(s), Rep::Plant(rep), now, &mut w.history);
+            for &i in &leave {
+                w.plants[i].species = new;
+            }
+            w.species.moved(s, new, leave.len() as u32);
+            continue;
         }
-        w.species.moved(s, new, leave.len() as u32);
+        let Rep::Plant(ty) = &w.species.get(s).rep else { continue };
+        let Some((leave, centre)) = drifted(&members, plants, ty, &mut w.rng) else { continue };
+        // Strays that have come to look like another living kind, as
+        // hybrids and throwbacks do, are counted as that kind, not a new one.
+        let centre = Arc::new(w.plants[centre].genome.clone_shallow());
+        let like = w
+            .species
+            .list
+            .iter()
+            .filter(|r| r.id != s && r.extinct.is_none())
+            .filter_map(|r| match &r.rep {
+                Rep::Plant(g) => Some((r.id, centre.look_gap(g))),
+                Rep::Creature(_) => None,
+            })
+            .filter(|x| x.1 < DRIFT)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|x| x.0);
+        let to = match like {
+            Some(id) => id,
+            None => w.species.add(Some(s), Rep::Plant(centre), now, &mut w.history),
+        };
+        for &i in &leave {
+            w.plants[i].species = to;
+        }
+        w.species.moved(s, to, leave.len() as u32);
     }
+}
+
+/// How different from its species' type a plant must look before botanists
+/// count it as the start of another.
+const DRIFT: f32 = 4.0;
+
+/// Plants vary along smooth slopes rather than in tidy clusters, so a
+/// species of them rarely comes apart cleanly in two. Botanists name a new
+/// one when enough of a species has come to look unlike its type, the
+/// plant it was named from: the members nearer the centre of those strays
+/// than to the type are the new kind. Returns them, and that centre.
+fn drifted(
+    members: &[usize],
+    plants: &[crate::plant::Plant],
+    ty: &PlantGenome,
+    rng: &mut Rng,
+) -> Option<(Vec<usize>, usize)> {
+    let far: Vec<usize> = members.iter().copied().filter(|&i| plants[i].genome.look_gap(ty) >= DRIFT).collect();
+    if far.len() < MIN_SPLIT * 2 || far.len() * 10 < members.len() {
+        return None;
+    }
+    let gap = |a: usize, b: usize| plants[a].genome.look_gap(&plants[b].genome);
+    let sample: Vec<usize> = (0..16).map(|_| far[rng.below(far.len())]).collect();
+    let centre = (0..32).map(|_| far[rng.below(far.len())]).min_by(|&x, &y| {
+        let sx: f32 = sample.iter().map(|&o| gap(x, o)).sum();
+        let sy: f32 = sample.iter().map(|&o| gap(y, o)).sum();
+        sx.total_cmp(&sy)
+    })?;
+    let c = &plants[centre].genome;
+    if c.look_gap(ty) < DRIFT {
+        return None;
+    }
+    let leave: Vec<usize> =
+        members.iter().copied().filter(|&i| plants[i].genome.look_gap(c) < plants[i].genome.look_gap(ty)).collect();
+    if leave.len() < MIN_SPLIT * 2 || members.len() - leave.len() < MIN_SPLIT {
+        return None;
+    }
+    Some((leave, centre))
 }
 
 /// Splits a species' members in two if they fall into two clusters further

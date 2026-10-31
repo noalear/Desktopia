@@ -397,7 +397,11 @@ pub fn species_list(ui: &mut Ui, nav: &mut Nav, h: &History, st: &mut PageState,
                         Ref::Species(s.id),
                     );
                 });
-                ui.label(RichText::new(s.latin()).font(italic(14.0)).color(DIM));
+                ui.vertical(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.label(RichText::new(s.latin()).font(italic(14.0)).color(DIM));
+                    ui.label(RichText::new(&s.family).small().color(FAINT));
+                });
                 ui.label(RichText::new(format!("{:?}", s.traits.locomotion).to_lowercase()).small().color(DIM));
                 match s.extinct {
                     None => ui.label(format!("{} alive", thousands(s.count as u64))),
@@ -450,6 +454,17 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species, portraits:
         ui.label(RichText::new(capital(&s.common)).font(serif_bold(34.0)));
     });
     ui.label(RichText::new(s.latin()).font(italic(18.0)).color(DIM));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        let ranks = [("Kingdom", s.kingdom()), ("Order", &s.order), ("Family", &s.family), ("Genus", &s.genus)];
+        for (i, (rank, name)) in ranks.into_iter().enumerate() {
+            if i > 0 {
+                ui.label(RichText::new("›").color(FAINT));
+            }
+            ui.label(RichText::new(rank).small().color(FAINT));
+            ui.label(RichText::new(name).font(italic(14.0)).color(DIM));
+        }
+    });
     let status = match s.extinct {
         None => format!(
             "Alive: {} now, {} at most. Arose {} in {}.",
@@ -607,6 +622,7 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species, portraits:
                     }
                 });
             }
+            kin(ui, nav, h, s);
             let top = |m: &std::collections::BTreeMap<SpeciesId, u32>| {
                 let mut v: Vec<(SpeciesId, u32)> = m.iter().map(|(k, v)| (*k, *v)).collect();
                 v.sort_by_key(|x| std::cmp::Reverse(x.1));
@@ -659,6 +675,60 @@ fn species_page(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species, portraits:
         });
     }
     mentions(ui, nav, h, Ref::Species(s.id));
+}
+
+/// The species it shares a genus, a family and an order with.
+fn kin(ui: &mut Ui, nav: &mut Nav, h: &History, s: &Species) {
+    let ranks: Vec<_> = h
+        .kin(s.id)
+        .into_iter()
+        .map(|(rank, name, mut ids)| {
+            ids.retain(|id| h.species.get(id).is_some_and(|o| crate::tree::remembered(h, o)));
+            // The living first, then the most recent.
+            ids.sort_by(|a, b| {
+                let (a, b) = (&h.species[a], &h.species[b]);
+                b.alive().cmp(&a.alive()).then(b.arose.total_cmp(&a.arose))
+            });
+            (rank, name, ids)
+        })
+        .collect();
+    if ranks.iter().all(|r| r.2.is_empty()) {
+        return;
+    }
+    section(ui, "Kin");
+    for (rank, name, ids) in ranks {
+        if ids.is_empty() {
+            continue;
+        }
+        let what = match rank {
+            "Genus" => format!("Also of the genus {name}"),
+            "Family" => format!("Elsewhere in the family {name}"),
+            _ => format!("Elsewhere in the order {name}"),
+        };
+        ui.label(RichText::new(what).small().color(DIM));
+        ui.horizontal_wrapped(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let more = ids.len().saturating_sub(12);
+            for id in ids.into_iter().take(12) {
+                let o = &h.species[&id];
+                let name = o.latin();
+                let font = italic(14.0);
+                let width = ui.fonts_mut(|f| f.layout_no_wrap(name.clone(), font.clone(), AMBER).size().x) + 24.0;
+                if width > ui.available_width() {
+                    ui.end_row();
+                }
+                swatch(ui, species_color(&o.traits));
+                let c = if o.alive() { AMBER } else { AMBER.gamma_multiply(0.55) };
+                link_styled(ui, nav, RichText::new(name).font(font).color(c), Ref::Species(id))
+                    .on_hover_text(capital(&o.common));
+                ui.add_space(6.0);
+            }
+            if more > 0 {
+                ui.label(RichText::new(format!("and {more} more")).small().color(FAINT));
+            }
+        });
+        ui.add_space(4.0);
+    }
 }
 
 fn mentions(ui: &mut Ui, nav: &mut Nav, h: &History, r: Ref) {

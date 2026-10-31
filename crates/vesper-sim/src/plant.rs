@@ -106,6 +106,9 @@ pub struct PlantGenome {
     pub tough: f32,
 }
 
+/// Parts in [`PlantGenome::form`].
+pub const FORM_PARTS: usize = 15;
+
 /// Quantitative plant loci, in chromosome order.
 const PLANT_LOCI: usize = 54;
 const PLANT_CHROMS: [usize; 5] = [0, 17, 27, 38, PLANT_LOCI];
@@ -812,6 +815,52 @@ impl PlantGenome {
         } else {
             b.shape(Form::Paddle, bow * 0.5, self.leaf_width);
         }
+    }
+
+    /// The look of a plant at a glance, as the parts anyone would notice:
+    /// what kind of leaves, a trunk or not, flowers, fruit, thorns, traps,
+    /// plumes, bladders, tendrils, beaded stems, a rosette, glowing tips.
+    /// Each runs 0..1, soft about the point where the part shows.
+    pub fn form(&self) -> [f32; FORM_PARTS] {
+        let on = |v: f32, at: f32, w: f32| ((v - at) / w * 0.5 + 0.5).clamp(0.0, 1.0);
+        let fronds = on(self.leaf_split, 0.5, 0.1);
+        let needles = (1.0 - fronds) * (1.0 - on(self.leaf_width, 0.3, 0.1));
+        let pads = (1.0 - fronds) * on(self.leaf_width, 0.7, 0.1);
+        let scales = (1.0 - fronds) * (1.0 - needles) * on(self.tough, 0.6, 0.1);
+        [
+            fronds,
+            needles,
+            pads,
+            scales,
+            on(self.stem_segments as f32, 4.5, 1.0),
+            on(self.nectar, 0.3, 0.1),
+            on(self.fruit, 0.25, 0.1),
+            on(self.spines, 0.5, 0.1),
+            on(self.trap, 0.3, 0.1),
+            on(self.wind, 0.6, 0.1),
+            on(self.floating, 0.5, 0.1),
+            on(self.tendrils, 0.3, 0.1),
+            on(self.knots, 0.35, 0.1),
+            on(self.rosette, 0.2, 0.1),
+            on(self.glow, 0.4, 0.1),
+        ]
+    }
+
+    /// How many visible parts two plants differ by.
+    pub fn form_gap(&self, o: &Self) -> f32 {
+        self.form().iter().zip(o.form()).map(|(a, b)| (a - b).abs()).sum()
+    }
+
+    /// How different two plants look to someone walking past: their parts,
+    /// colours, size and build. Genes nobody can see don't count.
+    pub fn look_gap(&self, o: &Self) -> f32 {
+        let count = |a: u8, b: u8, w: f32| (a as f32 - b as f32).abs() * w;
+        self.form_gap(o) * 1.5
+            + crate::genome::Genome::look_distance(&self.look, &o.look) * 4.0
+            + (self.adult_scale.max(1e-4) / o.adult_scale.max(1e-4)).ln().abs() * 3.0
+            + count(self.stem_segments, o.stem_segments, 0.4)
+            + count(self.branches, o.branches, 0.4)
+            + count(self.leaves, o.leaves, 0.2)
     }
 
     pub fn distance(&self, o: &Self) -> f32 {
