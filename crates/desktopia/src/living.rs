@@ -13,6 +13,7 @@ use vesper_sim::animate::Animator;
 use vesper_sim::frame::{CreatureView, Frame, PlantView};
 use vesper_sim::history::Fact;
 use vesper_sim::history::Locomotion;
+use vesper_sim::playback::{Playback, Shown};
 use vesper_sim::pose::{self, Pose};
 use vesper_sim::runner::{Options, Recorder, Runner};
 use vesper_sim::{Sim, save};
@@ -26,16 +27,27 @@ const PLANTS_EVERY: u64 = 5;
 pub struct Living {
     runner: Runner,
     plants_tick: Option<u64>,
-    pose: Pose,
-    /// What everyone is doing, eased over time, and the clock it runs on.
-    anim: Animator,
+    paint: Painter,
+    /// The snapshots played back on a steady clock, which starts at `born`,
+    /// and what it showed last.
+    playback: Playback,
+    shown: Option<Shown>,
     born: Instant,
-    segs: Vec<Seg>,
-    membranes: Vec<Membrane>,
     /// How far the winds and the river have carried what they move, and when.
     drift: Option<Drift>,
-    /// Where each floating mat was in the older snapshot, and that snapshot's tick.
-    mats_before: (u64, HashMap<u64, [f32; 3]>),
+}
+
+/// Poses snapshots of the world and turns them into draw lists.
+#[derive(Default)]
+pub struct Painter {
+    pose: Pose,
+    /// What everyone is doing, eased over time.
+    anim: Animator,
+    segs: Vec<Seg>,
+    membranes: Vec<Membrane>,
+    /// Where each creature and floating mat is in the older snapshot being
+    /// blended from, and that snapshot's tick.
+    before: Option<(u64, HashMap<u64, usize>, HashMap<u64, usize>)>,
 }
 
 impl Living {
@@ -114,13 +126,11 @@ impl Living {
         Self {
             runner,
             plants_tick: None,
-            pose: Pose::default(),
-            anim: Animator::new(),
+            paint: Painter::default(),
+            playback: Playback::new(),
+            shown: None,
             born: Instant::now(),
-            segs: Vec::new(),
-            membranes: Vec::new(),
             drift: None,
-            mats_before: (u64::MAX, HashMap::new()),
         }
     }
 
@@ -184,12 +194,64 @@ impl Living {
         }
         self.plants_tick = Some(tick);
         batch.clear();
-        for p in f.next.plants.iter().filter(|p| !p.floating) {
+        self.paint.plants(&f.next, batch);
+        true
+    }
+
+    /// Fills `batch` with every creature, body, egg and floating mat, as they
+    /// are now on the playback clock.
+    pub fn creatures(&mut self, batch: &mut LifeBatch) {
+        let f = self.runner.frames();
+        let made = f.made.saturating_duration_since(self.born).as_secs_f64();
+        self.playback.push(f.next, made);
+        let now = self.born.elapsed().as_secs_f64();
+        batch.clear();
+        self.shown = self.playback.show(now);
+        if let Some(shown) = &self.shown {
+            self.paint.creatures(shown, now, batch);
+        }
+    }
+
+    /// Where a creature is drawn now, if it is alive: its floor point on screen
+    /// and its length, in world units.
+    #[allow(dead_code)] // for the preview tool
+    pub fn locate(&self, id: u64) -> Option<([f32; 2], f32)> {
+        let s = self.shown.as_ref()?;
+        let next = s.b.creatures.iter().find(|c| c.id == id)?;
+        let c = match s.a.creatures.iter().find(|c| c.id == id) {
+            Some(prev) => pose::blend(prev, next, s.t, s.gap()),
+            None => next.clone(),
+        };
+        let (at, shrink, _) = pose::project(c.pos);
+        Some((at, c.scale * c.body.extent * shrink))
+    }
+
+    /// Sets how fast the world runs, in sim seconds per real second, and how
+    /// many more threads it may borrow when one can't keep up.
+    pub fn set_pace(&self, speed: f32, helpers: usize) {
+        self.runner.set_helpers(helpers);
+        self.runner.set_speed(speed);
+    }
+
+    /// How fast the world has really been running lately.
+    pub fn rate(&self) -> f32 {
+        self.runner.rate()
+    }
+
+    /// Saves and stops the simulation.
+    pub fn stop(self) {
+        self.runner.stop();
+    }
+}
+
+impl Painter {
+    /// Adds the rooted plants of a snapshot to `batch`.
+    pub fn plants(&mut self, f: &Frame, batch: &mut LifeBatch) {
+        for p in f.plants.iter().filter(|p| !p.floating) {
             pose::plant(p, &mut self.pose);
             let ground = self.pose.at;
             self.add_plant(p, ground, batch);
         }
-        true
     }
 
     /// `ground` is the floor point under it, where its shadow falls.
@@ -216,27 +278,32 @@ impl Living {
         );
     }
 
-    /// Fills `batch` with every creature, body, egg and floating mat, blended to now.
-    pub fn creatures(&mut self, batch: &mut LifeBatch) {
-        let f = self.runner.frames();
-        let t = f.alpha();
-        batch.clear();
-        self.anim.update(&f.next, self.born.elapsed().as_secs_f64());
-        if self.mats_before.0 != f.prev.tick {
-            let (tick, before) = &mut self.mats_before;
-            *tick = f.prev.tick;
-            before.clear();
-            before.extend(f.prev.plants.iter().filter(|p| p.floating).map(|p| (p.id, p.pos)));
+    /// Adds every creature, body, egg and floating mat to `batch`, `shown.t`
+    /// of the way from one snapshot to the next. `clock` is seconds on any
+    /// steady clock, for the acts the animator eases in and out.
+    pub fn creatures(&mut self, shown: &Shown, clock: f64, batch: &mut LifeBatch) {
+        let (a, b, t) = (&*shown.a, &*shown.b, shown.t);
+        let gap = shown.gap();
+        self.anim.update(b, clock);
+        if self.before.as_ref().is_none_or(|(tick, _, _)| *tick != a.tick) {
+            let index = |ids: &mut dyn Iterator<Item = u64>| ids.enumerate().map(|(i, id)| (id, i)).collect();
+            let creatures = index(&mut a.creatures.iter().map(|c| c.id));
+            // Indexed among all plants, so the index finds the mat in `a.plants`.
+            let mats = a.plants.iter().enumerate().filter(|(_, p)| p.floating).map(|(i, p)| (p.id, i)).collect();
+            self.before = Some((a.tick, creatures, mats));
         }
-        for p in f.next.plants.iter().filter(|p| p.floating) {
+        let Some((_, before, mats)) = self.before.take() else { return };
+        for p in b.plants.iter().filter(|p| p.floating) {
             let to = p.pos;
-            let from = self.mats_before.1.get(&p.id).copied().unwrap_or(to);
+            let from = mats.get(&p.id).map_or(to, |&i| a.plants[i].pos);
             let pos = std::array::from_fn(|i| from[i] + (to[i] - from[i]) * t);
             pose::plant_at(p, pos, &mut self.pose);
             let (ground, _, _) = pose::project([pos[0], pos[1], 0.0]);
             self.add_plant(p, ground, batch);
         }
-        for v in &f.next.creatures {
+        for next in &b.creatures {
+            let blended = before.get(&next.id).map(|&i| pose::blend(&a.creatures[i], next, t, gap));
+            let v = blended.as_ref().unwrap_or(next);
             self.anim.creature(v, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
@@ -259,7 +326,7 @@ impl Living {
                 seed: v.id as u32,
             });
         }
-        for r in &f.next.remains {
+        for r in &b.remains {
             self.anim.remains(r, t, &mut self.pose);
             convert(&self.pose, |_| 0.0, &mut self.segs, &mut self.membranes);
             batch.add(&Organism {
@@ -277,7 +344,7 @@ impl Living {
                 seed: r.id as u32,
             });
         }
-        for e in &f.next.eggs {
+        for e in &b.eggs {
             let (at, shrink, z) = pose::project(e.pos);
             let r = (e.size * 0.5 * shrink).max(0.0008);
             let y = at[1] + r;
@@ -308,33 +375,7 @@ impl Living {
                 seed: e.id as u32,
             });
         }
-    }
-
-    /// Where a creature is drawn now, if it is alive: its floor point on screen
-    /// and its length, in world units.
-    #[allow(dead_code)] // for the preview tool
-    pub fn locate(&self, id: u64) -> Option<([f32; 2], f32)> {
-        let f = self.runner.frames();
-        let c = f.next.creatures.iter().find(|c| c.id == id)?;
-        let (at, shrink, _) = pose::project(c.pos);
-        Some((at, c.scale * c.body.extent * shrink))
-    }
-
-    /// Sets how fast the world runs, in sim seconds per real second, and how
-    /// many more threads it may borrow when one can't keep up.
-    pub fn set_pace(&self, speed: f32, helpers: usize) {
-        self.runner.set_helpers(helpers);
-        self.runner.set_speed(speed);
-    }
-
-    /// How fast the world has really been running lately.
-    pub fn rate(&self) -> f32 {
-        self.runner.rate()
-    }
-
-    /// Saves and stops the simulation.
-    pub fn stop(self) {
-        self.runner.stop();
+        self.before = Some((a.tick, before, mats));
     }
 }
 
