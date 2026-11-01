@@ -67,26 +67,34 @@ pub fn project(pos: [f32; 3]) -> ([f32; 2], f32, f32) {
     ([pos[0], h], shrink, pos[1])
 }
 
-/// Linear blend between two snapshots of a creature, for drawing between ticks.
-pub fn blend(a: &CreatureView, b: &CreatureView, t: f32) -> CreatureView {
+/// A creature drawn `t` (0..1) of the way from snapshot `a` to snapshot `b`,
+/// which are `dt` sim seconds apart, so it moves smoothly between ticks.
+/// Its stride runs on at the rate both snapshots give, however many strides
+/// fit between them, and lands exactly on `b`'s.
+pub fn blend(a: &CreatureView, b: &CreatureView, t: f32, dt: f32) -> CreatureView {
+    use std::f32::consts::{PI, TAU};
+    let lerp = |x: f32, y: f32| x + (y - x) * t;
     let mut c = b.clone();
     for i in 0..3 {
-        c.pos[i] = a.pos[i] + (b.pos[i] - a.pos[i]) * t;
+        c.pos[i] = lerp(a.pos[i], b.pos[i]);
+        c.vel[i] = lerp(a.vel[i], b.vel[i]);
     }
-    let mut dh = b.heading - a.heading;
-    if dh > std::f32::consts::PI {
-        dh -= std::f32::consts::TAU;
-    } else if dh < -std::f32::consts::PI {
-        dh += std::f32::consts::TAU;
-    }
+    let dh = (b.heading - a.heading + PI).rem_euclid(TAU) - PI;
     c.heading = a.heading + dh * t;
-    let mut dg = b.gait - a.gait;
-    if dg < -std::f32::consts::PI {
-        dg += std::f32::consts::TAU;
-    }
-    c.gait = a.gait + dg * t;
-    c.flash = a.flash + (b.flash - a.flash) * t;
-    c.scale = a.scale + (b.scale - a.scale) * t;
+    // The phase only says where in a stride each snapshot is; the stride
+    // rate says how many whole strides were taken in between.
+    let near = (b.gait - a.gait + PI).rem_euclid(TAU) - PI;
+    let turned = (a.stride + b.stride) * 0.5 * TAU * dt.max(0.0);
+    let dg = near + ((turned - near) / TAU).round() * TAU;
+    c.gait = (a.gait + dg * t).rem_euclid(TAU);
+    c.stride = lerp(a.stride, b.stride);
+    c.face = lerp(a.face, b.face);
+    c.settle = lerp(a.settle, b.settle);
+    c.pace = lerp(a.pace, b.pace);
+    c.effort = lerp(a.effort, b.effort);
+    c.flash = lerp(a.flash, b.flash);
+    c.scale = lerp(a.scale, b.scale);
+    c.maturity = lerp(a.maturity, b.maturity);
     c
 }
 

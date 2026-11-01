@@ -27,6 +27,7 @@ pub mod motion;
 pub mod organ;
 pub mod plan;
 pub mod plant;
+pub mod playback;
 pub mod pose;
 pub mod rng;
 pub mod runner;

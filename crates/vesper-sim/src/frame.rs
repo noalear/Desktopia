@@ -97,6 +97,8 @@ pub struct CreatureView {
     pub locomotion: Locomotion,
     /// Gait phase, radians, and how hard it is moving, 0..1.
     pub gait: f32,
+    /// Strides per sim second, negative when backing.
+    pub stride: f32,
     pub effort: f32,
     pub action: Action,
     pub target: Option<u64>,
@@ -241,7 +243,8 @@ impl Frame {
                 look: c.genome.look,
                 locomotion: c.motion.mode,
                 gait: c.gait,
-                effort: c.effort,
+                stride: c.motion.rate,
+                effort: c.motion.ease,
                 action: c.action,
                 target: c.target.map(|t| t.0),
                 focus: c.focus.map(|f| [f[0], f[1] / DEPTH, f[2]]),

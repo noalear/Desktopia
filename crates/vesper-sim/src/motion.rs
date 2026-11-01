@@ -30,6 +30,8 @@ pub const WATER: f32 = 1.0;
 /// Energy per second spent moving at full power, in multiples of the
 /// body's resting upkeep.
 pub const MOVE_K: f32 = 2.0;
+/// Seconds for a body to make most of a change of speed.
+const SPEED_LAG: f32 = 0.6;
 /// How fast a body sinks through the thick air when nothing holds it up.
 const SINK: f32 = 0.12;
 /// A float-borne body: lift at least this share of its weight to hover.
@@ -50,11 +52,19 @@ pub struct Motion {
     pub settle: f32,
     /// How it is moving right now, which the medium can change.
     pub mode: Locomotion,
+    /// Strides per second just now, negative when backing, so the renderer
+    /// can run the stride on between ticks. Not saved: the next tick sets it.
+    #[serde(skip)]
+    pub rate: f32,
+    /// How hard it is working, eased over the brain's tick-to-tick changes
+    /// of mind, for drawing only.
+    #[serde(skip)]
+    pub ease: f32,
 }
 
 impl Default for Motion {
     fn default() -> Self {
-        Self { clock: 0.0, speed: 0.0, vz: 0.0, face: 1.0, settle: 0.0, mode: Locomotion::Crawl }
+        Self { clock: 0.0, speed: 0.0, vz: 0.0, face: 1.0, settle: 0.0, mode: Locomotion::Crawl, rate: 0.0, ease: 0.0 }
     }
 }
 
@@ -127,8 +137,8 @@ pub fn step(w: &mut crate::world::World, helpers: usize) {
 fn body(c: &mut Creature, env: &Env, ground: &Ground) {
     let dt = TICK;
     let a = &c.abil;
-    let m = &mut c.motion;
     let held = c.action == Action::Held || c.doom.is_some();
+    let m = &mut c.motion;
     let wet = c.pos[2] < 0.01 && ground.in_river(c.pos[0], c.pos[1] / DEPTH);
     let mode = mode_in(a, wet, c.pos[2]);
     m.mode = mode;
@@ -137,8 +147,11 @@ fn body(c: &mut Creature, env: &Env, ground: &Ground) {
     // Wading slows a walker; a swimmer out of its element flops.
     let top = if wet && mode != Locomotion::Swim { top * 0.4 } else { top };
     let want = if power >= 0.0 { power * top } else { power * top * 0.3 };
-    let accel = (top * 4.0).max(0.002) * dt;
-    m.speed += (want - m.speed).clamp(-accel, accel);
+    // A body has weight: it gathers and loses speed over a moment rather
+    // than lurching at every change of the brain's mind.
+    let ease = dt / (SPEED_LAG + dt);
+    m.speed += (want - m.speed) * ease;
+    m.ease += (c.effort.clamp(0.0, 1.0) - m.ease) * ease;
     if held {
         m.speed = 0.0;
     }
@@ -189,7 +202,8 @@ fn body(c: &mut Creature, env: &Env, ground: &Ground) {
     c.energy -= a.upkeep * MOVE_K * (effort * effort * cost(mode) * held_up + hover) * dt;
     // The stride clock runs at the rate its gait sets.
     let hz = stride_hz(a, mode, m.speed, effort, c.genome.tempo, aloft);
-    m.clock = (m.clock + hz * dt * if power < 0.0 { -1.0 } else { 1.0 }).rem_euclid(1.0);
+    m.rate = if power < 0.0 { -hz } else { hz };
+    m.clock = (m.clock + m.rate * dt).rem_euclid(1.0);
     c.gait = m.clock * TAU;
     // Facing follows the heading, with some hysteresis so it doesn't flicker.
     if co > 0.15 {

@@ -6,7 +6,7 @@
 //!                [--lava REACH] [--ash A] [--cold X STRENGTH] [--dust X STRENGTH]
 //!                [--seed N] [--no-life] [--lineup] [--progressive] [--sim MINUTES]
 //!                [--follow] [--crop X Y W H] [--acts MINUTES] [--family MINUTES] [--forms] [--zoo]
-//!                [--world FILE] [--out DIR]
+//!                [--world FILE] [--smooth SECONDS] [--out DIR]
 //!                [--weather HOURS] [--until storm|rain|snow|dust|cold|erupt|drought|flood]
 //!
 //! `--crop` renders only a window of the world (x, y of its bottom-left and
@@ -33,6 +33,9 @@
 //! `--zoo` with `--world FILE` draws grown members of every species living
 //! in that saved world.
 //!
+//! `--smooth SECONDS` with `--sim` films one walker at 30 frames a second,
+//! drawn the old way beside the smooth playback (see smooth.rs).
+//!
 //! `--weather` runs a real world's weather alone for that many hours and
 //! draws the sky it makes over the stand-in life; `--until` then waits for a
 //! kind of weather (see weather.rs). Later frames step it on by `--step`.
@@ -43,6 +46,7 @@ mod forms;
 #[path = "../../desktopia/src/living.rs"]
 #[allow(dead_code)]
 mod living;
+mod smooth;
 mod weather;
 
 use vesper_forms::Menagerie;
@@ -84,6 +88,8 @@ struct Args {
     world: Option<std::path::PathBuf>,
     weather: Option<f64>,
     until: Option<String>,
+    /// With --sim: film a walker for this many seconds, before and after smoothing.
+    smooth: Option<f64>,
     out: std::path::PathBuf,
 }
 
@@ -116,6 +122,7 @@ fn parse_args() -> Args {
         world: None,
         weather: None,
         until: None,
+        smooth: None,
         out: "preview-out".into(),
     };
     let mut it = std::env::args().skip(1);
@@ -162,6 +169,7 @@ fn parse_args() -> Args {
             "--out" => a.out = val().into(),
             "--weather" => a.weather = Some(val().parse().unwrap()),
             "--until" => a.until = Some(val()),
+            "--smooth" => a.smooth = Some(val().parse().unwrap()),
             other => panic!("unknown flag {other}"),
         }
     }
@@ -293,6 +301,9 @@ fn render_sim(renderer: &mut Renderer, args: &Args, minutes: f64) {
     }
     if let (true, Some(p)) = (grow, &args.world) {
         vesper_sim::save::save(&sim, p).unwrap();
+    }
+    if let Some(secs) = args.smooth {
+        return smooth::render(renderer, args, sim, secs);
     }
     // With --follow, frame the walker with the most limbs, nearer ones first.
     let follow = args.follow.then(|| {
